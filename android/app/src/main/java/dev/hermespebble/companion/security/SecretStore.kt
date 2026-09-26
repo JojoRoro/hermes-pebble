@@ -96,7 +96,7 @@ class SecretStore(context: Context) {
         envelope[1] = ((MAGIC ushr 16) and 0xff).toByte()
         envelope[2] = ((MAGIC ushr 8) and 0xff).toByte()
         envelope[3] = (MAGIC and 0xff).toByte()
-        envelope[4] = FORMAT_VERSION
+        envelope[4] = FORMAT_VERSION.toByte()
         cipher.iv.copyInto(envelope, destinationOffset = 5)
         ciphertext.copyInto(envelope, destinationOffset = 5 + cipher.iv.size)
         val target = secretFile(reference)
