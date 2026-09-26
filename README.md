@@ -57,7 +57,7 @@ Header names must be valid HTTP tokens. Control characters, line breaks, case-in
 
 ### Android APK
 
-The GitHub Actions workflow is Android-only and manually triggered. A workflow must be present on the repository's default branch before the Actions UI can run it. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. A later manual run uploads `hermes-pt2-android-debug`; download that artifact and sideload the debug APK through the phone's normal APK installation flow. The workflow does not compile a watch app, call Hermes, or need any service secret.
+The GitHub Actions workflow is Android-only and manually triggered. A workflow must be present on the repository's default branch before the Actions UI can run it. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. A successful manual run uploads `hermes-pt2-android-debug`; download that artifact and sideload the debug APK through the phone's normal APK installation flow. The workflow does not compile a watch app, call Hermes, or need any service secret.
 
 The first artifact is a debug APK for sideloading, not a Play Store release. For seamless upgrades, use one stable signing key for the application ID `dev.hermespebble.companion`. Do not commit a keystore or private key. A disposable CI debug key can change between runners; configure an optional stable signing keystore through protected CI secrets in a later signing setup, and never commit it or print its values.
 
@@ -98,6 +98,6 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 
 ## Validation status
 
-`docs/validation.md` distinguishes the passing local regression checks from the remaining Android, CloudPebble, and device acceptance checks.
+`docs/validation.md` records the passing local regression checks and Android APK build, plus the remaining CloudPebble and device acceptance checks.
 
-Implementation reviewed and local regression checks passed. Android/PBW builds, workflow execution, CloudPebble execution, live Hermes calls, and hardware validation have not been run.
+Implementation reviewed and local regression checks passed. The [Android workflow passed on 26 September 2026](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438), building and uploading the debug APK. PBW builds, CloudPebble execution, device installation, live Hermes calls, and hardware validation remain untested.

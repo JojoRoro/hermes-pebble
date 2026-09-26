@@ -1,6 +1,6 @@
 # Validation status
 
-The implementation review ran local checks on 26 September 2026. These do not establish Android APK buildability, watch firmware behavior, or live-server compatibility.
+The implementation review ran local checks on 26 September 2026. The Android APK build also passed in GitHub Actions that day. Watch firmware behavior, device installation, and live-server compatibility remain untested.
 
 ## Completed local checks
 
@@ -9,15 +9,21 @@ The implementation review ran local checks on 26 September 2026. These do not es
 - Native host regression checks passed for exact persistent-storage return counts, negative errors, maximum-size pending transcript round trips, checksum corruption, generation zero, recent/result JSON parsing, surrogate pairs, and six-chunk UTF-8 text.
 - Isolated Kotlin 2.4.20 compilation and execution passed for the production wire protocol and retry policy, using PebbleKit dictionary models. Checks include duplicate final chunks, changed chunk counts, timeout recovery, invalid UTF-8, and idempotency deadlines.
 - Isolated HTTP client compilation and six offline interceptor checks passed for bounded response reads, both authentication headers, base paths, terminal replays, numeric history metadata/tool events, HTML rejection, redirect classification, and oversized bodies. No Hermes request was made.
-- Authentic Gradle wrapper JAR SHA-256 verified: `55243ef57851f12b070ad14f7f5bb8302daceeebc5bce5ece5fa6edb23e1145c`. Both wrapper scripts and checksum-pinned distribution properties are present. Gradle was not executed.
+- Authentic Gradle wrapper JAR SHA-256 verified: `55243ef57851f12b070ad14f7f5bb8302daceeebc5bce5ece5fa6edb23e1145c`. Both wrapper scripts and checksum-pinned distribution properties are present. Gradle was subsequently executed in CI as described below.
 
-See [test instructions](../tests/README.md) for repeatable local commands. Room generation, WorkManager scheduling, Compose compilation, Keystore behavior, and real transport still require the checks below.
+See [test instructions](../tests/README.md) for repeatable local commands. WorkManager scheduling, Keystore behavior, and real transport still require device checks.
+
+## Completed Android build
+
+[Workflow run 36271723438](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438) passed on 26 September 2026 at commit `413901cbf6c827dd0b402f2559a8e79efa5fbf0e`. The Gradle wrapper ran `:app:assembleDebug`, including Room/KSP generation and Kotlin/Compose compilation, and uploaded `hermes-pt2-android-debug` containing `app-debug.apk`.
+
+The build fixes select the published `platforms;android-37.0` package and explicit compile SDK minor level 0, give Gradle a 2 GiB heap and 768 MiB metaspace, and convert the credential envelope version to a byte before storage. The APK has not been installed or exercised on a device.
 
 ## Acceptance checks
 
 | Check | Expected result | Status |
 | --- | --- | --- |
-| Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Deferred, not run |
+| Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Passed: APK built and uploaded; device installation deferred |
 | CloudPebble root import/build | Produces a PT2 PBW independently of Android; SDK version is recorded | Deferred, not run |
 | PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Deferred, not run |
 | Companion registration | Stock Pebble app routes watch messages to the installed companion | Deferred, not run |
@@ -54,7 +60,7 @@ Use synthetic archives and copied fixtures for these checks before using a real 
 | Duplicate ZIP member name | Command fails without an output | Passed with synthetic fixtures |
 | Uncompressed input over 32 MiB | Command rejects before member reads | Deferred, not run |
 | Existing output or in-place output | Command refuses to overwrite | Deferred, not run |
-| Authentic Gradle wrapper | `gradlew`, `gradlew.bat`, wrapper JAR, and properties match the Gradle 9.4.1 checksums before workflow dispatch | Files present; JAR verified; distribution not executed |
+| Authentic Gradle wrapper | `gradlew`, `gradlew.bat`, wrapper JAR, and properties match the Gradle 9.4.1 checksums before workflow dispatch | JAR verified; checksum-pinned distribution executed successfully in CI |
 | Metadata already correct | Separate output is still created and verified; report says `metadata already present` | Passed with synthetic fixtures |
 | Metadata changed | Top-level `companionApp` exactly matches package metadata; no nested `pebble` object is added | Passed with synthetic fixtures |
 | Nonmetadata member preservation | SHA-256 of every other uncompressed member matches the input | Passed with synthetic fixtures |
@@ -65,7 +71,7 @@ The pinned wrapper values are JAR SHA-256 `55243ef57851f12b070ad14f7f5bb8302dace
 
 ## Source and packaging checks
 
-Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow remains manual and Android-only, and the watch build remains owned by CloudPebble. No workflow, emulator, device install, live Hermes call, or Matrix send was run.
+Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow remains manual and Android-only, and the watch build remains owned by CloudPebble. The Android workflow passed; no emulator, device install, live Hermes call, or Matrix send was run.
 
 ## Runtime and security checks
 
@@ -76,4 +82,4 @@ Source review removed the abandoned duplicate UI/runtime and corrected unresolve
 - Confirm GrapheneOS network permission, NetBird connectivity, Doze, app standby, process death, and force-stop behavior on the actual phone.
 - Confirm no external Matrix delivery claim is derived solely from HTTP acceptance, a run completion, a Pebble transport ACK, or a notification.
 
-Android/PBW builds and hardware acceptance remain deferred. Local checks above passed; the complete stack is not yet validated.
+The local checks and Android APK build passed. PBW builds and hardware acceptance remain deferred; the complete stack is not yet validated.

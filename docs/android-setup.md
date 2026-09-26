@@ -1,6 +1,6 @@
 # Android setup
 
-This guide covers the Android companion only. It does not build or run the application. The initial implementation pass intentionally does not execute Gradle, install an APK, dispatch the workflow, or contact Hermes.
+This guide covers installing and configuring the Android companion. The Android APK build has passed in GitHub Actions; device and live-server validation remain pending.
 
 ## Prerequisites
 
@@ -50,7 +50,7 @@ The value is a NetBird service-access secret, not a NetBird management API token
 
 ## Sideloading the APK
 
-The Android workflow is manually triggered only. The workflow file must be on the default branch before it can be dispatched from the Actions UI. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. A later successful run uploads `hermes-pt2-android-debug`; download that artifact and install the debug APK using the phone's normal sideload flow. The artifact path is `android/app/build/outputs/apk/debug/app-debug.apk` within the workflow workspace.
+The Android workflow is manually triggered only. The workflow file must be on the default branch before it can be dispatched from the Actions UI. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. A successful run uploads `hermes-pt2-android-debug`; download that artifact and install the debug APK using the phone's normal sideload flow. The artifact path is `android/app/build/outputs/apk/debug/app-debug.apk` within the workflow workspace.
 
 The first APK is for sideloading, not Play Store distribution. Keep the same application ID for updates. A CI debug key generated on a disposable runner can change, so it is not a stable update-signing identity. A later signing configuration may provide a protected stable keystore through GitHub Actions secrets; do not commit the keystore, expose its passwords, or change the application ID as a signing workaround.
 
