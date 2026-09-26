@@ -1,4 +1,15 @@
 /.tmp/
+# Local service configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.asc
+*.key
+id_rsa
+id_ed25519
 **/build/
 **/.gradle/
 **/.kotlin/
