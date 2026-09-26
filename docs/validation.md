@@ -19,12 +19,14 @@ See [test instructions](../tests/README.md) for repeatable local commands. WorkM
 
 The build fixes select the published `platforms;android-37.0` package and explicit compile SDK minor level 0, give Gradle a 2 GiB heap and 768 MiB metaspace, and convert the credential envelope version to a byte before storage. The APK has not been installed or exercised on a device.
 
+The release workflow passed actionlint 1.7.12. Pushing `v0.1.0` then triggered [workflow run 36272251691](https://github.com/JojoRoro/hermes-pebble/actions/runs/36272251691), which passed both the Android build and release publishing jobs. The [published v0.1.0 release](https://github.com/JojoRoro/hermes-pebble/releases/tag/v0.1.0) contains `hermes-pebble-debug.apk` as a downloadable asset and was verified as the latest release on 26 September 2026.
+
 ## Acceptance checks
 
 | Check | Expected result | Status |
 | --- | --- | --- |
 | Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Passed: APK built and uploaded; device installation deferred |
-| Version tag release | A pushed v* tag builds and attaches the APK to its GitHub Release | Workflow passed actionlint; first tag run pending |
+| Version tag release | A pushed v* tag builds and attaches the APK to its GitHub Release | Passed: v0.1.0 built and APK attached to the published release |
 | CloudPebble root import/build | Produces a PT2 PBW independently of Android; SDK version is recorded | Deferred, not run |
 | PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Deferred, not run |
 | Companion registration | Stock Pebble app routes watch messages to the installed companion | Deferred, not run |
