@@ -24,6 +24,7 @@ The build fixes select the published `platforms;android-37.0` package and explic
 | Check | Expected result | Status |
 | --- | --- | --- |
 | Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Passed: APK built and uploaded; device installation deferred |
+| Version tag release | A pushed v* tag builds and attaches the APK to its GitHub Release | Workflow passed actionlint; first tag run pending |
 | CloudPebble root import/build | Produces a PT2 PBW independently of Android; SDK version is recorded | Deferred, not run |
 | PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Deferred, not run |
 | Companion registration | Stock Pebble app routes watch messages to the installed companion | Deferred, not run |
@@ -71,7 +72,7 @@ The pinned wrapper values are JAR SHA-256 `55243ef57851f12b070ad14f7f5bb8302dace
 
 ## Source and packaging checks
 
-Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow remains manual and Android-only, and the watch build remains owned by CloudPebble. The Android workflow passed; no emulator, device install, live Hermes call, or Matrix send was run.
+Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow supports manual builds and version tag releases, and the watch build remains owned by CloudPebble. The Android workflow passed; no emulator, device install, live Hermes call, or Matrix send was run.
 
 ## Runtime and security checks
 

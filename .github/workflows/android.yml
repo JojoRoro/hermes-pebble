@@ -1,5 +1,8 @@
 name: Android APK
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -44,3 +47,44 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish APK release
+    needs: android
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: android-release-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download APK
+        run: |
+          gh run download "$GITHUB_RUN_ID" --name hermes-pt2-android-debug --dir release
+          mv release/app-debug.apk release/hermes-pebble-debug.apk
+
+      - name: Publish GitHub Release
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/hermes-pebble-debug.apk --clobber
+          else
+            cat > release-notes.md <<'EOF'
+          Download `hermes-pebble-debug.apk` below and install it on your Android phone.
+
+          This is a debug build for sideloading. Its CI-generated signing key can change between builds, so updates over an existing installation are not guaranteed.
+          EOF
+            release_flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" release/hermes-pebble-debug.apk \
+              --verify-tag --title "Hermes Pebble $RELEASE_TAG" \
+              --notes-file release-notes.md --generate-notes "${release_flags[@]}"
+          fi

@@ -533,8 +533,10 @@ def build(ctx):
     ctx.set_group('bundle')
     ctx.pbl_bundle(binaries=binaries, js=[])
 CloudPebble may generate its own equivalent build script; do not depend on a custom wscript hook surviving import. Allocate 1,024-byte AppMessage input/output buffers for this PT2-only app, check app_message_open for success, and use at most 192 payload bytes per chunk. Calculate dictionary overhead for the final tuple set before coding it. The 1,024-byte transcript limit is a logical-message limit, not permission to send it in one AppMessage. Chunk large response pages too.
-20. Exact manual GitHub Actions workflow
-Create .github/workflows/android.yml using these release-tag-resolved immutable commits [S20]. No automatic push or PR trigger. Actions run from the repository root; only shell steps inherit android/ as their working directory.
+20. Initial manual GitHub Actions workflow
+Post-implementation update, 26 September 2026: the current .github/workflows/android.yml also builds pushed v* tags and publishes hermes-pebble-debug.apk on the corresponding GitHub Release. Manual runs retain their Actions artifact. The separate publishing job has actions: read and contents: write; the build retains contents: read. See docs/android-setup.md for the current release procedure.
+
+The initial workflow below uses release-tag-resolved immutable commits [S20]. Actions run from the repository root; only shell steps inherit android/ as their working directory.
 name: Android APK
 on:
   workflow_dispatch:

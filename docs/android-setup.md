@@ -50,9 +50,22 @@ The value is a NetBird service-access secret, not a NetBird management API token
 
 ## Sideloading the APK
 
-The Android workflow is manually triggered only. The workflow file must be on the default branch before it can be dispatched from the Actions UI. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. A successful run uploads `hermes-pt2-android-debug`; download that artifact and install the debug APK using the phone's normal sideload flow. The artifact path is `android/app/build/outputs/apk/debug/app-debug.apk` within the workflow workspace.
+Download `hermes-pebble-debug.apk` from the [latest GitHub Release](https://github.com/JojoRoro/hermes-pebble/releases/latest) and install it using the phone's normal sideload flow. Each version tag matching `v*` builds the tagged source and attaches this APK to a GitHub Release after a successful build.
+
+The workflow can also be dispatched manually from the Actions UI. Manual runs upload the `hermes-pt2-android-debug` Actions artifact without publishing a release. The artifact path is `android/app/build/outputs/apk/debug/app-debug.apk` within the workflow workspace.
 
 The first APK is for sideloading, not Play Store distribution. Keep the same application ID for updates. A CI debug key generated on a disposable runner can change, so it is not a stable update-signing identity. A later signing configuration may provide a protected stable keystore through GitHub Actions secrets; do not commit the keystore, expose its passwords, or change the application ID as a signing workaround.
+
+## Publishing a version
+
+Update `versionName` and increment `versionCode` in `android/app/build.gradle.kts`, then commit and push the change. Create and push an annotated tag matching the app version; for example, for version 0.1.1:
+
+```sh
+git tag -a v0.1.1 -m "Hermes Pebble v0.1.1"
+git push origin v0.1.1
+```
+
+The tag push runs the Android build and creates a release with `hermes-pebble-debug.apk` attached. Tags containing a hyphen, such as `v0.2.0-beta.1`, produce prereleases. Rerunning a tag workflow updates the APK on that release. The build job has read access; only the publish job can write releases through GitHub's automatic workflow token.
 
 ## Runtime secret handling
 
