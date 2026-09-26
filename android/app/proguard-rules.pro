@@ -1,0 +1,2 @@
+-keepattributes RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations,AnnotationDefault
+-keep class dev.hermespebble.companion.** { *; }

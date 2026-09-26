@@ -1,0 +1,43 @@
+{
+  "name": "hermes-pebble",
+  "author": "hermes-pebble",
+  "version": "0.1.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Hermes Pebble",
+    "uuid": "7d07aa22-7d13-48c1-a400-2602a5ae4647",
+    "sdkVersion": "3",
+    "enableMultiJS": false,
+    "targetPlatforms": ["emery"],
+    "watchapp": { "watchface": false },
+    "messageKeys": {
+      "ProtocolVersion": 0,
+      "MessageKind": 1,
+      "TransferId": 2,
+      "CaptureId": 3,
+      "ChunkIndex": 4,
+      "ChunkCount": 5,
+      "Payload": 6,
+      "Status": 7,
+      "ErrorCode": 8,
+      "ItemId": 9,
+      "ItemState": 10,
+      "ItemKind": 11,
+      "PageOffset": 12,
+      "PageCount": 13,
+      "TotalBytes": 14,
+      "ConversationGeneration": 15,
+      "Flags": 16,
+      "CorrelationId": 17
+    },
+    "resources": { "media": [] },
+    "companionApp": {
+      "android": {
+        "url": "https://github.com/hermes-pebble/hermes-pebble",
+        "apps": [{ "package": "dev.hermespebble.companion" }]
+      }
+    }
+  }
+}

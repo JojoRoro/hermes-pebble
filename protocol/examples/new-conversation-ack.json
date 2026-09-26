@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 106,
+  "transferId": 108,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 107,
+  "conversationGeneration": 4,
+  "payload": "{\"previous\":3,\"new\":4}"
+}

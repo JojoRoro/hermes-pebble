@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 105,
+  "transferId": 504,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 103,
+  "captureId": 42,
+  "pageOffset": 0,
+  "totalBytes": 21,
+  "flags": 0,
+  "payload": "{\"captureId\":42,\"itemId\":9,\"state\":7,\"input\":\"Show today's reminders\",\"output\":\"Two reminders remain.\",\"more\":false}"
+}

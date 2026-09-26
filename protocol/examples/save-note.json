@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 3,
+  "transferId": 108,
+  "captureId": 43,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "payload": "Remember the milk"
+}

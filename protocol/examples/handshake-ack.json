@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 101,
+  "transferId": 500,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 100,
+  "conversationGeneration": 3
+}

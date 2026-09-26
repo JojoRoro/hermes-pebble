@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 2,
+  "transferId": 101,
+  "captureId": 42,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "payload": "Show today's reminders"
+}

@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 107,
+  "transferId": 505,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 101,
+  "errorCode": 9,
+  "payload": "Network or TLS failure"
+}

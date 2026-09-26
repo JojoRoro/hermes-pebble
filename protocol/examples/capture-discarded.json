@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 108,
+  "transferId": 110,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 109,
+  "captureId": 42
+}

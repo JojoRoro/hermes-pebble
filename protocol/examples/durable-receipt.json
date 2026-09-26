@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "messageKind": 102,
+  "transferId": 501,
+  "chunkIndex": 0,
+  "chunkCount": 1,
+  "correlationId": 101,
+  "captureId": 42,
+  "itemKind": 1,
+  "itemId": 9,
+  "status": 2,
+  "flags": 8
+}
