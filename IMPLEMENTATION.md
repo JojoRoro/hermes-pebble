@@ -451,7 +451,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
 }
-Use Room schema export, but do not fabricate generated schema files before the first real compilation. Do not add old composeOptions.kotlinCompilerExtensionVersion, legacy kotlinOptions, Jetifier, JitPack, dynamic versions, or a second Android Kotlin plugin. Use android.useAndroidX=true in android/gradle.properties; omit machine-specific SDK locations. Compiling against SDK 37.0 does not mean the app requires Android 17 to run.
+Use Room schema export, but do not fabricate generated schema files before the first real compilation. Do not add old composeOptions.kotlinCompilerExtensionVersion, legacy kotlinOptions, Jetifier, JitPack, dynamic versions, or a second Android Kotlin plugin. Use android.useAndroidX=true and org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8 in android/gradle.properties; omit machine-specific SDK locations. Compiling against SDK 37.0 does not mean the app requires Android 17 to run.
 Commit genuine wrapper files without running Gradle. Download these three files from Gradle's immutable release tag v9.4.1:
 - gradlew → android/gradlew, executable bit set.
 - gradlew.bat → android/gradlew.bat.
