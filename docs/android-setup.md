@@ -12,7 +12,7 @@ Before installation, obtain:
 - An API profile and API credential authorized for the tools the user intends to call.
 - A NetBird connection and reverse-proxy Custom Header configuration when Hermes is behind NetBird.
 
-The companion targets application ID and namespace `dev.hermespebble.companion`, minimum SDK 26, target SDK 36, and compile SDK 37. It does not require Google Play Services.
+The companion targets application ID and namespace `dev.hermespebble.companion`, minimum SDK 26, target SDK 36, and compile SDK 37.0. It does not require Google Play Services.
 
 ## First-run no-send procedure
 

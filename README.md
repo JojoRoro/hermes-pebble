@@ -14,7 +14,7 @@ The Pebble project is rooted at the repository root so CloudPebble can import it
 | Watch UUID | `7d07aa22-7d13-48c1-a400-2602a5ae4647` |
 | Android application ID and namespace | `dev.hermespebble.companion` |
 | Android minimum/target SDK | 26 / 36 |
-| Android compile SDK | 37 |
+| Android compile SDK | 37.0 |
 | PebbleKit Android client | `io.rebble.pebblekit2:client:1.3.2` |
 | Repository | `https://github.com/hermes-pebble/hermes-pebble` |
 

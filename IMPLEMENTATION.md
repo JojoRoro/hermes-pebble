@@ -14,7 +14,7 @@ Kotlin Gradle/compiler version	2.4.20	Official compatibility table includes AGP 
 Compose compiler plugin	2.4.20	Match Kotlin, not the Compose BOM
 Kotlin serialization plugin	2.4.20	Match Kotlin
 KSP	2.3.12	Released KSP generation compatible with this AGP baseline [S12]
-Android compile SDK	37	PebbleKit 1.3.2 AAR explicitly declares minCompileSdk=37
+Android compile SDK	37.0	PebbleKit 1.3.2 AAR explicitly declares minCompileSdk=37; the SDK package is platforms;android-37.0
 Android target SDK	36	Deliberate v1 behavior baseline; this is a sideloaded app
 Android minimum SDK	26	Project choice; PebbleKit itself declares minimum 24
 Android build tools	36.0.0	Documented AGP 9.2 default
@@ -398,7 +398,11 @@ plugins {
 
 android {
     namespace = "dev.example.hermespt2"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
@@ -447,7 +451,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
 }
-Use Room schema export, but do not fabricate generated schema files before the first real compilation. Do not add old composeOptions.kotlinCompilerExtensionVersion, legacy kotlinOptions, Jetifier, JitPack, dynamic versions, or a second Android Kotlin plugin. Use android.useAndroidX=true in android/gradle.properties; omit machine-specific SDK locations. compileSdk=37 does not mean the app requires Android 37 to run.
+Use Room schema export, but do not fabricate generated schema files before the first real compilation. Do not add old composeOptions.kotlinCompilerExtensionVersion, legacy kotlinOptions, Jetifier, JitPack, dynamic versions, or a second Android Kotlin plugin. Use android.useAndroidX=true in android/gradle.properties; omit machine-specific SDK locations. Compiling against SDK 37.0 does not mean the app requires Android 17 to run.
 Commit genuine wrapper files without running Gradle. Download these three files from Gradle's immutable release tag v9.4.1:
 - gradlew → android/gradlew, executable bit set.
 - gradlew.bat → android/gradlew.bat.
@@ -561,7 +565,7 @@ jobs:
         uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           cmdline-tools-version: '15859902'
-          packages: 'platform-tools platforms;android-37 build-tools;36.0.0'
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0'
           log-accepted-android-sdk-licenses: 'false'
 
       - name: Set up Gradle
