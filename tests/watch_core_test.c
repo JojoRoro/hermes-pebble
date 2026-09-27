@@ -75,6 +75,59 @@ int main(void) {
     total += lengths[i];
   }
   assert(total == sizeof(text));
-  puts("Watch storage, parser, and UTF-8 checks passed");
+  // Every navigation state must reach the launcher with rapid Back presses,
+  // including recovery with a persisted or corrupt pending capture.
+  for (uint8_t screen = HERMES_SCREEN_MENU; screen <= HERMES_SCREEN_CONNECTING; screen++) {
+    for (uint8_t previous = HERMES_SCREEN_MENU; previous <= HERMES_SCREEN_CONNECTING; previous++) {
+      s_screen = screen;
+      s_previous_screen = previous;
+      s_exiting = false;
+      s_stay_on_menu = false;
+      s_pending = capture;
+      s_storage_corrupt = true;
+      s_phone_probe_id = 123;
+      s_outbound.active = true;
+      s_outbound.kind = HERMES_KIND_SUBMIT_REQUEST;
+      bool exited = false;
+      for (int press = 0; press < 3 && !exited; press++) exited = navigation_back();
+      assert(exited && s_exiting && !s_outbound.active && s_phone_probe_id == 0);
+      assert(memcmp(&s_pending, &capture, sizeof(capture)) == 0);
+      assert(s_storage_corrupt); // Back never discards recoverable work.
+    }
+  }
+  s_exiting = false;
+  s_menu_kind = HERMES_MENU_MAIN;
+  s_menu_count = 6;
+  assert(menu_row_count() == 6); // Reconnect is the final row, not beyond the scroll limit.
+  s_menu_count = 5;
+  assert(menu_row_count() == 5); // Pending-draft menu also includes Reconnect.
+
+  // Phone-originated probes prompt a correlated watch handshake, without
+  // completing an unrelated request or pretending a transport ACK is success.
+  InboundTransfer probe = { .kind = HERMES_KIND_HANDSHAKE_ACK, .transfer_id = 51 };
+  s_handshake_ready = false;
+  s_outbound = (OutboundTransfer){ .active = true, .kind = HERMES_KIND_SUBMIT_REQUEST,
+    .transfer_id = 99, .phase = HERMES_OUT_WAIT_RECEIPT };
+  assert(queue_phone_probe(&probe));
+  assert(s_phone_probe_id == 51 && s_outbound.active && s_outbound.transfer_id == 99);
+  assert(!s_handshake_ready);
+  s_outbound.kind = HERMES_KIND_HANDSHAKE;
+  s_outbound.phase = HERMES_OUT_WAIT_REPLY;
+  assert(queue_phone_probe(&probe));
+  assert(!s_outbound.active); // Replace a stuck startup handshake at the next timer tick.
+  s_outbound.active = true;
+  s_outbound.phase = HERMES_OUT_WAIT_CHUNK;
+  assert(queue_phone_probe(&probe) && s_outbound.active); // Never overwrite an in-flight outbox.
+  probe.correlation_id = 99;
+  assert(!queue_phone_probe(&probe));
+  s_outbound.expected_kind = HERMES_KIND_HANDSHAKE_ACK;
+  assert(inbound_correlation_matches(&probe));
+  probe.correlation_id = 98;
+  assert(!inbound_correlation_matches(&probe));
+  s_exiting = true;
+  probe.correlation_id = 0;
+  assert(!queue_phone_probe(&probe));
+
+  puts("Watch storage, parser, UTF-8, Back navigation, menu, and handshake checks passed");
   return 0;
 }

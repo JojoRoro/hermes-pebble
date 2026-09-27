@@ -16,6 +16,8 @@ import io.rebble.pebblekit2.common.model.WatchIdentifier
 import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import java.io.Closeable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +51,8 @@ class PebbleBridge(
         ignoreUnknownKeys = true
     }
     private val activeWatchState = MutableStateFlow<Set<String>>(emptySet())
+    private val linkProbes = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<String>>()
+    private val probeMutex = Mutex()
     private val lastStatus = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     val activeWatches: StateFlow<Set<String>> = activeWatchState.asStateFlow()
@@ -70,7 +74,7 @@ class PebbleBridge(
         if (watch.isBlank()) return
         markActive(watch)
         lastStatus.keys.retainAll(activeWatchState.value)
-        launch { sendHandshake(watch) }
+        // The watch initiates the handshake. An unsolicited ACK used to race its request.
     }
 
     fun onAppClosed(watch: String) {
@@ -86,8 +90,7 @@ class PebbleBridge(
     suspend fun selectHost(packageName: String?) = sendMutex.withLock {
         picker.selectApp(packageName)
         DiagnosticLog.record("Pebble", "Host selection saved; reopen the watch app")
-        sender.close()
-        sender = DefaultPebbleSender(applicationContext)
+        resetSender()
         activeWatchState.value = emptySet()
         lastStatus.clear()
     }
@@ -103,15 +106,21 @@ class PebbleBridge(
         watches.forEach { watch ->
             val cacheKey = "$watch:${command.captureId ?: command.id}:${command.state}:${command.errorCategory}"
             if (lastStatus[watch] == cacheKey) return@forEach
-            lastStatus[watch] = cacheKey
-            sendStatus(watch, command)
+            if (sendStatus(watch, command)) lastStatus[watch] = cacheKey
         }
     }
 
-    suspend fun sendHandshake(watch: String, correlationId: Long = 0) {
+    suspend fun onHandshake(watch: String, message: WireMessage) {
+        if (sendHandshake(watch, message.transferId)) {
+            DiagnosticLog.record("Pebble", "Handshake reply delivered; probe correlation ${message.correlationId}")
+            linkProbes[message.correlationId]?.complete(watch)
+        }
+    }
+
+    suspend fun sendHandshake(watch: String, correlationId: Long): Boolean {
         val settings = settingsRepository.current()
         val payload = json.encodeToString(HandshakePayload(WireProtocol.VERSION))
-        sendTransfer(
+        return sendTransfer(
             watch = watch,
             kind = WireMessageKind.HANDSHAKE_ACK,
             correlationId = correlationId,
@@ -140,16 +149,16 @@ class PebbleBridge(
         )
     }
 
-    suspend fun sendStatus(watch: String, command: CommandItem) {
+    suspend fun sendStatus(watch: String, command: CommandItem): Boolean {
         val status = if (command.kind == CommandKind.WATCH_NOTE) WireStatus.NOTE_SAVED else command.state.toWireStatus()
         val error = command.errorCategory.toWireError()
         var flags = 0
         if (command.stopRequested) flags = flags or WireProtocol.FLAG_STOP_REQUESTED
         if (command.replayed) flags = flags or WireProtocol.FLAG_REPLAYED
-        sendTransfer(
+        return sendTransfer(
             watch = watch,
             kind = WireMessageKind.STATUS_UPDATE,
-            captureId = command.captureId ?: return,
+            captureId = command.captureId ?: return false,
             itemId = command.id,
             status = status.value,
             errorCode = error.value,
@@ -299,17 +308,82 @@ class PebbleBridge(
         )
     }
 
-    suspend fun testWatchLink(): String {
-        if (selectedHost() == null) return "Select the Pebble phone host first."
-        val watches = activeWatchState.value.toList()
-        if (watches.isEmpty()) return "No watch traffic received. Open Hermes on the watch and choose Reconnect. If no RX event appears, reinstall the finalized PBW and check companion access in the Pebble phone app."
-        watches.forEach { sendHandshake(it) }
-        return "Watch-link probe finished. Check TX HANDSHAKE_ACK in the event log for Success or the exact transport failure."
+    suspend fun testWatchLink(): String = probeMutex.withLock {
+        if (selectedHost() == null) return@withLock "Select the Pebble phone host first."
+        val probeId = transferId()
+        val reply = CompletableDeferred<String>()
+        linkProbes[probeId] = reply
+        try {
+            // Start can discover watches even if no listener callback has arrived yet.
+            val started = sendMutex.withLock {
+                callHost("Start watch app") { sender.startAppOnTheWatch(WireProtocol.APP_UUID, watches = null) }
+            }
+            if (started == null) return@withLock "Pebble host did not answer. Open the selected Pebble phone app and retry."
+            if (started.isEmpty()) return@withLock "The Pebble host reports no connected watches. Check its Bluetooth connection."
+            val watches = started.filterValues { it is TransmissionResult.Success }.keys
+            if (watches.isEmpty()) return@withLock "Could not open Hermes on the watch. Check the Start watch app result in the log and install the current PBW."
+            val configuration = settingsRepository.current()
+            val probe = OutgoingProtocolCodec.encode(
+                kind = WireMessageKind.HANDSHAKE_ACK,
+                transferId = probeId,
+                correlationId = 0,
+                generation = configuration.conversationGeneration,
+            ).single()
+            val sent = sendMutex.withLock {
+                callHost("Link probe") { sender.sendDataToPebble(WireProtocol.APP_UUID, probe, watches.toList()) }
+            }
+            if (sent?.values?.any { it is TransmissionResult.Success } != true) {
+                return@withLock "Probe delivery failed. Check the Link probe event: NoPermissions means companion access/PBW metadata; DifferentAppOpen means Hermes is not open."
+            }
+            // Receiving a transport ACK is insufficient: wait for the watch's correlated request
+            // AND successful delivery of our handshake reply. Never hold sendMutex while waiting.
+            val confirmed = withTimeoutOrNull(25_000L) { reply.await() }
+            if (confirmed == null) {
+                DiagnosticLog.record("Pebble", "Probe $probeId timed out: delivered, but no completed round trip")
+                "Probe reached the watch, but no round trip completed. Install the matching 0.1.2-or-newer PBW, return to its menu, and retry. Check RX and handshake TX events."
+            } else {
+                DiagnosticLog.record("Pebble", "Probe $probeId: round trip verified")
+                "Watch link verified in both directions. The watch received the handshake reply."
+            }
+        } finally {
+            linkProbes.remove(probeId)
+            reply.cancel()
+        }
+    }
+
+    /** PebbleKit close can throw if its service was never bound. Still replace the sender. */
+    private fun resetSender() {
+        try { sender.close() } catch (_: IllegalArgumentException) { }
+        sender = DefaultPebbleSender(applicationContext)
+    }
+
+    private suspend fun callHost(
+        label: String,
+        block: suspend () -> Map<WatchIdentifier, TransmissionResult>?,
+    ): Map<WatchIdentifier, TransmissionResult>? {
+        return try {
+            val results = withTimeoutOrNull(10_000L) { block() }
+            if (results == null) {
+                DiagnosticLog.record("Pebble", "$label: host unavailable or timed out; resetting binding")
+                resetSender()
+            } else if (results.isEmpty()) {
+                DiagnosticLog.record("Pebble", "$label: no connected watches")
+            } else {
+                results.values.forEach { DiagnosticLog.record("Pebble", "$label: ${it.javaClass.simpleName}") }
+            }
+            results
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            DiagnosticLog.record("Pebble", "$label: ${error.javaClass.simpleName}; resetting binding")
+            resetSender()
+            null
+        }
     }
 
     override fun close() {
         scope.cancel()
-        sender.close()
+        try { sender.close() } catch (_: IllegalArgumentException) { }
     }
 
     private suspend fun sendTransfer(
@@ -328,8 +402,8 @@ class PebbleBridge(
         generation: Long = 0,
         flags: Int = 0,
         payload: ByteArray = ByteArray(0),
-    ) {
-        if (watch !in activeWatchState.value) return
+    ): Boolean {
+        if (watch !in activeWatchState.value) return false
         val dictionaries = OutgoingProtocolCodec.encode(
             kind = kind,
             transferId = transferId(),
@@ -353,13 +427,14 @@ class PebbleBridge(
                 var attempt = 0
                 while (!delivered && attempt < MAX_TRANSMISSION_ATTEMPTS) {
                     try {
-                        val results = sender.sendDataToPebble(
-                            WireProtocol.APP_UUID,
-                            dictionary,
-                            watches = listOf(WatchIdentifier(watch)),
-                        )
+                        val results = callHost("TX ${kind.name}") {
+                            sender.sendDataToPebble(WireProtocol.APP_UUID, dictionary, listOf(WatchIdentifier(watch)))
+                        }
                         val result = results?.get(WatchIdentifier(watch))
                         DiagnosticLog.record("Pebble", "TX ${kind.name}, attempt ${attempt + 1}: ${result?.javaClass?.simpleName ?: "no host response"}")
+                        if (result is TransmissionResult.FailedNoPermissions ||
+                            result is TransmissionResult.FailedDifferentAppOpen ||
+                            result is TransmissionResult.FailedWatchNotConnected) return false
                         delivered = when (result) {
                             is TransmissionResult.Success -> true
                             null,
@@ -382,9 +457,10 @@ class PebbleBridge(
                         attempt += 1
                     }
                 }
-                if (!delivered) return
+                if (!delivered) return false
             }
         }
+        return true
     }
 
     private fun boundedJsonPreview(text: String): String {

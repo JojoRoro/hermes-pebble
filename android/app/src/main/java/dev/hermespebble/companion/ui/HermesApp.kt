@@ -422,8 +422,8 @@ private fun DiagnosticsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         HostPicker(state, viewModel)
-        OutlinedButton(onClick = viewModel::testWatchLink, enabled = !state.busy) { Text("Test watch link") }
-        Text("Open Hermes on the watch and select Reconnect. RX means the phone received it; TX Success means the watch acknowledged the reply. No RX: check host selection and install the finalized PBW.")
+        OutlinedButton(onClick = viewModel::testWatchLink, enabled = !state.busy) { Text("Open watch app & test link") }
+        Text("This opens Hermes on connected watches and checks a complete round trip. Use the matching PBW from this release. RX means the phone received a message; TX Success alone is only a transport acknowledgment.")
         OutlinedButton(onClick = viewModel::testConnection, enabled = state.connectionReady && !state.busy) {
             Text("Test Hermes API (read only)")
         }

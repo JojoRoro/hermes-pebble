@@ -139,17 +139,17 @@ static TextLayer *s_body_text_layer;
 static TextLayer *s_action_text_layer;
 static bool s_app_message_open;
 static bool s_handshake_ready;
-static bool s_click_guard;
+static bool s_exiting;
+static bool s_stay_on_menu;
+static uint32_t s_phone_probe_id;
 static bool s_storage_corrupt;
 static bool s_identity_valid;
 static bool s_discard_in_progress;
-static bool s_menu_dispatching;
 static uint8_t s_screen;
 static uint8_t s_previous_screen;
 static uint8_t s_menu_kind;
 static uint8_t s_capture_mode;
 static uint8_t s_dictation_mode;
-static uint8_t s_click_guard_ticks;
 static uint8_t s_visible_status;
 static uint8_t s_visible_error;
 static uint8_t s_visible_flags;
@@ -489,6 +489,8 @@ static void build_menu(const char *title, const char *const *labels, uint16_t co
 }
 
 static void ui_rebuild(void) {
+  if (s_exiting) return;
+  if (s_stay_on_menu) s_screen = HERMES_SCREEN_MENU;
   ui_destroy_content();
   switch (s_screen) {
     case HERMES_SCREEN_MENU:
@@ -551,7 +553,7 @@ static void ui_show_menu(void) {
 
 static void ui_show_review(void) {
   snprintf(s_body_text, sizeof(s_body_text), "%s", s_capture_text);
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: actions", HERMES_SCREEN_REVIEW);
+  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_REVIEW);
 }
 
 static void ui_show_status(void) {
@@ -625,7 +627,7 @@ static void ui_show_recovery(void) {
       snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nLast error: %s", error_text(s_visible_error));
     }
   }
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: stay", HERMES_SCREEN_RECOVERY);
+  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_RECOVERY);
 }
 
 static void ui_show_dictation(void) {
@@ -717,15 +719,10 @@ static void ui_show_actions(void) {
 static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selection) {
   (void)context;
   (void)menu_layer;
-  if (s_click_guard && !s_menu_dispatching) {
-    return;
-  }
   if (selection == NULL) {
     return;
   }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
+  s_stay_on_menu = false;
   if (s_menu_kind == HERMES_MENU_MAIN) {
     if (selection->row == s_menu_count - 1u) {
       start_handshake();
@@ -790,13 +787,7 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
 static void action_menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selection) {
   (void)context;
   (void)menu_layer;
-  if (s_click_guard && !s_menu_dispatching) {
-    return;
-  }
   if (selection != NULL && selection->row < s_action_count) {
-    s_click_guard = true;
-    s_click_guard_ticks = 1u;
-    timer_ensure();
     ui_action(s_action_options[selection->row]);
   }
 }
@@ -823,14 +814,9 @@ static void ui_scroll(int delta) {
 }
 
 static void ui_select_click(ClickRecognizerRef recognizer, void *context) {
+  s_stay_on_menu = false;
   (void)recognizer;
   (void)context;
-  if (s_click_guard) {
-    return;
-  }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
   if (s_screen == HERMES_SCREEN_ERROR) {
     ui_action(HERMES_ACTION_MENU);
   } else if (s_screen != HERMES_SCREEN_MENU && s_screen != HERMES_SCREEN_RECENT && s_screen != HERMES_SCREEN_ACTIONS) {
@@ -842,24 +828,12 @@ static void ui_select_click(ClickRecognizerRef recognizer, void *context) {
 static void ui_up_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  if (s_click_guard) {
-    return;
-  }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
   ui_scroll(-SCROLL_STEP);
 }
 
 static void ui_down_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  if (s_click_guard) {
-    return;
-  }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
   ui_scroll(SCROLL_STEP);
 }
 
@@ -870,7 +844,7 @@ static uint8_t menu_row_count(void) {
   if (s_menu_kind == HERMES_MENU_RECENT) {
     return s_recent_count;
   }
-  return s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE ? 4u : 5u;
+  return (uint8_t)s_menu_count;
 }
 
 static void ui_menu_select_click(ClickRecognizerRef recognizer, void *context) {
@@ -878,21 +852,12 @@ static void ui_menu_select_click(ClickRecognizerRef recognizer, void *context) {
   MenuIndex selection;
   int16_t selected;
   (void)context;
-  if (s_click_guard) {
-    return;
-  }
   if (s_menu_layer == NULL) {
     if (s_screen == HERMES_SCREEN_RECENT) {
-      s_click_guard = true;
-      s_click_guard_ticks = 1u;
-      timer_ensure();
       start_fetch_recent();
     }
     return;
   }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
   selected = (int16_t)menu_layer_get_selected_index(s_menu_layer).row;
   if (selected < 0) {
     return;
@@ -900,25 +865,20 @@ static void ui_menu_select_click(ClickRecognizerRef recognizer, void *context) {
   memset(&selection, 0, sizeof(selection));
   selection.section = 0u;
   selection.row = (uint16_t)selected;
-  s_menu_dispatching = true;
   if (s_menu_kind == HERMES_MENU_ACTIONS) {
     action_menu_select(NULL, s_menu_layer, &selection);
   } else {
     menu_select(NULL, s_menu_layer, &selection);
   }
-  s_menu_dispatching = false;
 }
 
 static void ui_menu_move_click(int delta) {
   int16_t selected;
   int16_t next;
   uint8_t count;
-  if (s_click_guard || s_menu_layer == NULL) {
+  if (s_menu_layer == NULL) {
     return;
   }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
   count = menu_row_count();
   if (count == 0u) {
     return;
@@ -949,60 +909,34 @@ static void ui_menu_down_click(ClickRecognizerRef recognizer, void *context) {
   ui_menu_move_click(1);
 }
 
+/* Back always moves toward the system launcher; pending storage is never cleared. */
+static bool navigation_back(void) {
+  s_outbound.active = false;
+  s_outbound.phase = HERMES_OUT_IDLE;
+  s_inbound.active = false;
+  s_phone_probe_id = 0u;
+  if (s_screen == HERMES_SCREEN_MENU) {
+    s_exiting = true;
+    return true;
+  }
+  if (s_screen == HERMES_SCREEN_ACTIONS && s_previous_screen != HERMES_SCREEN_ACTIONS &&
+      s_previous_screen <= HERMES_SCREEN_CONNECTING) {
+    s_screen = s_previous_screen;
+  } else {
+    s_screen = HERMES_SCREEN_MENU;
+  }
+  s_stay_on_menu = s_screen == HERMES_SCREEN_MENU;
+  return false;
+}
+
 static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  if (s_screen == HERMES_SCREEN_MENU) {
-    window_stack_pop(true);
-    return;
-  }
-  if (s_click_guard) {
-    return;
-  }
-  s_click_guard = true;
-  s_click_guard_ticks = 1u;
-  timer_ensure();
-  if (s_screen == HERMES_SCREEN_ACTIONS) {
-    switch (s_previous_screen) {
-      case HERMES_SCREEN_REVIEW:
-        s_screen = HERMES_SCREEN_REVIEW;
-        ui_rebuild();
-        break;
-      case HERMES_SCREEN_STATUS:
-        s_screen = HERMES_SCREEN_STATUS;
-        ui_rebuild();
-        break;
-      case HERMES_SCREEN_RESULT:
-        s_screen = HERMES_SCREEN_RESULT;
-        ui_rebuild();
-        break;
-      case HERMES_SCREEN_RECOVERY:
-        s_screen = HERMES_SCREEN_RECOVERY;
-        ui_rebuild();
-        break;
-      case HERMES_SCREEN_DICTATION:
-        s_screen = HERMES_SCREEN_DICTATION;
-        ui_rebuild();
-        break;
-      case HERMES_SCREEN_ERROR:
-        ui_action(HERMES_ACTION_MENU);
-        break;
-      default:
-        ui_action(HERMES_ACTION_MENU);
-        break;
-    }
-  } else if (s_screen == HERMES_SCREEN_DICTATION) {
-    stop_dictation();
-    ui_action(HERMES_ACTION_MENU);
-  } else if (s_screen == HERMES_SCREEN_RECOVERY) {
-    ui_rebuild();
-  } else {
-    if (s_pending.operation != HERMES_PENDING_NONE || s_storage_corrupt) {
-      s_screen = HERMES_SCREEN_RECOVERY;
-    } else {
-      ui_action(HERMES_ACTION_MENU);
-    }
-  }
+  stop_dictation();
+  bool exit_app = navigation_back();
+  timer_maybe_cancel();
+  if (exit_app) window_stack_pop(false);
+  else ui_rebuild();
 }
 
 static void ui_click_config(void *context) {
@@ -1073,11 +1007,8 @@ static void ui_action(uint8_t action) {
       start_fetch_recent();
       break;
     case HERMES_ACTION_MENU:
-      if (s_pending.operation != HERMES_PENDING_NONE || s_storage_corrupt) {
-        s_screen = HERMES_SCREEN_RECOVERY;
-      } else {
-        s_screen = HERMES_SCREEN_MENU;
-      }
+      s_stay_on_menu = true;
+      s_screen = HERMES_SCREEN_MENU;
       ui_rebuild();
       break;
     case HERMES_ACTION_RESUME:
@@ -1501,7 +1432,7 @@ static bool storage_save_pending(const PendingCapture *pending) {
   uint8_t chunk_lengths[HERMES_MAX_CHUNKS] = {0};
   uint16_t offsets[HERMES_MAX_CHUNKS];
   uint8_t encoded[HERMES_STORAGE_META_SIZE];
-  PendingCapture stored;
+  static PendingCapture stored;
   uint8_t count;
   uint8_t i;
   if (pending == NULL || pending->length == 0u || pending->length > HERMES_MAX_DICTATION_BYTES || !utf8_valid((const uint8_t *)pending->text, pending->length)) {
@@ -1545,7 +1476,7 @@ static bool storage_save_pending(const PendingCapture *pending) {
 
 static bool storage_load_pending(void) {
   uint8_t encoded[HERMES_STORAGE_META_SIZE];
-  PendingCapture loaded;
+  static PendingCapture loaded;
   uint8_t count;
   uint8_t i;
   uint32_t expected_crc;
@@ -1670,21 +1601,20 @@ static void timer_ensure(void) {
 }
 
 static void timer_maybe_cancel(void) {
-  if (!s_outbound.active && s_click_guard_ticks == 0u && !s_inbound.active) {
+  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u) {
     if (s_timer != NULL) app_timer_cancel(s_timer);
     s_timer = NULL;
-    s_click_guard = false;
   }
 }
 
 static void timer_tick(void *context) {
   (void)context;
   s_timer = NULL;
-  if (s_click_guard_ticks > 0u) {
-    s_click_guard_ticks--;
-    if (s_click_guard_ticks == 0u) {
-      s_click_guard = false;
-    }
+  if (s_exiting) return;
+  if (s_phone_probe_id != 0u && !s_outbound.active) {
+    outbound_start(HERMES_KIND_HANDSHAKE, HERMES_KIND_HANDSHAKE_ACK, next_transfer_id(),
+      0u, s_generation, 0u, 0u, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE,
+      HERMES_ITEM_KIND_NONE, HERMES_STATUS_NONE, 0u, 0u, NULL, 0u);
   }
   if (s_inbound.active) {
     s_inbound_elapsed_ticks++;
@@ -1719,7 +1649,7 @@ static void timer_tick(void *context) {
       }
     }
   }
-  if (s_outbound.active || s_click_guard_ticks > 0u || s_inbound.active) timer_ensure();
+  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u) timer_ensure();
 }
 
 static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfer_id, uint32_t capture_id, uint32_t generation, uint32_t item_id, uint32_t page_offset, uint32_t total_bytes, uint8_t status, uint8_t error_code, uint8_t item_kind, uint8_t item_state, uint8_t page_count, uint8_t flags, const uint8_t *payload, uint16_t length) {
@@ -1738,6 +1668,10 @@ static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfe
   s_outbound.kind = kind;
   s_outbound.expected_kind = expected_kind;
   s_outbound.transfer_id = transfer_id;
+  if (kind == HERMES_KIND_HANDSHAKE) {
+    s_outbound.correlation_id = s_phone_probe_id;
+    s_phone_probe_id = 0u;
+  }
   s_outbound.capture_id = capture_id;
   s_outbound.generation = generation;
   s_outbound.item_id = item_id;
@@ -1900,6 +1834,11 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
   (void)context;
   uint32_t transfer_id = 0;
   if (!read_u32(iterator, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || transfer_id != s_outbound.transfer_id) return;
+  if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
+    outbound_finish();
+    timer_ensure();
+    return;
+  }
   if (s_outbound.next_chunk + 1u < s_outbound.chunk_count) {
     s_outbound.next_chunk++;
     s_outbound.phase = HERMES_OUT_SENDING;
@@ -1917,7 +1856,12 @@ static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResu
   uint32_t transfer_id = 0;
   if (!read_u32(iterator, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || transfer_id != s_outbound.transfer_id) return;
   if (s_outbound.active) {
-    outbound_schedule_retry();
+    if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
+      outbound_finish();
+      timer_ensure();
+    } else {
+      outbound_schedule_retry();
+    }
   }
 }
 
@@ -1995,8 +1939,21 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
 }
 
 static void start_handshake(void) {
-  if (!s_app_message_open || s_outbound.active) {
+  if (!s_app_message_open) {
+    ui_show_error(HERMES_ERROR_WATCH_UNAVAILABLE, "Watch messaging is unavailable. Reopen Hermes.");
     return;
+  }
+  if (s_outbound.active) {
+    if (s_outbound.kind != HERMES_KIND_HANDSHAKE) {
+      ui_show_error(HERMES_ERROR_WATCH_UNAVAILABLE, "A transfer is in progress. Back returns to the menu and keeps your saved draft.");
+      return;
+    }
+    if (s_outbound.phase == HERMES_OUT_WAIT_CHUNK) {
+      s_screen = HERMES_SCREEN_CONNECTING;
+      ui_rebuild();
+      return;
+    }
+    outbound_finish();
   }
   s_handshake_ready = false;
   s_screen = HERMES_SCREEN_CONNECTING;
@@ -2005,7 +1962,7 @@ static void start_handshake(void) {
 }
 
 static void prepare_capture(uint8_t operation) {
-  PendingCapture candidate;
+  static PendingCapture candidate;
   uint32_t capture_id;
   uint8_t kind;
   uint8_t expected_kind;
@@ -2380,30 +2337,26 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
 }
 
 static void process_inbound_transfer(void) {
-  uint8_t payload[HERMES_MAX_TRANSFER_BYTES];
   uint16_t offset = 0u;
   uint8_t i;
-  InboundTransfer complete;
-  if (!s_inbound.active) {
-    return;
-  }
+  if (!s_inbound.active) return;
+  // App callbacks run serially. Reassemble in the existing global buffer: a
+  // local payload plus a full InboundTransfer copy overflows the watch stack.
   for (i = 0u; i < s_inbound.chunk_count; i++) {
     if (offset > HERMES_MAX_TRANSFER_BYTES || s_inbound.chunk_lengths[i] > HERMES_MAX_TRANSFER_BYTES - offset) {
       inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The reassembled phone transfer exceeded its bound.");
       return;
     }
-    memcpy(payload + offset, s_inbound.chunks[i], s_inbound.chunk_lengths[i]);
+    memcpy(s_inbound.payload + offset, s_inbound.chunks[i], s_inbound.chunk_lengths[i]);
     offset = (uint16_t)(offset + s_inbound.chunk_lengths[i]);
   }
-  if (offset != s_inbound.total_length || !utf8_valid(payload, offset)) {
+  if (offset != s_inbound.total_length || !utf8_valid(s_inbound.payload, offset)) {
     inbound_error(HERMES_ERROR_MALFORMED, "The phone transfer was not valid UTF-8 text.");
     return;
   }
-  complete = s_inbound;
-  memcpy(complete.payload, payload, offset);
-  complete.payload_length = offset;
+  s_inbound.payload_length = offset;
   s_inbound.active = false;
-  process_phone_message(&complete);
+  process_phone_message(&s_inbound);
 }
 
 static bool inbound_correlation_matches(const InboundTransfer *message) {
@@ -2437,7 +2390,25 @@ static bool inbound_correlation_matches(const InboundTransfer *message) {
   return message->kind == s_outbound.expected_kind;
 }
 
+static bool queue_phone_probe(const InboundTransfer *message) {
+  if (s_exiting || message->kind != HERMES_KIND_HANDSHAKE_ACK ||
+      message->correlation_id != 0u || message->error_code != HERMES_ERROR_NONE ||
+      message->transfer_id == 0u) return false;
+  s_phone_probe_id = message->transfer_id;
+  if (s_outbound.active && s_outbound.kind == HERMES_KIND_HANDSHAKE &&
+      s_outbound.phase != HERMES_OUT_WAIT_CHUNK) {
+    s_outbound.active = false;
+    s_outbound.phase = HERMES_OUT_IDLE;
+  }
+  return true;
+}
+
 static void process_phone_message(const InboundTransfer *message) {
+  if (s_exiting) return;
+  if (queue_phone_probe(message)) {
+    timer_ensure();
+    return;
+  }
   if (!inbound_correlation_matches(message)) {
     return;
   }
@@ -2455,10 +2426,7 @@ static void process_phone_message(const InboundTransfer *message) {
       }
       s_handshake_ready = true;
       outbound_finish();
-      if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
-        s_screen = HERMES_SCREEN_RECOVERY;
-        ui_rebuild();
-      } else if (s_screen != HERMES_SCREEN_DICTATION && s_screen != HERMES_SCREEN_REVIEW && s_screen != HERMES_SCREEN_ERROR) {
+      if (s_screen == HERMES_SCREEN_CONNECTING || s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_ERROR) {
         s_screen = HERMES_SCREEN_MENU;
         ui_rebuild();
       }
@@ -3048,8 +3016,8 @@ static bool parse_result_payload(const char *json, uint16_t length) {
   uint32_t item_id;
   uint32_t state;
   bool more = false;
-  char input[HERMES_MAX_DICTATION_BYTES + 1u];
-  char output[UI_RESULT_BUFFER_SIZE + 1u];
+  static char input[HERMES_MAX_DICTATION_BYTES + 1u];
+  static char output[UI_RESULT_BUFFER_SIZE + 1u];
   if (!json_object_span(json, length, 0u, &begin, &end)) {
     return false;
   }

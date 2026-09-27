@@ -2,6 +2,15 @@
 
 The initial implementation review and CI build passed on 26 September 2026. The first installed version subsequently failed on the user's phone/watch: watch messages timed out and API requests reported invalid responses. Live compatibility is therefore unresolved, rather than assumed from the offline checks.
 
+## 0.1.2 watch link and navigation verification (27 September 2026)
+
+- Reproduced an emulator app fault on the first phone handshake reply. Removed a multi-kilobyte stack copy from inbound reassembly and moved large scratch buffers off the stack. The build now rejects individual stack frames larger than 768 bytes.
+- Repeated the startup handshake and a correlated phone-initiated probe successfully in the emery emulator. Visually checked LINKED, selection of the previously unreachable Reconnect row, and return to the system home screen after two rapid Back presses while a reply was pending.
+- Host regression checks cover Back from every screen, preservation of saved drafts, menu row counts, probe correlation, and preserving in-flight transfers. The full offline suite passes.
+- The SDK 4.9.169 emery build succeeds with a 42,328-byte RAM footprint and 4,092 bytes of resources. Android `:app:assembleDebug` passes for version 0.1.2 / code 3.
+- Android diagnostics now start the watch app without requiring prior listener callbacks, bound host operations with timeouts, reset stale bindings, and write safe event metadata to logcat under `HermesLink`.
+- Emulator transport uses a simulated phone peer; physical Pebble host routing and live NetBird/Hermes requests remain unverified.
+
 ## 0.1.1 diagnostics and watch UI verification (27 September 2026)
 
 - The complete offline suite passes, including new capability fixtures without idempotency metadata, rejection of malformed metadata, optional legacy replay flags, precise HTML/schema failures, and exclusion of fixture credentials and bodies from diagnostic events.

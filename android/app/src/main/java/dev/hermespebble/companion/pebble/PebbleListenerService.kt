@@ -103,7 +103,7 @@ class PebbleListenerService : BasePebbleListenerService() {
                     ReceiveResult.Ack
                 }
                 WireMessageKind.HANDSHAKE -> {
-                    bridge.launch { bridge.sendHandshake(watch, message.transferId) }
+                    bridge.launch { bridge.onHandshake(watch, message) }
                     ReceiveResult.Ack
                 }
                 WireMessageKind.DISCARD_CAPTURE -> {

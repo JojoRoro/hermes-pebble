@@ -32,3 +32,9 @@ The Kotlin library directory must contain these Maven artifacts (no repository s
 `ProtocolCheck.kt` covers chunk retry/reassembly and idempotency deadlines. `NetworkCheck.kt` covers short HTTP responses, headers, URL prefixes, replayed terminal runs, history metadata, optional legacy idempotency/replay metadata, precise HTML/schema diagnostics, secret exclusion from diagnostic events, and rejection paths. `watch_core_test.c` covers UTF-8 boundaries, JSON parsing, pending-record recovery, checksum failure, and exact persistence return values. `test_finalize_pbw.py` covers metadata-only PBW transformations and failure cleanup.
 
 These checks do **not** compile the full Android app, run Room's processor, execute WorkManager, or validate Keystore/Compose behavior. The manual Android workflow, CloudPebble build, and real-device acceptance matrix remain in [validation.md](../docs/validation.md).
+
+## Emulator smoke
+
+With the Pebble SDK installed, build using `pebble build`. Run `tests/watch_emulator_smoke.py --emulator emery` using the Python environment that contains `pebble-tool`, `libpebble2`, and Pillow; put the SDK toolchain directory on PATH so QEMU can start. The script installs `build/hermes-pebble.pbw` into the emulator and acts as a phone peer. Optional `--pbw` and `--output` arguments select the bundle and screenshot directory.
+
+It exercises the startup reply, a correlated phone probe, five rapid Down presses to Reconnect, and two rapid Back presses while awaiting a reply. It fails on missing handshakes or logged app faults. Inspect the screenshots in `build/watch-smoke`: linked screens should say LINKED, the fifth Down should select Reconnect, and the final screenshot should show the system home screen. This does not exercise Android's Bluetooth/host binding.

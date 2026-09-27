@@ -73,6 +73,8 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 
 A phone reply is stale and ignored when its `CorrelationId` does not match the current screen's outstanding transfer. A status for an older capture never replaces a newer visible screen.
 
+For phone-initiated diagnostics, a successful `HANDSHAKE_ACK` with zero correlation and a nonzero transfer ID is a probe invitation, not proof of connectivity. The watch queues a `HANDSHAKE` correlated to that probe ID, preserving any unrelated transfer. The phone replies with an ACK correlated to the watch handshake ID. The diagnostic succeeds only after receiving that request and successfully delivering its reply. This extension is supported by watch version 0.1.2 onward.
+
 ## Statuses and errors
 
 | Status | Display meaning |
