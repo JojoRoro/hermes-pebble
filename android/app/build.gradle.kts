@@ -20,16 +20,31 @@ android {
         applicationId = "dev.hermespebble.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
     }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    val signingStore = providers.environmentVariable("HERMES_KEYSTORE_FILE").orNull
+    signingConfigs {
+        if (signingStore != null) {
+            create("distribution") {
+                storeFile = file(signingStore)
+                storePassword = providers.environmentVariable("HERMES_KEYSTORE_PASSWORD").get()
+                keyAlias = "hermes"
+                keyPassword = storePassword
+                storeType = "PKCS12"
+            }
+        }
+    }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+            if (signingStore != null) signingConfig = signingConfigs.getByName("distribution")
+        }
     }
 }
 

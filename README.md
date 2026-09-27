@@ -71,7 +71,9 @@ Download `hermes-pebble-debug.apk` from the [latest GitHub Release](https://gith
 
 The Android workflow builds version tags matching `v*` and publishes the APK as a GitHub Release asset. Manual runs from the Actions UI upload the `hermes-pt2-android-debug` artifact. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. The workflow does not compile a watch app, call Hermes, or need any service secret. See [release instructions](docs/android-setup.md#publishing-a-version) for creating a new version.
 
-The first artifact is a debug APK for sideloading, not a Play Store release. For seamless upgrades, use one stable signing key for the application ID `dev.hermespebble.companion`. Do not commit a keystore or private key. A disposable CI debug key can change between runners; configure an optional stable signing keystore through protected CI secrets in a later signing setup, and never commit it or print its values.
+Starting with v0.1.3, CI publishes `hermes-pebble.apk`, a release APK signed with one permanent key for `dev.hermespebble.companion`. It restores the PKCS12 key from `ANDROID_SIGNING_KEY_BASE64` and its password from `ANDROID_SIGNING_PASSWORD` repository Actions secrets. Missing secrets fail the build; there is no temporary-key fallback. The uploaded APK certificate must match `.github/android-signing-cert.sha256`. Local debug builds still use a developer debug key and cannot replace an installed release build.
+
+Versions through v0.1.2 used disposable CI debug keys. Their private keys were not retained, so migrating requires a one-time uninstall/reinstall. Uninstalling clears local settings, credentials, notes, and history: save anything needed first. Subsequent releases with the permanent key and increasing version codes support in-place updates. See [Android signing maintenance](docs/android-signing.md).
 
 ### Pebble PBW
 

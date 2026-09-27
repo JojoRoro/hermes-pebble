@@ -37,14 +37,38 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon :app:assembleDebug
+      - name: Restore permanent signing key
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          HERMES_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+        run: |
+          test -n "$SIGNING_KEY_BASE64" || { echo "Missing permanent signing key" >&2; exit 1; }
+          test -n "$HERMES_KEYSTORE_PASSWORD" || { echo "Missing signing password" >&2; exit 1; }
+          umask 077
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/hermes-release.p12"
+
+      - name: Build signed release APK
+        env:
+          HERMES_KEYSTORE_FILE: ${{ runner.temp }}/hermes-release.p12
+          HERMES_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify release signature
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/apk-signature.txt"
+          expected=$(tr -d '[:space:]' < ../.github/android-signing-cert.sha256)
+          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt")
+          test "$actual" = "$expected" || { echo "Unexpected APK signing certificate" >&2; exit 1; }
+
+      - name: Remove signing key from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/hermes-release.p12"
 
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: hermes-pt2-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: hermes-pt2-android-release
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,24 +91,26 @@ jobs:
     steps:
       - name: Download APK
         run: |
-          gh run download "$GITHUB_RUN_ID" --name hermes-pt2-android-debug --dir release
-          mv release/app-debug.apk release/hermes-pebble-debug.apk
+          gh run download "$GITHUB_RUN_ID" --name hermes-pt2-android-release --dir release
+          mv release/app-release.apk release/hermes-pebble.apk
 
       - name: Publish GitHub Release
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release/hermes-pebble-debug.apk --clobber
+            gh release upload "$RELEASE_TAG" release/hermes-pebble.apk --clobber
           else
             cat > release-notes.md <<'EOF'
-          Download `hermes-pebble-debug.apk` below and install it on your Android phone.
+          Download `hermes-pebble.apk` below and install it on your Android phone.
 
-          This is a debug build for sideloading. Its CI-generated signing key can change between builds, so updates over an existing installation are not guaranteed.
+          This sideloadable release uses the permanent signing key introduced in v0.1.3. Future releases retain this signature for in-place updates.
+
+          Moving from v0.1.2 or earlier requires a one-time uninstall/reinstall because those builds used disposable signing keys. Uninstalling clears local settings, credentials, notes, and history; save anything needed first.
           EOF
             release_flags=()
             if [[ "$RELEASE_TAG" == *-* ]]; then
               release_flags+=(--prerelease)
             fi
-            gh release create "$RELEASE_TAG" release/hermes-pebble-debug.apk \
+            gh release create "$RELEASE_TAG" release/hermes-pebble.apk \
               --verify-tag --title "Hermes Pebble $RELEASE_TAG" \
               --notes-file release-notes.md --generate-notes "${release_flags[@]}"
           fi

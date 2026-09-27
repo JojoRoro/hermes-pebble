@@ -2,6 +2,13 @@
 
 The initial implementation review and CI build passed on 26 September 2026. The first installed version subsequently failed on the user's phone/watch: watch messages timed out and API requests reported invalid responses. Live compatibility is therefore unresolved, rather than assumed from the offline checks.
 
+## 0.1.3 permanent signing validation (27 September 2026)
+
+- Local `:app:assembleRelease` passed, including release lint and signing, with version 0.1.3 / code 4. `apksigner verify` passed; the APK certificate matches the pinned public SHA-256 fingerprint and the manifest is not debuggable.
+- Actionlint 1.7.12 and the configuration/finalizer checks passed. The matching emery PBW builds and finalizes successfully; watch behavior is unchanged from 0.1.2.
+- The new workflow restores a permanent key from repository Actions secrets, fails if signing material is missing, checks the APK fingerprint, and removes the temporary key before upload. The permanent key and password were provisioned as repository Actions secrets with explicit user approval.
+- The earlier CI debug private keys were not retained. Migration requires one uninstall/reinstall, which clears local app data. Subsequent releases must retain this key and increase the version code.
+
 ## 0.1.2 watch link and navigation verification (27 September 2026)
 
 - Reproduced an emulator app fault on the first phone handshake reply. Removed a multi-kilobyte stack copy from inbound reassembly and moved large scratch buffers off the stack. The build now rejects individual stack frames larger than 768 bytes.

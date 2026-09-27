@@ -24,3 +24,6 @@ id_ed25519
 
 # Pebble Waf local build state
 /.lock-waf_*
+
+# Private Android release signing backup
+/.signing/
