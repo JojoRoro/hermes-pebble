@@ -14,7 +14,7 @@
 #define UI_RECENT_LABEL_SIZE 128u
 #define UI_RESULT_BUFFER_SIZE 768u
 #define SCROLL_STEP 48u
-#define MAX_TEXT_HEIGHT 1800u
+#define MAX_TEXT_HEIGHT 30000u
 
 #define HERMES_OUT_IDLE 0u
 #define HERMES_OUT_SENDING 1u
@@ -133,6 +133,8 @@ typedef struct {
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 static ScrollLayer *s_scroll_layer;
+static TextLayer *s_header_layer;
+static char s_header_text[80];
 static TextLayer *s_body_text_layer;
 static TextLayer *s_action_text_layer;
 static bool s_app_message_open;
@@ -273,7 +275,6 @@ static uint32_t mix_capture_id(uint32_t counter);
 static const char *status_text(uint8_t status);
 static const char *error_text(uint32_t code);
 static const char *dictation_failure_text(int status);
-static uint16_t estimate_text_height(const char *text);
 static void set_body_text(const char *text);
 static void build_menu(const char *title, const char *const *labels, uint16_t count, uint8_t menu_kind);
 static void add_scroll_content(const char *body, const char *actions, uint8_t screen);
@@ -300,6 +301,10 @@ static void ui_window_unload(Window *window) {
 }
 
 static void ui_destroy_content(void) {
+  if (s_header_layer != NULL) {
+    text_layer_destroy(s_header_layer);
+    s_header_layer = NULL;
+  }
   if (s_body_text_layer != NULL) {
     text_layer_destroy(s_body_text_layer);
     s_body_text_layer = NULL;
@@ -333,32 +338,33 @@ static void set_body_text(const char *text) {
   s_body_text[length] = '\0';
 }
 
-static uint16_t estimate_text_height(const char *text) {
-  uint16_t lines = 1u;
-  uint16_t columns = 0u;
-  size_t i;
-  size_t length = strlen(text);
-  for (i = 0u; i < length; i++) {
-    if (text[i] == '\n') {
-      if (columns > 0u) {
-        lines++;
-      }
-      columns = 0u;
-    } else if ((text[i] & 0xc0u) != 0x80u) {
-      columns++;
-      if (columns >= 22u) {
-        lines++;
-        columns = 0u;
-      }
-    }
+/* Shared chrome keeps navigation and phone-link state visible on every screen. */
+static void ui_add_header(const char *title) {
+  Layer *root = window_get_root_layer(s_window);
+  GRect bounds = layer_get_bounds(root);
+  snprintf(s_header_text, sizeof(s_header_text), "%s  /  %s", title,
+           s_handshake_ready ? "LINKED" : "OFFLINE");
+  s_header_layer = text_layer_create(GRect(0, 0, bounds.size.w, 38));
+  text_layer_set_background_color(s_header_layer, GColorBlack);
+  text_layer_set_text_color(s_header_layer, GColorWhite);
+  text_layer_set_font(s_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_header_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_header_layer, s_header_text);
+  layer_add_child(root, text_layer_get_layer(s_header_layer));
+}
+
+static const char *ui_screen_title(uint8_t screen) {
+  switch (screen) {
+    case HERMES_SCREEN_REVIEW: return "Review";
+    case HERMES_SCREEN_STATUS: return "Request";
+    case HERMES_SCREEN_RESULT: return "Answer";
+    case HERMES_SCREEN_RECOVERY: return "Saved draft";
+    case HERMES_SCREEN_DICTATION: return "Dictation";
+    case HERMES_SCREEN_CONNECTING: return "Connect";
+    case HERMES_SCREEN_ERROR: return "Needs attention";
+    case HERMES_SCREEN_RECENT: return "Recent";
+    default: return "Hermes";
   }
-  if (columns > 0u && lines < UINT16_MAX) {
-    lines++;
-  }
-  if (lines > 100u) {
-    lines = 100u;
-  }
-  return (uint16_t)(lines * 18u + 12u > MAX_TEXT_HEIGHT ? MAX_TEXT_HEIGHT : lines * 18u + 12u);
 }
 
 static void add_scroll_content(const char *body, const char *actions, uint8_t screen) {
@@ -376,22 +382,28 @@ static void add_scroll_content(const char *body, const char *actions, uint8_t sc
   }
   root_layer = window_get_root_layer(s_window);
   bounds = layer_get_bounds(root_layer);
-  view_height = bounds.size.h > 34 ? (uint16_t)(bounds.size.h - 34) : bounds.size.h;
-  content_height = estimate_text_height(body);
+  view_height = bounds.size.h > 66 ? (uint16_t)(bounds.size.h - 66) : bounds.size.h;
+  GSize measured = graphics_text_layout_get_content_size(body,
+      fonts_get_system_font(FONT_KEY_GOTHIC_24), GRect(0, 0, bounds.size.w - 16, MAX_TEXT_HEIGHT),
+      GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  content_height = measured.h + 12;
   if (content_height < view_height) {
     content_height = view_height;
   }
-  scroll_frame = GRect(0, 0, bounds.size.w, view_height);
+  scroll_frame = GRect(0, 40, bounds.size.w, view_height);
   content_size = GSize(bounds.size.w, content_height);
   ui_destroy_content();
+  ui_add_header(ui_screen_title(screen));
   s_scroll_layer = scroll_layer_create(scroll_frame);
-  s_body_text_layer = text_layer_create(GRect(4, 0, bounds.size.w > 8 ? bounds.size.w - 8 : bounds.size.w, content_height));
+  s_body_text_layer = text_layer_create(GRect(8, 0, bounds.size.w - 16, content_height));
+  text_layer_set_font(s_body_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+  text_layer_set_overflow_mode(s_body_text_layer, GTextOverflowModeWordWrap);
   text_layer_set_text(s_body_text_layer, body);
   text_layer_set_text_alignment(s_body_text_layer, GTextAlignmentLeft);
   layer_add_child(scroll_layer_get_layer(s_scroll_layer), text_layer_get_layer(s_body_text_layer));
   scroll_layer_set_content_size(s_scroll_layer, content_size);
   scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, 0), false);
-  action_frame = GRect(0, bounds.size.h > 30 ? bounds.size.h - 30 : 0, bounds.size.w, 30u);
+  action_frame = GRect(0, bounds.size.h - 24, bounds.size.w, 24);
   s_action_text_layer = text_layer_create(action_frame);
   length = strlen(actions);
   if (length >= sizeof(s_action_text)) {
@@ -399,6 +411,9 @@ static void add_scroll_content(const char *body, const char *actions, uint8_t sc
   }
   memcpy(s_action_text, actions, length);
   s_action_text[length] = '\0';
+  text_layer_set_font(s_action_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  text_layer_set_background_color(s_action_text_layer, GColorBlack);
+  text_layer_set_text_color(s_action_text_layer, GColorWhite);
   text_layer_set_text(s_action_text_layer, s_action_text);
   text_layer_set_text_alignment(s_action_text_layer, GTextAlignmentCenter);
   layer_add_child(root_layer, scroll_layer_get_layer(s_scroll_layer));
@@ -414,13 +429,37 @@ static uint16_t menu_get_rows(MenuLayer *menu_layer, uint16_t section, void *con
   return s_menu_count;
 }
 
+static int16_t menu_row_height(MenuLayer *menu, MenuIndex *index, void *context) {
+  (void)menu; (void)index; (void)context;
+  return s_menu_kind == HERMES_MENU_MAIN ? 60 : 50;
+}
+
+static const char *menu_subtitle(const char *label) {
+  if (strcmp(label, "Ask Hermes") == 0) return "Dictate, review, send";
+  if (strcmp(label, "Save note") == 0) return "Keep a note on your phone";
+  if (strcmp(label, "Recent") == 0) return "Requests, notes & answers";
+  if (strcmp(label, "New conversation") == 0) return "Start with a fresh context";
+  if (strcmp(label, "Status") == 0) return "Check your last request";
+  if (strcmp(label, "Reconnect") == 0) return "Test the phone connection";
+  return "Continue your saved draft";
+}
+
 static void menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *index, void *context) {
   (void)context;
-  if (index->row < s_menu_count) menu_cell_basic_draw(ctx, cell_layer, s_menu_labels[index->row], NULL, NULL);
+  if (index->row >= s_menu_count) return;
+  GRect bounds = layer_get_bounds(cell_layer);
+  const char *label = s_menu_labels[index->row];
+  graphics_context_set_text_color(ctx, menu_cell_layer_is_highlighted(cell_layer) ? GColorWhite : GColorBlack);
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+      GRect(10, 3, bounds.size.w - 20, s_menu_kind == HERMES_MENU_MAIN ? 25 : 44),
+      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  if (s_menu_kind == HERMES_MENU_MAIN) {
+    graphics_draw_text(ctx, menu_subtitle(label), fonts_get_system_font(FONT_KEY_GOTHIC_14),
+        GRect(10, 30, bounds.size.w - 20, 25), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
 }
 
 static void build_menu(const char *title, const char *const *labels, uint16_t count, uint8_t menu_kind) {
-  (void)title;
   if (s_window == NULL || count == 0u) return;
   ui_destroy_content();
   s_menu_count = count > 8u ? 8u : count;
@@ -429,13 +468,23 @@ static void build_menu(const char *title, const char *const *labels, uint16_t co
   }
   s_menu_kind = menu_kind;
   Layer *root_layer = window_get_root_layer(s_window);
-  s_menu_layer = menu_layer_create(layer_get_bounds(root_layer));
+  GRect bounds = layer_get_bounds(root_layer);
+  ui_add_header(title);
+  s_menu_layer = menu_layer_create(GRect(0, 40, bounds.size.w, bounds.size.h - 64));
   if (s_menu_layer == NULL) return;
   menu_layer_set_callbacks(s_menu_layer, NULL, (MenuLayerCallbacks){
     .get_num_rows = menu_get_rows,
     .draw_row = menu_draw_row,
+    .get_cell_height = menu_row_height,
   });
+  menu_layer_set_normal_colors(s_menu_layer, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(s_menu_layer, GColorCobaltBlue, GColorWhite);
   layer_add_child(root_layer, menu_layer_get_layer(s_menu_layer));
+  s_action_text_layer = text_layer_create(GRect(0, bounds.size.h - 24, bounds.size.w, 24));
+  text_layer_set_font(s_action_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  text_layer_set_text_alignment(s_action_text_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_action_text_layer, "UP / DOWN   •   SELECT to open");
+  layer_add_child(root_layer, text_layer_get_layer(s_action_text_layer));
   window_set_click_config_provider(s_window, ui_click_config);
 }
 
@@ -470,7 +519,7 @@ static void ui_rebuild(void) {
       add_scroll_content(s_error_text, "SELECT: menu   BACK: menu", HERMES_SCREEN_ERROR);
       break;
     case HERMES_SCREEN_CONNECTING:
-      set_body_text("Connecting to the Hermes companion.\n\nThe watch is waiting for an application handshake.");
+      set_body_text("Waiting for phone…\n\nOpen Hermes Pebble on Android and select your Pebble host in Setup.");
       add_scroll_content(s_body_text, "BACK: menu", HERMES_SCREEN_CONNECTING);
       break;
     default:
@@ -484,7 +533,7 @@ static void ui_show_menu(void) {
   const char *labels[6];
   uint16_t count = 0u;
   if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
-    labels[count++] = "Recover pending capture";
+    labels[count++] = "Saved draft";
     labels[count++] = "Recent";
     labels[count++] = "Status";
     labels[count++] = "New conversation";
@@ -495,24 +544,25 @@ static void ui_show_menu(void) {
     labels[count++] = "New conversation";
     labels[count++] = "Status";
   }
+  labels[count++] = "Reconnect";
   s_screen = HERMES_SCREEN_MENU;
   build_menu("Hermes", labels, count, HERMES_MENU_MAIN);
 }
 
 static void ui_show_review(void) {
-  snprintf(s_body_text, sizeof(s_body_text), "Review transcript (%u bytes)\n\n%s\n\nSELECT opens actions. UP and DOWN scroll. BACK opens actions.", (unsigned int)strlen(s_capture_text), s_capture_text);
+  snprintf(s_body_text, sizeof(s_body_text), "%s", s_capture_text);
   add_scroll_content(s_body_text, "SELECT: actions   BACK: actions", HERMES_SCREEN_REVIEW);
 }
 
 static void ui_show_status(void) {
   const char *label = status_text(s_visible_status);
   const char *error = s_visible_error == HERMES_ERROR_NONE ? "" : error_text(s_visible_error);
-  int written = snprintf(s_body_text, sizeof(s_body_text), "Hermes status\n\nCapture: %lu\nItem: %lu\nStatus: %s\nConversation: %lu\n", (unsigned long)s_visible_capture_id, (unsigned long)s_visible_item_id, label, (unsigned long)s_generation);
+  int written = snprintf(s_body_text, sizeof(s_body_text), "%s\n", label);
   if (written < 0 || (size_t)written >= sizeof(s_body_text)) {
     snprintf(s_body_text, sizeof(s_body_text), "Hermes status unavailable.");
   }
   if (!s_handshake_ready) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "Handshake: waiting for phone acknowledgement\n");
+    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "Phone link not verified. Use Reconnect from the menu.\n");
   }
   if (s_visible_error != HERMES_ERROR_NONE) {
     snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "Error: %s\n", error);
@@ -527,13 +577,13 @@ static void ui_show_status(void) {
     snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nAnswer:\n%s\n", s_visible_output);
   }
   if (s_pending.operation != HERMES_PENDING_NONE) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nPending capture remains until durable receipt.\n");
+    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nYour draft is safe on this watch until the phone confirms it is saved.\n");
   }
   add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_STATUS);
 }
 
 static void ui_show_result(void) {
-  snprintf(s_body_text, sizeof(s_body_text), "Result\n\nCapture: %lu\nPage offset: %lu\nTotal bytes: %lu\n", (unsigned long)s_visible_capture_id, (unsigned long)s_result_offset, (unsigned long)s_result_total_bytes);
+  snprintf(s_body_text, sizeof(s_body_text), "%s", status_text(s_visible_status));
   if (s_visible_input[0] != '\0') {
     snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nRequest:\n%s\n", s_visible_input);
   }
@@ -677,6 +727,10 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
   s_click_guard_ticks = 1u;
   timer_ensure();
   if (s_menu_kind == HERMES_MENU_MAIN) {
+    if (selection->row == s_menu_count - 1u) {
+      start_handshake();
+      return;
+    }
     if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
       switch (selection->row) {
         case 0u:
@@ -1779,7 +1833,7 @@ static void outbound_schedule_retry(void) {
     return;
   }
   if (s_outbound.retry_count >= HERMES_MAX_RETRY_COUNT) {
-    outbound_failed(HERMES_ERROR_WATCH_UNAVAILABLE, "The watch could not reach the phone. The pending capture is retained.");
+    outbound_failed(HERMES_ERROR_WATCH_UNAVAILABLE, "No phone reply. Open Android Setup and select your Pebble host. Then choose Reconnect here. Drafts stay saved.");
     return;
   }
   s_outbound.retry_count++;

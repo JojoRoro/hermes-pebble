@@ -70,6 +70,7 @@ class AppContainer(context: Context) {
     )
     val hermesClient = HermesClient(
         HermesRequestConfigurationProvider(settingsRepository, secretStore),
+        diagnostic = { dev.hermespebble.companion.diagnostics.DiagnosticLog.record("HTTP", it) },
     )
     val dispatcher = CommandDispatcher(
         context = applicationContext,

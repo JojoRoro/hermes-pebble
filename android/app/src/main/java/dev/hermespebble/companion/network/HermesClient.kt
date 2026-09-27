@@ -40,6 +40,7 @@ fun interface HermesConfigurationProvider {
 class HermesClient internal constructor(
     private val configurationProvider: HermesConfigurationProvider,
     private val httpClient: OkHttpClient = defaultHttpClient,
+    private val diagnostic: (String) -> Unit = {},
 ) {
     private val json = Json {
         explicitNulls = false
@@ -58,7 +59,14 @@ class HermesClient internal constructor(
             throw unsupported("Hermes does not expose the required capabilities route")
         }
         response.requireSuccess(unsupportedCategory = true)
-        return parseCapabilities(response.requireJsonObject())
+        return try {
+            parseCapabilities(response.requireJsonObject()).also {
+                diagnostic("Capabilities parsed: required routes ${it.supportsRequiredV1Api}; idempotency supported ${it.runsIdempotencySupported}, durable ${it.runsIdempotencyDurable}")
+            }
+        } catch (error: HermesApiException) {
+            diagnostic("Capabilities schema: ${error.message}")
+            throw error
+        }
     }
 
     suspend fun createOrReconcileSession(sessionId: String, expectedProfileId: String): HermesSession {
@@ -160,7 +168,8 @@ class HermesClient internal constructor(
         validateIdentifier(runId, "run ID")
         val rawStatus = root.requiredString("status")
         val status = RunServerStatus.parse(rawStatus)
-        val replayed = root.requiredBoolean("replayed")
+        // Pre-idempotency servers do not report replay metadata.
+        val replayed = if ("replayed" in root) root.requiredBoolean("replayed") else false
         if (status == RunServerStatus.UNKNOWN || (!replayed && status !in setOf(RunServerStatus.QUEUED, RunServerStatus.STARTED))) {
             throw invalidResponse("Hermes returned an invalid run acceptance status")
         }
@@ -283,14 +292,43 @@ class HermesClient internal constructor(
             else -> throw invalidResponse("Unsupported internal HTTP method")
         }
         return withContext(Dispatchers.IO) {
+            val started = System.nanoTime()
+            // No URL prefix, identifiers, headers or payloads enter the diagnostic log.
+            val route = when {
+                "capabilities" in url.pathSegments -> "capabilities"
+                "runs" in url.pathSegments -> "runs"
+                else -> "sessions"
+            }
+            diagnostic("$method $route: request started; bearer configured; access header ${configuration.accessHeaderName != null}")
             try {
                 httpClient.newCall(requestBuilder.build()).execute().use { response ->
-                    readResponse(response, requireJson = response.isSuccessful)
+                    val media = response.body.contentType()
+                    val type = when {
+                        media.isJson() -> "JSON"
+                        media?.subtype == "html" -> "HTML"
+                        media == null -> "missing Content-Type"
+                        else -> "non-JSON"
+                    }
+                    diagnostic("$method $route: HTTP ${response.code}, $type, length ${response.body.contentLength()}, ${(System.nanoTime() - started) / 1_000_000} ms")
+                    try {
+                        readResponse(response, requireJson = response.isSuccessful)
+                    } catch (error: HermesApiException) {
+                        diagnostic("$route: ${error.message}")
+                        throw error
+                    }
                 }
             } catch (_: SSLException) {
+                diagnostic("$route: TLS certificate/handshake failure")
                 throw HermesApiException(HermesErrorCategory.TLS, "Hermes TLS validation failed")
-            } catch (_: IOException) {
-                throw HermesApiException(HermesErrorCategory.NETWORK, "Hermes network request failed")
+            } catch (error: IOException) {
+                val reason = when (error) {
+                    is java.net.UnknownHostException -> "DNS lookup failed"
+                    is java.net.SocketTimeoutException -> "Request timed out"
+                    is java.net.ConnectException -> "Connection refused or unreachable"
+                    else -> "Network request failed"
+                }
+                diagnostic("$route: $reason")
+                throw HermesApiException(HermesErrorCategory.NETWORK, reason)
             }
         }
     }
@@ -303,7 +341,9 @@ class HermesClient internal constructor(
             return RawResponse(response.code, retryAfterMillis, null)
         }
         val contentType = response.body.contentType()
-        if (requireJson && !contentType.isJson()) throw invalidResponse()
+        if (requireJson && !contentType.isJson()) throw invalidResponse(
+            "HTTP ${response.code}: expected JSON but received ${if (contentType?.subtype == "html") "HTML (web dashboard or proxy login page)" else "a non-JSON response"}. Check the API root and access header.",
+        )
         val bytes = if (declaredLength == 0L) {
             ByteArray(0)
         } else {
@@ -329,10 +369,11 @@ class HermesClient internal constructor(
     }
 
     private fun parseCapabilities(root: JsonObject): HermesCapabilities {
-        if (root.requiredString("object") != "hermes.api_server.capabilities") throw invalidResponse()
+        if (root.requiredString("object") != "hermes.api_server.capabilities") throw unsupported("JSON is not Hermes Agent API capabilities. Check the API root and server version.")
         val features = root.requiredObject("features")
-        val idempotency = features.requiredObject("runs_idempotency")
-        val retention = idempotency["retention_seconds"]?.let { value ->
+        // Older servers may omit optional idempotency support. Never invent replay guarantees.
+        val idempotency = if ("runs_idempotency" in features) features.requiredObject("runs_idempotency") else null
+        val retention = idempotency?.get("retention_seconds")?.let { value ->
             if (value is JsonNull) null else idempotency.requiredLong("retention_seconds")
         }
         val endpointObject = root.requiredObject("endpoints")
@@ -352,8 +393,8 @@ class HermesClient internal constructor(
         }
         return HermesCapabilities(
             runSubmission = features.requiredBoolean("run_submission"),
-            runsIdempotencySupported = idempotency.requiredBoolean("supported"),
-            runsIdempotencyDurable = idempotency.requiredBoolean("durable"),
+            runsIdempotencySupported = idempotency?.requiredBoolean("supported") ?: false,
+            runsIdempotencyDurable = idempotency?.requiredBoolean("durable") ?: false,
             runsIdempotencyRetentionSeconds = retention,
             endpoints = endpoints,
         )
@@ -473,48 +514,48 @@ class HermesClient internal constructor(
     }
 
     private fun JsonObject.requiredObject(name: String): JsonObject =
-        this[name] as? JsonObject ?: throw invalidResponse()
+        this[name] as? JsonObject ?: throw invalidResponse("Expected JSON object field: $name")
 
     private fun JsonObject.requiredArray(name: String): JsonArray =
-        this[name] as? JsonArray ?: throw invalidResponse()
+        this[name] as? JsonArray ?: throw invalidResponse("Expected JSON array field: $name")
 
     private fun JsonObject.requiredString(name: String): String {
-        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse()
-        if (!primitive.isString) throw invalidResponse()
-        return primitive.contentOrNull ?: throw invalidResponse()
+        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        if (!primitive.isString) throw invalidResponse("Missing or invalid JSON field: $name")
+        return primitive.contentOrNull ?: throw invalidResponse("Missing or invalid JSON field: $name")
     }
 
     private fun JsonObject.optionalString(name: String): String? {
         val value = this[name] ?: return null
         if (value is JsonNull) return null
-        val primitive = value as? JsonPrimitive ?: throw invalidResponse()
-        if (!primitive.isString) throw invalidResponse()
-        return primitive.contentOrNull ?: throw invalidResponse()
+        val primitive = value as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        if (!primitive.isString) throw invalidResponse("Missing or invalid JSON field: $name")
+        return primitive.contentOrNull ?: throw invalidResponse("Missing or invalid JSON field: $name")
     }
 
     private fun JsonObject.optionalScalar(name: String): String? {
         val value = this[name] ?: return null
         if (value is JsonNull) return null
-        val primitive = value as? JsonPrimitive ?: throw invalidResponse()
+        val primitive = value as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
         return primitive.contentOrNull
     }
 
     private fun JsonObject.requiredBoolean(name: String): Boolean {
-        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse()
-        if (primitive.isString) throw invalidResponse()
-        return primitive.booleanOrNull ?: throw invalidResponse()
+        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        if (primitive.isString) throw invalidResponse("Missing or invalid JSON field: $name")
+        return primitive.booleanOrNull ?: throw invalidResponse("Missing or invalid JSON field: $name")
     }
 
     private fun JsonObject.requiredLong(name: String): Long {
-        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse()
-        if (primitive.isString) throw invalidResponse()
-        return primitive.longOrNull ?: throw invalidResponse()
+        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        if (primitive.isString) throw invalidResponse("Missing or invalid JSON field: $name")
+        return primitive.longOrNull ?: throw invalidResponse("Missing or invalid JSON field: $name")
     }
 
     private fun JsonObject.requiredInt(name: String): Int {
-        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse()
-        val value = primitive.longOrNull ?: throw invalidResponse()
-        if (value !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) throw invalidResponse()
+        val primitive = this[name] as? JsonPrimitive ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        val value = primitive.longOrNull ?: throw invalidResponse("Missing or invalid JSON field: $name")
+        if (value !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) throw invalidResponse("Missing or invalid JSON field: $name")
         return value.toInt()
     }
 
@@ -538,9 +579,9 @@ class HermesClient internal constructor(
         val element = try {
             json.parseToJsonElement(bodyText.orEmpty())
         } catch (_: Exception) {
-            throw invalidResponse()
+            throw invalidResponse("HTTP $status: response body is not valid JSON")
         }
-        return element as? JsonObject ?: throw invalidResponse()
+        return element as? JsonObject ?: throw invalidResponse("HTTP $status: expected a JSON object")
     }
 
     private fun RawResponse.failure(): HermesApiException {
@@ -568,7 +609,7 @@ class HermesClient internal constructor(
             HermesErrorCategory.SERVER -> "Hermes returned a server error"
             else -> "Hermes returned an unexpected HTTP response"
         }
-        return HermesApiException(category, message, status, retryAfterMillis)
+        return HermesApiException(category, "HTTP $status: $message", status, retryAfterMillis)
     }
 
     private fun RawResponse.errorCode(): String? {

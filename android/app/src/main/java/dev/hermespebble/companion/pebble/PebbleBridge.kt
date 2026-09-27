@@ -13,6 +13,7 @@ import io.rebble.pebblekit2.client.DefaultPebbleSender
 import io.rebble.pebblekit2.client.PebbleSender
 import io.rebble.pebblekit2.common.model.TransmissionResult
 import io.rebble.pebblekit2.common.model.WatchIdentifier
+import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import java.io.Closeable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -54,8 +55,8 @@ class PebbleBridge(
 
     fun launch(block: suspend CoroutineScope.() -> Unit) {
         scope.launch {
-            try { block() } catch (error: CancellationException) { throw error } catch (_: Exception) {
-                // Watch requests time out and can be repeated using the same capture ID.
+            try { block() } catch (error: CancellationException) { throw error } catch (error: Exception) {
+                DiagnosticLog.record("Pebble", "Reply failed: ${error.javaClass.simpleName}")
             }
         }
     }
@@ -65,6 +66,7 @@ class PebbleBridge(
     }
 
     fun onAppOpened(watch: String) {
+        DiagnosticLog.record("Pebble", "Watch app opened")
         if (watch.isBlank()) return
         markActive(watch)
         lastStatus.keys.retainAll(activeWatchState.value)
@@ -72,6 +74,7 @@ class PebbleBridge(
     }
 
     fun onAppClosed(watch: String) {
+        DiagnosticLog.record("Pebble", "Watch app closed")
         activeWatchState.update { it - watch }
         lastStatus.remove(watch)
     }
@@ -82,6 +85,7 @@ class PebbleBridge(
 
     suspend fun selectHost(packageName: String?) = sendMutex.withLock {
         picker.selectApp(packageName)
+        DiagnosticLog.record("Pebble", "Host selection saved; reopen the watch app")
         sender.close()
         sender = DefaultPebbleSender(applicationContext)
         activeWatchState.value = emptySet()
@@ -295,6 +299,14 @@ class PebbleBridge(
         )
     }
 
+    suspend fun testWatchLink(): String {
+        if (selectedHost() == null) return "Select the Pebble phone host first."
+        val watches = activeWatchState.value.toList()
+        if (watches.isEmpty()) return "No watch traffic received. Open Hermes on the watch and choose Reconnect. If no RX event appears, reinstall the finalized PBW and check companion access in the Pebble phone app."
+        watches.forEach { sendHandshake(it) }
+        return "Watch-link probe finished. Check TX HANDSHAKE_ACK in the event log for Success or the exact transport failure."
+    }
+
     override fun close() {
         scope.cancel()
         sender.close()
@@ -346,7 +358,9 @@ class PebbleBridge(
                             dictionary,
                             watches = listOf(WatchIdentifier(watch)),
                         )
-                        delivered = when (results?.get(WatchIdentifier(watch))) {
+                        val result = results?.get(WatchIdentifier(watch))
+                        DiagnosticLog.record("Pebble", "TX ${kind.name}, attempt ${attempt + 1}: ${result?.javaClass?.simpleName ?: "no host response"}")
+                        delivered = when (result) {
                             is TransmissionResult.Success -> true
                             null,
                             is TransmissionResult.FailedWatchNotConnected,
@@ -359,7 +373,8 @@ class PebbleBridge(
                         }
                     } catch (error: CancellationException) {
                         throw error
-                    } catch (_: Exception) {
+                    } catch (error: Exception) {
+                        DiagnosticLog.record("Pebble", "TX ${kind.name}: ${error.javaClass.simpleName}")
                         delivered = false
                     }
                     if (!delivered) {

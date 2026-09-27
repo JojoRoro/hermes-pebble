@@ -1,11 +1,20 @@
 # Validation status
 
-The implementation review ran local checks on 26 September 2026. The Android APK build also passed in GitHub Actions that day. Watch firmware behavior, device installation, and live-server compatibility remain untested.
+The initial implementation review and CI build passed on 26 September 2026. The first installed version subsequently failed on the user's phone/watch: watch messages timed out and API requests reported invalid responses. Live compatibility is therefore unresolved, rather than assumed from the offline checks.
+
+## 0.1.1 diagnostics and watch UI verification (27 September 2026)
+
+- The complete offline suite passes, including new capability fixtures without idempotency metadata, rejection of malformed metadata, optional legacy replay flags, precise HTML/schema failures, and exclusion of fixture credentials and bodies from diagnostic events.
+- The PBW compiles and links with the locally installed Pebble SDK 4.9.169 for emery (37,014 bytes RAM footprint, 4,092 bytes resources). The separate host C check also passes against SDK 4.33.1 headers.
+- The home and scrolling menu screens were installed, captured, and visually inspected in the emery emulator. The finalized `build/hermes-pebble-0.1.1.pbw` passed companion metadata and member-preservation checks.
+- Android `:app:assembleDebug` passed locally with JDK 21 and SDK 37.0, including Room/KSP and Kotlin/Compose compilation. The constrained local environment required one worker and a 768 MiB Gradle heap. The APK reports version 0.1.1 / code 2. It is a locally signed debug APK; its signing key can differ from the original CI APK.
+- Physical watch routing, Android credential-focus behavior, and authenticated requests through the user's NetBird proxy still require device verification. No live Hermes or Matrix requests were sent.
+
 
 ## Completed local checks
 
 - Five Python finalizer tests passed: metadata restoration and repeat finalization, nonmetadata byte preservation, wrong UUID rejection, duplicate ZIP rejection, existing-output protection, and cleanup after verification failure.
-- Host GCC syntax check passed against the official Pebble SDK 4.33.1 emery headers. No PBW was built. The host check substitutes only the SDK's libc time declarations and empty generated resource IDs.
+- Host GCC syntax check passed against the official Pebble SDK 4.33.1 emery headers. This initial check did not build a PBW; the 0.1.1 build is recorded above. The host check substitutes only the SDK's libc time declarations and empty generated resource IDs.
 - Native host regression checks passed for exact persistent-storage return counts, negative errors, maximum-size pending transcript round trips, checksum corruption, generation zero, recent/result JSON parsing, surrogate pairs, and six-chunk UTF-8 text.
 - Isolated Kotlin 2.4.20 compilation and execution passed for the production wire protocol and retry policy, using PebbleKit dictionary models. Checks include duplicate final chunks, changed chunk counts, timeout recovery, invalid UTF-8, and idempotency deadlines.
 - Isolated HTTP client compilation and six offline interceptor checks passed for bounded response reads, both authentication headers, base paths, terminal replays, numeric history metadata/tool events, HTML rejection, redirect classification, and oversized bodies. No Hermes request was made.
@@ -28,7 +37,7 @@ The release workflow passed actionlint 1.7.12. Pushing `v0.1.0` then triggered [
 | Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Passed: APK built and uploaded; device installation deferred |
 | Version tag release | A pushed v* tag builds and attaches the APK to its GitHub Release | Passed: v0.1.0 built and APK attached to the published release |
 | CloudPebble root import/build | Produces a PT2 PBW independently of Android; SDK version is recorded | Deferred, not run |
-| PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Deferred, not run |
+| PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Passed on locally built 0.1.1 PBW |
 | Companion registration | Stock Pebble app routes watch messages to the installed companion | Deferred, not run |
 | Both authentication headers | Correct pair succeeds; either wrong credential fails clearly | Deferred, not run |
 | Prefix URL and redirect handling | Prefix remains intact; no credentials follow a redirect | Deferred, not run |
@@ -85,4 +94,4 @@ Source review removed the abandoned duplicate UI/runtime and corrected unresolve
 - Confirm GrapheneOS network permission, NetBird connectivity, Doze, app standby, process death, and force-stop behavior on the actual phone.
 - Confirm no external Matrix delivery claim is derived solely from HTTP acceptance, a run completion, a Pebble transport ACK, or a notification.
 
-The local checks and Android APK build passed. PBW builds and hardware acceptance remain deferred; the complete stack is not yet validated.
+Local checks and the emery PBW build passed. Hardware acceptance and live NetBird/Hermes compatibility remain unresolved; the complete stack is not yet validated.

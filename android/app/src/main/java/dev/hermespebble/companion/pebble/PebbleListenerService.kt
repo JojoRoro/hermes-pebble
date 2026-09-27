@@ -9,6 +9,7 @@ import io.rebble.pebblekit2.common.model.PebbleDictionary
 import io.rebble.pebblekit2.common.model.ReceiveResult
 import io.rebble.pebblekit2.common.model.WatchIdentifier
 import java.util.UUID
+import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,11 +26,22 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     override val coroutineScope: CoroutineScope = CoroutineScope(serviceJob + Dispatchers.IO)
 
+    override fun onCreate() {
+        super.onCreate()
+        DiagnosticLog.record("Pebble", "Listener service created")
+    }
+
+    override fun onBind(intent: android.content.Intent?): android.os.IBinder? {
+        DiagnosticLog.record("Pebble", "Host bound listener; awaiting selected-host validation")
+        return super.onBind(intent)
+    }
+
     override suspend fun onMessageReceived(
         watchappUUID: UUID,
         data: PebbleDictionary,
         watch: WatchIdentifier,
     ): ReceiveResult {
+        DiagnosticLog.record("Pebble", "RX dictionary: ${data.size} fields; UUID match ${watchappUUID == WireProtocol.APP_UUID}")
         if (watchappUUID != WireProtocol.APP_UUID) {
             bridge.launch {
                 bridge.sendProtocolError(
@@ -45,6 +57,7 @@ class PebbleListenerService : BasePebbleListenerService() {
         return when (val decoded = assembler.accept(data)) {
             is DecodedChunkResult.Pending -> ReceiveResult.Ack
             is DecodedChunkResult.Error -> {
+                DiagnosticLog.record("Pebble", "RX rejected: ${decoded.code}")
                 bridge.launch {
                     bridge.sendProtocolError(
                         watch = watch.value,
@@ -76,6 +89,7 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     private suspend fun handleComplete(watch: String, message: WireMessage): ReceiveResult {
+        DiagnosticLog.record("Pebble", "RX complete: ${message.kind.name}; transfer ${message.transferId}")
         return try {
             when (message.kind) {
                 WireMessageKind.SUBMIT_REQUEST,
@@ -145,7 +159,8 @@ class PebbleListenerService : BasePebbleListenerService() {
             ReceiveResult.Ack
         } catch (error: CancellationException) {
             throw error
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            DiagnosticLog.record("Pebble", "RX failed; NACK: ${error.javaClass.simpleName}")
             ReceiveResult.Nack
         }
     }

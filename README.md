@@ -45,6 +45,16 @@ Enter all connection settings on the phone. They are runtime data, not CI variab
 
 Both credentials are attached to every Hermes request when enabled. The URL is the API root, not a chat-completions endpoint. For example, a configured `https://example.invalid/hermes/` root must retain `/hermes/` when `/v1/runs` is appended.
 
+## Connection diagnostics and credential editing
+
+In Android **Setup**, first select the Pebble phone host. PebbleKit rejects incoming watch messages until a host is selected. Close and reopen Hermes on the watch after changing the host, or choose **Reconnect** in the watch menu. Install a finalized PBW so the Pebble host knows which Android companion to contact.
+
+The API key and additional header value load from encrypted storage. Tap either field to reveal and edit the saved value; leaving the field masks it again. Save edits before running **Test saved Hermes connection**. Saving unchanged values preserves the current connection profile.
+
+Android **Diagnostics** provides a read-only API test, a watch-link reply test, network/battery status, and a copyable timestamped event log. HTTP events show status, JSON/HTML response type, size, and elapsed time; schema errors identify missing fields. DNS, TLS, timeout, and authentication failures are distinguished. A 401/403 still cannot identify which authentication layer rejected the request. Credentials, response bodies, and dictated text are excluded from the log; its last 150 events live only in process memory.
+
+For a watch timeout, open Diagnostics and choose Reconnect on the watch. No RX event points to host selection, companion metadata, or host permissions. RX followed by a failed TX identifies the reply transport failure. TX Success confirms transport delivery, not a completed Hermes run. For API failures behind NetBird, HTTP 200 with HTML indicates a dashboard or proxy page instead of the expected JSON API response. Copy the report after reproducing the failure.
+
 ## NetBird Custom Header
 
 When a NetBird reverse proxy protects the Hermes service, configure its Custom Header option with the exact header name and value entered in the companion. NetBird uses that header for service access and removes the matching access header before forwarding upstream. The Hermes Authorization header remains separate; using NetBird's Authorization preset would compete with Hermes authentication.
@@ -102,4 +112,4 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 
 `docs/validation.md` records the passing local regression checks and Android APK build, plus the remaining CloudPebble and device acceptance checks.
 
-Implementation reviewed and local regression checks passed. The [Android workflow passed on 26 September 2026](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438), building and uploading the debug APK. PBW builds, CloudPebble execution, device installation, live Hermes calls, and hardware validation remain untested.
+Implementation reviewed and local regression checks passed. The [Android workflow passed on 26 September 2026](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438), building and uploading the debug APK. Version 0.1.1 also builds an emery PBW locally and has emulator screenshots checked. The first installed version reported connection failures; physical watch routing and live NetBird/Hermes compatibility still require verification using the new diagnostics.

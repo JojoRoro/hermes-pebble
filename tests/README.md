@@ -29,6 +29,6 @@ The Kotlin library directory must contain these Maven artifacts (no repository s
 | com.squareup.okhttp3 | okhttp-jvm | 5.3.0 |
 | com.squareup.okio | okio-jvm | 3.16.2 |
 
-`ProtocolCheck.kt` covers chunk retry/reassembly and idempotency deadlines. `NetworkCheck.kt` covers short HTTP responses, headers, URL prefixes, replayed terminal runs, history metadata, and rejection paths. `watch_core_test.c` covers UTF-8 boundaries, JSON parsing, pending-record recovery, checksum failure, and exact persistence return values. `test_finalize_pbw.py` covers metadata-only PBW transformations and failure cleanup.
+`ProtocolCheck.kt` covers chunk retry/reassembly and idempotency deadlines. `NetworkCheck.kt` covers short HTTP responses, headers, URL prefixes, replayed terminal runs, history metadata, optional legacy idempotency/replay metadata, precise HTML/schema diagnostics, secret exclusion from diagnostic events, and rejection paths. `watch_core_test.c` covers UTF-8 boundaries, JSON parsing, pending-record recovery, checksum failure, and exact persistence return values. `test_finalize_pbw.py` covers metadata-only PBW transformations and failure cleanup.
 
 These checks do **not** compile the full Android app, run Room's processor, execute WorkManager, or validate Keystore/Compose behavior. The manual Android workflow, CloudPebble build, and real-device acceptance matrix remain in [validation.md](../docs/validation.md).

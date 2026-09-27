@@ -1,6 +1,7 @@
 package dev.hermespebble.companion.ui
 
 import android.app.Application
+import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.hermespebble.companion.HermesPt2Application
@@ -94,7 +95,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             recent = currentRecent,
             selectedCommand = currentSelected.first,
             conversationMessages = currentSelected.second,
-            section = if (currentSettings == null || !currentSettings.hasHermesKey || currentSettings.serverUrl.isBlank()) {
+            section = if ((currentSettings == null || !currentSettings.hasHermesKey || currentSettings.serverUrl.isBlank()) &&
+                currentControl.section != AppSection.DIAGNOSTICS) {
                 AppSection.SETUP
             } else if (currentControl.section == AppSection.SETUP && currentControl.initialized) {
                 AppSection.SETUP
@@ -116,6 +118,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         refreshHosts()
 
+    }
+
+    val diagnosticEvents = DiagnosticLog.events
+
+    fun clearDiagnostics() = DiagnosticLog.clear()
+
+    suspend fun loadCredential(accessHeader: Boolean): String {
+        val current = container.settingsRepository.current()
+        return if (accessHeader) {
+            current.accessHeaderReference?.let { container.secretStore.readAccessHeaderValue(it) }.orEmpty()
+        } else {
+            if (current.hasHermesKey) container.secretStore.readHermesKey(current.hermesKeyReference) else ""
+        }
+    }
+
+    private suspend fun secretChange(value: String, accessHeader: Boolean): SecretChange {
+        if (value.isEmpty()) return SecretChange.Keep
+        val stored = try {
+            loadCredential(accessHeader)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null // Allow replacing an unreadable credential.
+        }
+        return if (value == stored) SecretChange.Keep else SecretChange.Set(value)
+    }
+
+    fun testWatchLink() {
+        launchBusy { setMessage(container.pebbleBridge.testWatchLink()) }
     }
 
     fun setSection(section: AppSection) {
@@ -162,12 +193,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     serverUrl = serverUrl,
                     accessHeaderEnabled = accessHeaderEnabled,
                     accessHeaderName = accessHeaderName,
-                    hermesKey = if (hermesKey.isNotEmpty()) SecretChange.Set(hermesKey) else SecretChange.Keep,
-                    accessHeaderValue = if (accessHeaderValue.isNotEmpty()) {
-                        SecretChange.Set(accessHeaderValue)
-                    } else {
-                        SecretChange.Keep
-                    },
+                    hermesKey = secretChange(hermesKey, accessHeader = false),
+                    accessHeaderValue = secretChange(accessHeaderValue, accessHeader = true),
                 ),
             )
             setMessage(
@@ -280,6 +307,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val eligible = container.pebbleBridge.eligibleHosts().sorted()
                 val selected = container.pebbleBridge.selectedHost()
                 hostState.value = HostSelectionState(eligible = eligible, selected = selected, loading = false)
+                DiagnosticLog.record("Pebble", "Host scan: ${eligible.size} eligible; selected ${selected ?: "NONE — watch messages will be rejected"}")
                 if (selected == null && eligible.isNotEmpty()) {
                     setMessage("Select the official Pebble phone host before using the watch app.", isError = true)
                 }
@@ -296,7 +324,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy {
             container.pebbleBridge.selectHost(packageName)
             refreshHosts()
-            setMessage("Official Pebble phone host selection saved.")
+            setMessage("Pebble host saved. Close and reopen Hermes on the watch, or choose Reconnect.")
         }
     }
 

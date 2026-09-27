@@ -30,6 +30,18 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalContext
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.PowerManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,15 +123,36 @@ private fun SetupScreen(state: HermesUiState, viewModel: AppViewModel) {
     var headerName by rememberSaveable(settings?.accessHeaderName) {
         mutableStateOf(settings?.accessHeaderName ?: "X-NetBird-Access")
     }
-    var hermesKey by remember { mutableStateOf("") }
-    var headerValue by remember { mutableStateOf("") }
+    var hermesKey by remember(settings?.hermesKeyReference) { mutableStateOf("") }
+    var headerValue by remember(settings?.accessHeaderReference) { mutableStateOf("") }
+    var keyFocused by remember { mutableStateOf(false) }
+    var headerFocused by remember { mutableStateOf(false) }
+    var credentialsLoaded by remember(settings?.hermesKeyReference, settings?.accessHeaderReference) { mutableStateOf(false) }
+    var credentialError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(settings?.hermesKeyReference, settings?.accessHeaderReference) {
+        if (settings != null) {
+            try {
+                hermesKey = viewModel.loadCredential(false)
+                headerValue = viewModel.loadCredential(true)
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                credentialError = "Stored credentials could not be read. Enter replacement values."
+            }
+            credentialsLoaded = true
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        HostPicker(state, viewModel)
+        HorizontalDivider()
         Text("Hermes connection", style = MaterialTheme.typography.headlineSmall)
+        credentialError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Text("Tap a credential field to reveal and edit its saved value. It is masked again when you leave the field.")
         Text(
             "Enter the HTTPS API root, not a chat-completions endpoint. A path prefix is preserved.",
             style = MaterialTheme.typography.bodyMedium,
@@ -136,10 +169,12 @@ private fun SetupScreen(state: HermesUiState, viewModel: AppViewModel) {
             value = hermesKey,
             onValueChange = { hermesKey = it },
             label = { Text("Hermes API key") },
-            placeholder = { Text(if (settings?.hasHermesKey == true) "Stored — enter to replace" else "Required") },
+            placeholder = { Text("Required") },
+            enabled = credentialsLoaded,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = if (keyFocused) VisualTransformation.None else PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { keyFocused = it.isFocused },
         )
         HorizontalDivider()
         Text("Additional service access header", style = MaterialTheme.typography.titleMedium)
@@ -163,24 +198,26 @@ private fun SetupScreen(state: HermesUiState, viewModel: AppViewModel) {
             value = headerValue,
             onValueChange = { headerValue = it },
             label = { Text("Header value") },
-            placeholder = { Text(if (settings?.hasAccessHeaderValue == true) "Stored — enter to replace" else "NetBird service secret") },
+            placeholder = { Text("NetBird service secret") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             singleLine = true,
-            enabled = accessEnabled,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
+            enabled = accessEnabled && credentialsLoaded,
+            visualTransformation = if (headerFocused) VisualTransformation.None else PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { headerFocused = it.isFocused },
         )
         Button(
             onClick = {
                 viewModel.saveConnection(serverUrl, accessEnabled, headerName, hermesKey, headerValue)
             },
-            enabled = serverUrl.isNotBlank() && (!accessEnabled || headerName.isNotBlank()),
+            enabled = credentialsLoaded && !state.busy && serverUrl.isNotBlank() && hermesKey.isNotEmpty() && (!accessEnabled || (headerName.isNotBlank() && headerValue.isNotEmpty())),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Save connection") }
         OutlinedButton(
             onClick = viewModel::testConnection,
             enabled = state.connectionReady && !state.busy,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Test Hermes capabilities") }
+        ) { Text("Test saved Hermes connection") }
+        Text("Save any edits before testing. The test uses the saved API key and access header.", style = MaterialTheme.typography.bodySmall)
         OutlinedButton(
             onClick = viewModel::clearAccessHeaderSecret,
             enabled = settings?.hasAccessHeaderValue == true,
@@ -200,6 +237,11 @@ private fun HomeScreen(state: HermesUiState, viewModel: AppViewModel) {
     var request by rememberSaveable { mutableStateOf("") }
     Column(modifier = Modifier.fillMaxSize()) {
         ConnectionCard(state)
+        if (state.host.selected == null) {
+            Button(onClick = viewModel::showSetup, modifier = Modifier.fillMaxWidth()) {
+                Text("Connect Pebble phone host")
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -379,24 +421,14 @@ private fun DiagnosticsScreen(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Pebble host selection", style = MaterialTheme.typography.titleMedium)
-        Text("Select the official Pebble app. Automatic first-host trust is disabled.")
-        if (state.host.eligible.isEmpty()) {
-            Text("No eligible Pebble phone host was detected. Install or update the official Pebble app.")
+        HostPicker(state, viewModel)
+        OutlinedButton(onClick = viewModel::testWatchLink, enabled = !state.busy) { Text("Test watch link") }
+        Text("Open Hermes on the watch and select Reconnect. RX means the phone received it; TX Success means the watch acknowledged the reply. No RX: check host selection and install the finalized PBW.")
+        OutlinedButton(onClick = viewModel::testConnection, enabled = state.connectionReady && !state.busy) {
+            Text("Test Hermes API (read only)")
         }
-        state.host.eligible.forEach { packageName ->
-            Row(
-                modifier = Modifier.fillMaxWidth().selectable(
-                    selected = state.host.selected == packageName,
-                    onClick = { viewModel.selectHost(packageName) },
-                ),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = state.host.selected == packageName, onClick = null)
-                Text(packageName, modifier = Modifier.padding(start = 8.dp))
-            }
-        }
-        OutlinedButton(onClick = viewModel::refreshHosts) { Text("Refresh Pebble hosts") }
+        state.connectionTest?.let { SelectionContainer { Text(it) } }
+        DiagnosticPanel(viewModel)
         HorizontalDivider()
         Text("Protocol", style = MaterialTheme.typography.titleMedium)
         Text("Version: ${state.protocolVersion}")
@@ -404,10 +436,14 @@ private fun DiagnosticsScreen(
         Text("Active watch apps: ${state.activeWatches.joinToString().ifBlank { "none" }}")
         HorizontalDivider()
         Text("Hermes capabilities", style = MaterialTheme.typography.titleMedium)
+        Text("API root: ${state.settings?.serverUrl.orEmpty()}")
+        Text("Bearer key stored: ${state.settings?.hasHermesKey == true}")
+        Text("Access header: ${if (state.settings?.accessHeaderEnabled == true) state.settings.accessHeaderName else "disabled"}; value stored: ${state.settings?.hasAccessHeaderValue == true}")
         val capabilities = state.settings?.capabilities
         if (capabilities == null) {
             Text("Not verified")
         } else {
+            Text("Required API routes available: ${capabilities.supportsRequiredV1Api}")
             Text("Run submission: ${capabilities.runSubmission}")
             Text("Idempotency supported/durable: ${capabilities.runsIdempotencySupported}/${capabilities.runsIdempotencyDurable}")
             Text("Advertised retention seconds: ${capabilities.runsIdempotencyRetentionSeconds ?: "unspecified"}")
@@ -446,3 +482,61 @@ private fun CommandState.display(): String = when (this) {
 }
 
 private fun Modifier.clickableCard(onClick: () -> Unit): Modifier = clickable(onClick = onClick)
+
+
+@Composable
+private fun HostPicker(state: HermesUiState, viewModel: AppViewModel) {
+    Text("1. Connect your Pebble phone app", style = MaterialTheme.typography.titleMedium)
+    Text(if (state.host.selected == null) "Required: choose the host below so watch messages can reach this app." else "Host selected. Reopen Hermes on the watch after changing it.")
+    if (!state.host.loading && state.host.eligible.isEmpty()) {
+        Text("No compatible PebbleKit 2 host found. Open or update the Pebble phone app, then refresh.")
+    }
+    state.host.eligible.forEach { packageName ->
+        Row(
+            modifier = Modifier.fillMaxWidth().selectable(
+                selected = state.host.selected == packageName,
+                onClick = { viewModel.selectHost(packageName) },
+                enabled = !state.busy,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = state.host.selected == packageName, onClick = null)
+            Text(packageName, modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+    TextButton(onClick = viewModel::refreshHosts, enabled = !state.host.loading) { Text("Refresh Pebble hosts") }
+}
+
+@Composable
+private fun DiagnosticPanel(viewModel: AppViewModel) {
+    val events by viewModel.diagnosticEvents.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var deviceStatus by remember { mutableStateOf("") }
+    fun refreshDeviceStatus() {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val network = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val power = context.getSystemService(PowerManager::class.java)
+        deviceStatus = "Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}\n" +
+            "Network present: ${network != null}; internet validated: ${network?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true}\n" +
+            "VPN transport: ${network?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true} (a reverse proxy does not require VPN)\n" +
+            "Battery saver: ${power.isPowerSaveMode}; device idle: ${power.isDeviceIdleMode}"
+    }
+    LaunchedEffect(Unit) { refreshDeviceStatus() }
+    HorizontalDivider()
+    Text("Device and connection diagnostics", style = MaterialTheme.typography.titleMedium)
+    SelectionContainer { Text(deviceStatus) }
+    TextButton(onClick = { refreshDeviceStatus() }) { Text("Refresh device status") }
+    Text("Last 150 events, kept in memory until the app process exits. Credentials and message bodies are excluded.")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            val report = "Hermes Pebble diagnostics\n$deviceStatus\n" + events.joinToString("\n")
+            (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .setPrimaryClip(ClipData.newPlainText("Hermes diagnostics", report))
+        }) { Text("Copy report") }
+        TextButton(onClick = viewModel::clearDiagnostics) { Text("Clear log") }
+    }
+    SelectionContainer {
+        Text(events.asReversed().joinToString("\n\n").ifBlank { "No events yet. Run a test or reconnect the watch." },
+            style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    }
+}

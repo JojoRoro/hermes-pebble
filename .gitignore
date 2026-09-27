@@ -21,3 +21,6 @@ id_ed25519
 *.jks
 *.keystore
 /core
+
+# Pebble Waf local build state
+/.lock-waf_*
