@@ -329,11 +329,31 @@ class PebbleBridge(
                 correlationId = 0,
                 generation = configuration.conversationGeneration,
             ).single()
-            val sent = sendMutex.withLock {
-                callHost("Link probe") { sender.sendDataToPebble(WireProtocol.APP_UUID, probe, watches.toList()) }
+            // Start Success acknowledges the launch request, not that the watch app
+            // is already foreground. Give it time without blocking inbound replies.
+            DiagnosticLog.record("Pebble", "Launch accepted; waiting for watch readiness before probing")
+            delay(1_000L)
+            var awaitingLaunch = watches.toList()
+            var delivered = false
+            for (attempt in 1..8) {
+                val sent = sendMutex.withLock {
+                    callHost("Link probe $attempt/8") {
+                        sender.sendDataToPebble(WireProtocol.APP_UUID, probe, awaitingLaunch)
+                    }
+                }
+                if (sent?.values?.any { it is TransmissionResult.Success } == true) {
+                    delivered = true
+                    break
+                }
+                // Retry only the launch race. Permission/disconnection failures
+                // need a different remedy and must not be hidden by retries.
+                awaitingLaunch = awaitingLaunch.filter { sent?.get(it) is TransmissionResult.FailedDifferentAppOpen }
+                if (awaitingLaunch.isEmpty() || attempt == 8) break
+                DiagnosticLog.record("Pebble", "Host still reports another app open; waiting 1 second ($attempt/8)")
+                delay(1_000L)
             }
-            if (sent?.values?.any { it is TransmissionResult.Success } != true) {
-                return@withLock "Probe delivery failed. Check the Link probe event: NoPermissions means companion access/PBW metadata; DifferentAppOpen means Hermes is not open."
+            if (!delivered) {
+                return@withLock "Probe delivery failed after waiting for launch. Check the Link probe events. If DifferentAppOpen persists while Hermes is visibly open, the Pebble host has not recognized it; close/reopen Hermes and reconnect the watch in the Pebble phone app. NoPermissions means companion access/PBW metadata."
             }
             // Receiving a transport ACK is insufficient: wait for the watch's correlated request
             // AND successful delivery of our handshake reply. Never hold sendMutex while waiting.

@@ -13,7 +13,7 @@
 #define UI_ERROR_BUFFER_SIZE 256u
 #define UI_RECENT_LABEL_SIZE 128u
 #define UI_RESULT_BUFFER_SIZE 768u
-#define SCROLL_STEP 48u
+#define SCROLL_STEP 48
 #define MAX_TEXT_HEIGHT 30000u
 
 #define HERMES_OUT_IDLE 0u
@@ -33,6 +33,7 @@
 #define HERMES_SCREEN_DICTATION 7u
 #define HERMES_SCREEN_ERROR 8u
 #define HERMES_SCREEN_CONNECTING 9u
+#define HERMES_SCREEN_SETTINGS 10u
 
 #define HERMES_ACTION_NONE 0u
 #define HERMES_ACTION_SEND 1u
@@ -52,6 +53,7 @@
 #define HERMES_MENU_MAIN 0u
 #define HERMES_MENU_RECENT 1u
 #define HERMES_MENU_ACTIONS 2u
+#define HERMES_MENU_SETTINGS 3u
 
 #define HERMES_CAPTURE_REQUEST 0u
 #define HERMES_CAPTURE_NOTE 1u
@@ -140,6 +142,7 @@ static TextLayer *s_action_text_layer;
 static bool s_app_message_open;
 static bool s_handshake_ready;
 static bool s_exiting;
+static bool s_touch_navigation_enabled = true;
 static bool s_stay_on_menu;
 static uint32_t s_phone_probe_id;
 static bool s_storage_corrupt;
@@ -201,6 +204,10 @@ static void ui_show_dictation(void);
 static void ui_show_error(uint32_t code, const char *text);
 static void ui_show_actions(void);
 static void ui_destroy_content(void);
+static void ui_show_settings(void);
+static void touch_navigation_apply(void);
+static void touch_navigation_load(void);
+static bool touch_navigation_save(bool enabled);
 static void ui_action(uint8_t action);
 static void ui_scroll(int delta);
 static void ui_window_load(Window *window);
@@ -217,6 +224,8 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
 static void action_menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selection);
 
 static void storage_init(void);
+static bool storage_read_u32(uint32_t key, uint32_t *value);
+static bool storage_write_u32(uint32_t key, uint32_t value);
 static bool storage_load_pending(void);
 static bool storage_save_pending(const PendingCapture *pending);
 static bool storage_clear_pending(void);
@@ -400,7 +409,7 @@ static void add_scroll_content(const char *body, const char *actions, uint8_t sc
   text_layer_set_overflow_mode(s_body_text_layer, GTextOverflowModeWordWrap);
   text_layer_set_text(s_body_text_layer, body);
   text_layer_set_text_alignment(s_body_text_layer, GTextAlignmentLeft);
-  layer_add_child(scroll_layer_get_layer(s_scroll_layer), text_layer_get_layer(s_body_text_layer));
+  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_body_text_layer));
   scroll_layer_set_content_size(s_scroll_layer, content_size);
   scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, 0), false);
   action_frame = GRect(0, bounds.size.h - 24, bounds.size.w, 24);
@@ -440,6 +449,7 @@ static const char *menu_subtitle(const char *label) {
   if (strcmp(label, "Recent") == 0) return "Requests, notes & answers";
   if (strcmp(label, "New conversation") == 0) return "Start with a fresh context";
   if (strcmp(label, "Status") == 0) return "Check your last request";
+  if (strcmp(label, "Settings") == 0) return "Touch navigation";
   if (strcmp(label, "Reconnect") == 0) return "Test the phone connection";
   return "Continue your saved draft";
 }
@@ -496,6 +506,9 @@ static void ui_rebuild(void) {
     case HERMES_SCREEN_MENU:
       ui_show_menu();
       break;
+    case HERMES_SCREEN_SETTINGS:
+      ui_show_settings();
+      break;
     case HERMES_SCREEN_REVIEW:
       ui_show_review();
       break;
@@ -532,7 +545,7 @@ static void ui_rebuild(void) {
 }
 
 static void ui_show_menu(void) {
-  const char *labels[6];
+  const char *labels[7];
   uint16_t count = 0u;
   if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
     labels[count++] = "Saved draft";
@@ -547,8 +560,35 @@ static void ui_show_menu(void) {
     labels[count++] = "Status";
   }
   labels[count++] = "Reconnect";
+  labels[count++] = "Settings";
   s_screen = HERMES_SCREEN_MENU;
   build_menu("Hermes", labels, count, HERMES_MENU_MAIN);
+}
+
+static void ui_show_settings(void) {
+  const char *labels[] = {s_touch_navigation_enabled ? "Touch navigation: On" : "Touch navigation: Off"};
+  s_screen = HERMES_SCREEN_SETTINGS;
+  build_menu("Settings", labels, 1u, HERMES_MENU_SETTINGS);
+}
+
+static void touch_navigation_apply(void) {
+#ifdef _PBL_API_EXISTS_app_touch_navigation_enable
+  app_touch_navigation_enable(s_touch_navigation_enabled);
+#endif
+}
+
+static void touch_navigation_load(void) {
+  uint32_t enabled = 1u;
+  // Missing/invalid preferences default to On; capture storage stays independent.
+  s_touch_navigation_enabled = !storage_read_u32(HERMES_STORAGE_KEY_TOUCH_NAVIGATION, &enabled) || enabled != 0u;
+  touch_navigation_apply();
+}
+
+static bool touch_navigation_save(bool enabled) {
+  if (!storage_write_u32(HERMES_STORAGE_KEY_TOUCH_NAVIGATION, enabled ? 1u : 0u)) return false;
+  s_touch_navigation_enabled = enabled;
+  touch_navigation_apply();
+  return true;
 }
 
 static void ui_show_review(void) {
@@ -725,6 +765,10 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
   s_stay_on_menu = false;
   if (s_menu_kind == HERMES_MENU_MAIN) {
     if (selection->row == s_menu_count - 1u) {
+      ui_show_settings();
+      return;
+    }
+    if (selection->row == s_menu_count - 2u) {
       start_handshake();
       return;
     }
@@ -768,6 +812,11 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
         default:
           break;
       }
+    }
+  } else if (s_menu_kind == HERMES_MENU_SETTINGS) {
+    if (selection->row == 0u) {
+      if (touch_navigation_save(!s_touch_navigation_enabled)) ui_show_settings();
+      else ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not save touch navigation. Please try again.");
     }
   } else if (s_menu_kind == HERMES_MENU_RECENT) {
     if (selection->row < s_recent_count) {
@@ -920,7 +969,7 @@ static bool navigation_back(void) {
     return true;
   }
   if (s_screen == HERMES_SCREEN_ACTIONS && s_previous_screen != HERMES_SCREEN_ACTIONS &&
-      s_previous_screen <= HERMES_SCREEN_CONNECTING) {
+      s_previous_screen <= HERMES_SCREEN_SETTINGS) {
     s_screen = s_previous_screen;
   } else {
     s_screen = HERMES_SCREEN_MENU;
@@ -943,21 +992,21 @@ static void ui_click_config(void *context) {
   (void)context;
   if (s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_RECENT) {
     window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
-    window_single_click_subscribe(BUTTON_ID_UP, ui_menu_up_click);
-    window_single_click_subscribe(BUTTON_ID_DOWN, ui_menu_down_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_menu_down_click);
     window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
     return;
   }
-  if (s_screen == HERMES_SCREEN_ACTIONS) {
+  if (s_screen == HERMES_SCREEN_ACTIONS || s_screen == HERMES_SCREEN_SETTINGS) {
     window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
-    window_single_click_subscribe(BUTTON_ID_UP, ui_menu_up_click);
-    window_single_click_subscribe(BUTTON_ID_DOWN, ui_menu_down_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_menu_down_click);
     window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
     return;
   }
   window_single_click_subscribe(BUTTON_ID_SELECT, ui_select_click);
-  window_single_click_subscribe(BUTTON_ID_UP, ui_up_click);
-  window_single_click_subscribe(BUTTON_ID_DOWN, ui_down_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_up_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_down_click);
   window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
 }
 
@@ -3089,6 +3138,7 @@ int main(void) {
   });
   s_screen = HERMES_SCREEN_MENU;
   storage_init();
+  touch_navigation_load();
   open_result = app_message_open(HERMES_APP_MESSAGE_INBOX_SIZE, HERMES_APP_MESSAGE_OUTBOX_SIZE);
   if (open_result == APP_MSG_OK) {
     s_app_message_open = true;

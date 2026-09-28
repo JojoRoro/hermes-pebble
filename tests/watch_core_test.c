@@ -7,6 +7,8 @@
 static uint8_t stored[32][256];
 static size_t sizes[32];
 static bool fail_writes;
+static bool touch_enabled;
+void app_touch_navigation_enable(bool enabled) { touch_enabled = enabled; }
 
 bool persist_exists(const uint32_t key) { return key < 32 && sizes[key] != 0; }
 int persist_read_data(const uint32_t key, void *buffer, const size_t size) {
@@ -77,8 +79,8 @@ int main(void) {
   assert(total == sizeof(text));
   // Every navigation state must reach the launcher with rapid Back presses,
   // including recovery with a persisted or corrupt pending capture.
-  for (uint8_t screen = HERMES_SCREEN_MENU; screen <= HERMES_SCREEN_CONNECTING; screen++) {
-    for (uint8_t previous = HERMES_SCREEN_MENU; previous <= HERMES_SCREEN_CONNECTING; previous++) {
+  for (uint8_t screen = HERMES_SCREEN_MENU; screen <= HERMES_SCREEN_SETTINGS; screen++) {
+    for (uint8_t previous = HERMES_SCREEN_MENU; previous <= HERMES_SCREEN_SETTINGS; previous++) {
       s_screen = screen;
       s_previous_screen = previous;
       s_exiting = false;
@@ -95,12 +97,25 @@ int main(void) {
       assert(s_storage_corrupt); // Back never discards recoverable work.
     }
   }
+  touch_navigation_load();
+  assert(s_touch_navigation_enabled && touch_enabled);
+  assert(touch_navigation_save(false));
+  s_touch_navigation_enabled = true;
+  touch_navigation_load();
+  assert(!s_touch_navigation_enabled && !touch_enabled);
+  fail_writes = true;
+  assert(!touch_navigation_save(true));
+  assert(!s_touch_navigation_enabled && !touch_enabled);
+  fail_writes = false;
+  assert(touch_navigation_save(true));
+  touch_navigation_load();
+  assert(s_touch_navigation_enabled && touch_enabled);
   s_exiting = false;
   s_menu_kind = HERMES_MENU_MAIN;
+  s_menu_count = 7;
+  assert(menu_row_count() == 7); // Settings and Reconnect are both reachable.
   s_menu_count = 6;
-  assert(menu_row_count() == 6); // Reconnect is the final row, not beyond the scroll limit.
-  s_menu_count = 5;
-  assert(menu_row_count() == 5); // Pending-draft menu also includes Reconnect.
+  assert(menu_row_count() == 6); // Pending-draft menu also includes Reconnect.
 
   // Phone-originated probes prompt a correlated watch handshake, without
   // completing an unrelated request or pretending a transport ACK is success.

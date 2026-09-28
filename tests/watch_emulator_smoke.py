@@ -46,7 +46,9 @@ def reply(transfer, correlation):
 
 def capture(name):
     rows=Screenshot(connection).grab_image()
-    Image.frombytes('RGB',(len(rows[0])//3,len(rows)),b''.join(bytes(row) for row in rows)).save(args.output / (name + '.png'))
+    picture = Image.frombytes('RGB',(len(rows[0])//3,len(rows)),b''.join(bytes(row) for row in rows))
+    picture.save(args.output / (name + '.png'))
+    return picture.crop((8, 48, picture.width - 8, picture.height - 30)).tobytes()
 
 def click(button):
     send_data_to_qemu(connection.transport,QemuButton(state=button))
@@ -70,11 +72,49 @@ capture('probe-linked')
 for i in range(5): click(QemuButton.Button.Down)
 capture('reconnect-selected')
 click(QemuButton.Button.Select)
-receive() # Transport ACK only: simulate no application response.
+request = receive()
+# Long diagnostic uses the same text-page renderer as answers/review/status.
+text = b'First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line\nSeventh line\nLast line'
+fields = {i: Uint32(0) for i in range(18)}
+fields.update({0: Uint32(1), 1: Uint32(107), 2: Uint32(4004),
+               5: Uint32(1), 6: ByteArray(text), 8: Uint32(2), 17: Uint32(request[2])})
+service.send_message(app_id, fields)
+time.sleep(.3)
+top = capture('text-top')
+click(QemuButton.Button.Down)
+assert capture('text-down') != top, 'Down did not move the text'
+click(QemuButton.Button.Up)
+assert capture('text-up') == top, 'Up did not return to the original text'
+for _ in range(12): click(QemuButton.Button.Down)
+bottom = capture('text-bottom')
+click(QemuButton.Button.Down)
+assert capture('text-bottom-clamped') == bottom, 'Scrolling beyond the bottom'
+for _ in range(12): click(QemuButton.Button.Up)
+assert capture('text-top-restored') == top, 'Could not return to the top'
+
+click(QemuButton.Button.Back)
+for _ in range(6): click(QemuButton.Button.Down)
+click(QemuButton.Button.Select)
+on = capture('settings-on')
+click(QemuButton.Button.Select)
+off = capture('settings-off')
+assert on != off, 'Touch preference did not toggle'
 click(QemuButton.Button.Back)
 click(QemuButton.Button.Back)
 time.sleep(.3)
 capture('exited')
+from libpebble2.protocol.apps import AppRunState, AppRunStateStart
+connection.send_packet(AppRunState(command=1, data=AppRunStateStart(uuid=app_id)))
+reopened = receive()
+reply(4005, reopened[2])
+time.sleep(.3)
+for _ in range(6): click(QemuButton.Button.Down)
+click(QemuButton.Button.Select)
+assert capture('settings-after-restart') == off, 'Touch preference was not preserved'
+click(QemuButton.Button.Select)
+assert capture('settings-on-restored') == on, 'Could not re-enable touch with buttons'
+click(QemuButton.Button.Back)
+click(QemuButton.Button.Back)
 assert not faults, faults
-print('Startup handshake, correlated phone probe, rapid menu navigation and double-Back exercised.',flush=True)
+print('Handshakes, text scrolling bounds, Settings persistence, button navigation with touch off, and Back exercised.',flush=True)
 service.shutdown()

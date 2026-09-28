@@ -2,6 +2,14 @@
 
 The initial implementation review and CI build passed on 26 September 2026. The first installed version subsequently failed on the user's phone/watch: watch messages timed out and API requests reported invalid responses. Live compatibility is therefore unresolved, rather than assumed from the offline checks.
 
+## 0.1.4 scrolling, touch setting, and launch readiness
+
+- Reproduced v0.1.3's stationary text after Down using screenshot comparisons. Text was attached to ScrollLayer's fixed root instead of its scrolling content. The fixed emulator smoke checks movement in both directions and top/bottom clamping.
+- Emulator checks passed for text movement/bounds, Settings On/Off, persistence after relaunch, and button navigation with touch disabled. Local signed Android release build (0.1.4 / code 5), release lint, and the full offline suite passed.
+- Added a persistent watch Settings toggle for system touch navigation, enabled by default. Host tests cover default, saved Off/On, failed writes without changing the current preference, and Back from Settings. Buttons repeat while held.
+- Watch now builds with SDK 4.33.1 and opts into its touch-navigation API. The matching emulator firmware is required; an already-running older emulator cannot execute that API. Actual touchscreen gesture delivery remains a hardware acceptance check.
+- Android's launch probe waits one second, then retries only DifferentAppOpen responses up to eight attempts, releasing the sender lock between attempts. It still requires a correlated round trip before reporting success. User logs showed probe delivery 4–14 ms after a successful launch request; physical-host resolution remains unverified.
+
 ## 0.1.3 permanent signing validation (27 September 2026)
 
 - Local `:app:assembleRelease` passed, including release lint and signing, with version 0.1.3 / code 4. `apksigner verify` passed; the APK certificate matches the pinned public SHA-256 fingerprint and the manifest is not debuggable.

@@ -115,3 +115,9 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 `docs/validation.md` records the passing local regression checks and Android APK build, plus the remaining CloudPebble and device acceptance checks.
 
 Implementation reviewed and local regression checks passed. The [Android workflow passed on 26 September 2026](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438), building and uploading the debug APK. Version 0.1.1 also builds an emery PBW locally and has emulator screenshots checked. The first installed version reported connection failures; physical watch routing and live NetBird/Hermes compatibility still require verification using the new diagnostics.
+
+## Watch navigation
+
+Up/Down scroll text and move through menus; holding a button repeats. In the watch main menu, open **Settings** and select **Touch navigation: On/Off** to toggle touchscreen navigation. The preference survives restarts and buttons remain available in both modes. Touch navigation defaults to On and requires compatible watch firmware with system touch navigation enabled. Build the watch with SDK 4.33.1 or newer to include the touch API.
+
+Android's **Open watch app & test link** waits after requesting launch and retries `FailedDifferentAppOpen` up to eight times. A successful launch request alone does not mean the watch is ready to receive a probe. Persistent failures after these retries are reported separately from a successful round trip.
