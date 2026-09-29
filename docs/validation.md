@@ -1,6 +1,16 @@
 # Validation status
 
-The initial implementation review and CI build passed on 26 September 2026. The first installed version subsequently failed on the user's phone/watch: watch messages timed out and API requests reported invalid responses. Live compatibility is therefore unresolved, rather than assumed from the offline checks.
+The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
+
+## 0.1.5 automatic answers and public distribution (29 September 2026)
+
+- The emery conversation smoke dictates, reviews, sends, receives completion, and requires an automatic result request without another button press. It verifies answer display, Reply in the same conversation generation, duplicate completion, late status during a new draft, completion before the durable receipt, and Back. Screenshots of the answer, Reply action, and follow-up answer were visually inspected.
+- The existing emulator checks passed for handshake/probe, scrolling in both directions and at bounds, Settings persistence, buttons with touch disabled, and Back to the launcher. Physical touch gestures remain a device check.
+- The full offline Python, native C, Kotlin protocol, and HTTP suites passed. New native cases check automatic-result eligibility and cancellation. Android `:app:assembleRelease` passed for 0.1.5 / code 6. The watch builds with SDK 4.33.1; the release workflow passes actionlint.
+- Result pages now include their conversation generation so Reply is offered only for the current conversation. The sole official Android host is selected automatically; multiple-host selection remains explicit.
+- The release workflow now builds and verifies a store PBW alongside the signed APK. Publishing waits for both builds. Its public companion download URL points to the actual repository.
+- Inspected CloudPebble upstream commit `08298a28fab376452b880409364913904f5ea135`: import/build omit companion metadata and regenerate `wscript`. The included operator patch passes four pure manifest tests. Hosted deployment, database migration, and direct installation from a patched hosted service were not exercised.
+- Emulator tests use a simulated phone peer. No live Hermes or Matrix request was sent during these checks. Physical automatic replies, follow-up context through the real server, Android background delivery, and fresh app-store installation remain acceptance checks.
 
 ## 0.1.4 scrolling, touch setting, and launch readiness
 
@@ -58,15 +68,15 @@ The release workflow passed actionlint 1.7.12. Pushing `v0.1.0` then triggered [
 
 | Check | Expected result | Status |
 | --- | --- | --- |
-| Manual Android workflow | Produces a sideloadable APK; no Pebble job runs | Passed: APK built and uploaded; device installation deferred |
+| Manual App Release workflow | Produces signed APK and verified PBW artifacts | Local builds passed; see release workflow for CI result |
 | Version tag release | A pushed v* tag builds and attaches the APK to its GitHub Release | Passed: v0.1.0 built and APK attached to the published release |
 | CloudPebble root import/build | Produces a PT2 PBW independently of Android; SDK version is recorded | Deferred, not run |
 | PBW metadata finalizer | Companion declaration is restored; UUID is checked; all other member bytes are unchanged | Passed on locally built 0.1.1 PBW |
-| Companion registration | Stock Pebble app routes watch messages to the installed companion | Deferred, not run |
+| Companion registration | Stock Pebble app routes watch messages to the installed companion | User confirmed finalized PBW fixes link; fresh store installation pending |
 | Both authentication headers | Correct pair succeeds; either wrong credential fails clearly | Deferred, not run |
 | Prefix URL and redirect handling | Prefix remains intact; no credentials follow a redirect | Deferred, not run |
 | Quick Launch and dictation | Capture, review, send, re-dictate, and cancel work on PT2 | Deferred, not run |
-| Normal Hermes request | Real response appears on phone and active watch | Deferred, not run |
+| Normal Hermes request | Real response appears on phone and active watch | User confirmed manual Fetch; automatic flow passed emulator, physical check pending |
 | Follow-up | Remembers the same session; New conversation separates context | Deferred, not run |
 | Authorized Matrix request | Hermes uses the intended account/tool; resulting message is checked in Matrix | Deferred, not run |
 | Duplicate/retried watch message | Creates one durable command | Deferred, not run |
@@ -107,7 +117,7 @@ The pinned wrapper values are JAR SHA-256 `55243ef57851f12b070ad14f7f5bb8302dace
 
 ## Source and packaging checks
 
-Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow supports manual builds and version tag releases, and the watch build remains owned by CloudPebble. The Android workflow passed; no emulator, device install, live Hermes call, or Matrix send was run.
+Source review removed the abandoned duplicate UI/runtime and corrected unresolved internal APIs, suspend calls, model mappings, and metadata. No Room schema was fabricated. The Android workflow supports manual builds and version tag releases, and now builds both the APK and PBW. Later emulator results and user reports are recorded above. No live Hermes call or Matrix send was made during implementation.
 
 ## Runtime and security checks
 
@@ -118,4 +128,4 @@ Source review removed the abandoned duplicate UI/runtime and corrected unresolve
 - Confirm GrapheneOS network permission, NetBird connectivity, Doze, app standby, process death, and force-stop behavior on the actual phone.
 - Confirm no external Matrix delivery claim is derived solely from HTTP acceptance, a run completion, a Pebble transport ACK, or a notification.
 
-Local checks and the emery PBW build passed. Hardware acceptance and live NetBird/Hermes compatibility remain unresolved; the complete stack is not yet validated.
+Local builds and emulator checks passed. User reports confirm the existing physical watch link and manual Hermes result retrieval; the new automatic flow and fresh store installation still need hardware acceptance.

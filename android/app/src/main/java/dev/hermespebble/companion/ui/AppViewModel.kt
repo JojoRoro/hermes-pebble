@@ -305,7 +305,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             hostState.value = hostState.value.copy(loading = true)
             try {
                 val eligible = container.pebbleBridge.eligibleHosts().sorted()
-                val selected = container.pebbleBridge.selectedHost()
+                var selected = container.pebbleBridge.selectedHost()
+                if (selected == null && eligible == listOf("coredevices.coreapp")) {
+                    container.pebbleBridge.selectHost(eligible.single())
+                    selected = eligible.single()
+                    DiagnosticLog.record("Pebble", "Official Pebble host selected automatically")
+                }
                 hostState.value = HostSelectionState(eligible = eligible, selected = selected, loading = false)
                 DiagnosticLog.record("Pebble", "Host scan: ${eligible.size} eligible; selected ${selected ?: "NONE — watch messages will be rejected"}")
                 if (selected == null && eligible.isNotEmpty()) {

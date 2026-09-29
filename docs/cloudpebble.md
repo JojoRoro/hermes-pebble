@@ -1,38 +1,48 @@
-# CloudPebble setup and PBW finalization
+# CloudPebble and companion metadata
 
-CloudPebble is the only watch compilation route for v1. This document describes a later manual operation; no CloudPebble project was opened or built during implementation.
+For normal installation and app-store publishing, use `hermes-pebble-store.pbw` from the [GitHub release](https://github.com/JojoRoro/hermes-pebble/releases/latest). The release workflow builds and verifies it automatically. Users install that PBW (or the future store listing), install the APK, and configure their own Hermes server on Android. CloudPebble is a developer tool, not an installation requirement.
 
-## Required sequence
+## Why direct installation loses the phone connection
 
-1. Open CloudPebble and import the native C project from the repository root at `https://github.com/hermes-pebble/hermes-pebble`. Select the intended branch explicitly; do not assume the importer chose the branch containing this metadata. Select Pebble Time 2 and the `emery` target platform.
-2. Let CloudPebble manage its hosted SDK. The documented reference release is `4.33.1`, but the project manifest must retain `"sdkVersion": "3"`. There is no supported per-project SDK selector to reproduce. Record the actual SDK version from the later CloudPebble build output rather than claiming the reference release was installed.
-3. Build manually when ready and download the resulting PBW. Do not start an automatic webhook or a local Pebble compiler.
-4. Run the standard-library metadata finalizer on the downloaded file:
+Think of the PBW as a parcel with an address label: `companionApp` tells the Pebble phone app which Android package should receive watch messages. CloudPebble builds the watch program but drops that label. Opening the program on the watch can succeed while messages to the companion fail.
+
+The inspected upstream is [coredevices/cloudpebble at 08298a2](https://github.com/coredevices/cloudpebble/tree/08298a28fab376452b880409364913904f5ea135), checked on 29 September 2026:
+
+- [Manifest import and generation](https://github.com/coredevices/cloudpebble/blob/08298a28fab376452b880409364913904f5ea135/cloudpebble/ide/utils/sdk/manifest.py) copy a fixed set of project properties and omit `companionApp`.
+- [Project assembly](https://github.com/coredevices/cloudpebble/blob/08298a28fab376452b880409364913904f5ea135/cloudpebble/ide/utils/sdk/project_assembly.py) generates both the manifest and `wscript`, so changing this repository's build script does not repair hosted builds.
+- [The build task](https://github.com/coredevices/cloudpebble/blob/08298a28fab376452b880409364913904f5ea135/cloudpebble/ide/tasks/build.py) uses npm with `--ignore-scripts`, so a package install hook cannot repair it either.
+
+The PBW needs root `appinfo.json` → `companionApp.android.apps` to contain `dev.hermespebble.companion`. The root repository `package.json` already declares this correctly under `pebble.companionApp`. This is packaging metadata used by the phone host; changing the watch's C code cannot restore it after installation.
+
+## Fix for CloudPebble operators
+
+[cloudpebble-companion-metadata.patch](../tools/upstream/cloudpebble-companion-metadata.patch) targets the upstream commit above. It adds a project JSON field, a database migration, import/export support for the declaration, template-copy support, and four manifest round-trip tests.
+
+Apply it in a CloudPebble checkout, then use the deployment's normal environment to migrate and restart both the web service and build workers:
+
+```sh
+git apply /path/to/cloudpebble-companion-metadata.patch
+python3 cloudpebble/ide/tests/test_companion_manifest.py
+cd cloudpebble
+python manage.py migrate
+```
+
+Reimport Hermes Pebble from `https://github.com/JojoRoro/hermes-pebble` after the change: existing imported projects have already lost the metadata. Build with an SDK supporting PebbleKit 2 companion declarations (this repository uses 4.33.1). Inspect the resulting PBW's root `appinfo.json` before testing direct installation.
+
+The patch's manifest tests pass locally. It has not been deployed to the hosted CloudPebble service, and its full Django/database deployment has not been exercised here. The service operator must adopt the patch before that direct-install route is fixed.
+
+## Temporary route for hosted CloudPebble builds
+
+1. Import the repository root and target Pebble Time 2 / `emery`. Keep `sdkVersion: "3"` in project metadata; this is the manifest format, not a pin to SDK release 4.33.1. Record the actual hosted SDK from build output.
+2. Download the built PBW. Run this command locally with Python 3 and the matching repository checkout:
 
    ```sh
-   python3 tools/finalize_pbw.py --package package.json --input downloads/hermes-pt2.pbw --output downloads/hermes-pt2-ready.pbw
+   python3 tools/finalize_pbw.py --package package.json --input downloads/hermes.pbw --output downloads/hermes-ready.pbw
    ```
 
-   Create the `downloads` directory through the normal local workflow before running the command. Python 3 is the only utility dependency. Inspect the report for the package path, watch UUID, separate output path, and either `metadata restored` or `metadata already present`.
-5. Install `hermes-pt2-ready.pbw` through the ordinary Pebble file-install flow. Do not use CloudPebble's direct-install button for an unfinalized PBW; that route bypasses the required companion metadata correction.
-6. Install the Android APK separately, select the official Pebble phone host, enter the Hermes API credential and independent NetBird access header at runtime, and perform the application handshake. If the watch reports missing companion permission, return to the finalized-PBW step and confirm the exact output was installed.
+3. Open `hermes-ready.pbw` with the Pebble phone app. Installing through CloudPebble's direct-install button bypasses the correction.
+4. Install the matching Android APK, configure Hermes, and test the watch link.
 
-## Why finalization is required
+The finalizer checks the UUID, restores only the top-level companion declaration, and verifies that every other ZIP member's uncompressed bytes are unchanged. It rejects duplicate members, an existing output, and an in-place output; incomplete outputs are removed. It also verifies already-correct metadata. The release workflow runs this same check automatically.
 
-The inspected CloudPebble project assembly path regenerates package metadata and does not retain `companionApp`. The official Pebble phone app uses the PBW's top-level `appInfo.companionApp.android.apps` entry to select the PebbleKit 2 companion. An unfinalized PBW can therefore compile but fail companion registration.
-
-The finalizer treats the repository `package.json` as the source of truth. It requires a valid package UUID and a nonempty Android companion app-object array, checks the PBW UUID, and sets only the top-level `companionApp` in root `appinfo.json`. It does not add a nested `pebble` object and does not alter executable, resource, or platform-manifest bytes.
-
-The tool rejects duplicate ZIP member names, bounds total uncompressed input, refuses an existing output or an in-place output, and reopens the result to verify the UUID, exact companion declaration, and SHA-256 equality of every other member's uncompressed bytes. An incomplete output is removed on failure. Recompression may change the physical ZIP bytes, which is expected; the member payload contract is what is preserved.
-
-If the correct declaration is already present, the tool still writes and verifies the requested separate output and reports `metadata already present`. No real PBW has been finalized in this pass.
-
-## Source-of-truth and route rules
-
-Keep GitHub as the source of truth. A CloudPebble export must not overwrite the root package declaration. There is no automatic cloud webhook, local Pebble SDK requirement, Node build, or Android artifact in this route. A one-click cloud build-and-install flow cannot be promised until the hosted implementation preserves the declaration; the finalizer can verify and leave an already-correct declaration intact.
-
-The Android workflow is separate and manually triggered. It produces only an APK; it does not produce or install a PBW. Do not send credentials to CloudPebble, GitHub Actions, package metadata, or the watch.
-
-## Later checks
-
-The deferred checks in `docs/validation.md` include a real root import/build, SDK recording, finalized metadata, ordinary file installation, companion registration, wrong UUID rejection, duplicate archive-member rejection, duplicate companion validation, and byte-preservation checks. None is marked as passed here.
+Keep GitHub as the source of truth; an export from unpatched CloudPebble must not replace the repository's companion declaration. Credentials belong only in Android runtime settings, never in CloudPebble or app metadata.

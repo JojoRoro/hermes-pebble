@@ -1,6 +1,6 @@
 # Android setup
 
-This guide covers installing and configuring the Android companion. The Android APK build has passed in GitHub Actions; device and live-server validation remain pending.
+This guide covers installing and configuring the Android companion. Install the signed APK and matching watch PBW from the latest release; the two apps share one dedicated Hermes conversation.
 
 ## Prerequisites
 
@@ -14,19 +14,16 @@ Before installation, obtain:
 
 The companion targets application ID and namespace `dev.hermespebble.companion`, minimum SDK 26, target SDK 36, and compile SDK 37.0. It does not require Google Play Services.
 
-## First-run no-send procedure
+## First-run setup
 
-The first run is configuration-only and no-send. Do not send during that first run, even after the read-only check succeeds. Do not submit a request, invoke a live test recipient, or use Quick Launch as a send test until all of the following are complete:
+1. Install the official Pebble phone app and pair the watch.
+2. Install `hermes-pebble.apk` and open `hermes-pebble-store.pbw` with the Pebble phone app. Both are on the [latest release](https://github.com/JojoRoro/hermes-pebble/releases/latest). A published Pebble app-store listing can replace the PBW installation step.
+3. Open Hermes Pebble on Android. The official host (`coredevices.coreapp`) is selected automatically if it is the only eligible host; select the intended host when more than one is available.
+4. Enter the HTTPS Hermes API root and API key, without adding `Bearer `. Configure the separate access header only if required by your proxy. Save the settings.
+5. Run **Test saved Hermes connection**, then **Open watch app & test link** in Diagnostics.
+6. On the watch, choose **Ask Hermes**, dictate, review, and **Send**. Progress changes to the answer automatically while that screen is open. Press Select and choose **Reply to Hermes** to continue the conversation.
 
-1. Open the official Pebble app and confirm its PebbleKit 2 service is available.
-2. Install and open Hermes Pebble.
-3. Enter the Hermes API root and API credential.
-4. Configure the independent NetBird access header if the service requires it.
-5. Select the official Pebble phone host rather than trusting the first package that advertises a service.
-6. Run the read-only Test connection action.
-7. Confirm the application handshake and connection diagnostics show a supported Hermes route and API profile.
-
-Setup and Test connection must not send a Matrix message. A local note is saved only on the phone. Choose a test recipient explicitly for the later live Matrix acceptance check.
+Setup and Test connection make no Hermes run or Matrix send. An intentional Send submits the reviewed request. Local notes stay on the phone. If you leave the conversation screen before completion, use Recent to retrieve the answer later.
 
 ## Hermes API profile prerequisites
 
@@ -48,24 +45,17 @@ In the NetBird reverse proxy configuration, enable the Custom Header option and 
 
 The value is a NetBird service-access secret, not a NetBird management API token. A custom header does not create a VPN connection. The phone must have a working NetBird connection when the Hermes API is on a private network. Keep the header independent from `Authorization`; using NetBird's Authorization preset would compete with Hermes authentication.
 
-## Sideloading the APK
+## Sideloading and updating
 
-Download `hermes-pebble-debug.apk` from the [latest GitHub Release](https://github.com/JojoRoro/hermes-pebble/releases/latest) and install it using the phone's normal sideload flow. Each version tag matching `v*` builds the tagged source and attaches this APK to a GitHub Release after a successful build.
+Download `hermes-pebble.apk` from the [latest GitHub Release](https://github.com/JojoRoro/hermes-pebble/releases/latest), or use Obtainium to track this repository. Install it using Android's normal APK installation flow. Install the matching `hermes-pebble-store.pbw` through the Pebble phone app as well; Obtainium updating the APK does not update the watch app.
 
-The workflow can also be dispatched manually from the Actions UI. Manual runs upload the `hermes-pt2-android-debug` Actions artifact without publishing a release. The artifact path is `android/app/build/outputs/apk/debug/app-debug.apk` within the workflow workspace.
+Since v0.1.3, release APKs share one permanent signing key, so later versions install as updates and keep settings. Releases through v0.1.2 used disposable debug keys and require a one-time uninstall/reinstall, which clears local data. A developer debug APK cannot replace a signed release APK in place. See [signing maintenance](android-signing.md).
 
-The first APK is for sideloading, not Play Store distribution. Keep the same application ID for updates. A CI debug key generated on a disposable runner can change, so it is not a stable update-signing identity. A later signing configuration may provide a protected stable keystore through GitHub Actions secrets; do not commit the keystore, expose its passwords, or change the application ID as a signing workaround.
+Manual **App Release** workflow runs upload the signed APK and verified PBW as Actions artifacts. A pushed version tag also publishes both to GitHub Releases.
 
 ## Publishing a version
 
-Update `versionName` and increment `versionCode` in `android/app/build.gradle.kts`, then commit and push the change. Create and push an annotated tag matching the app version; for example, for version 0.1.1:
-
-```sh
-git tag -a v0.1.1 -m "Hermes Pebble v0.1.1"
-git push origin v0.1.1
-```
-
-The tag push runs the Android build and creates a release with `hermes-pebble-debug.apk` attached. Tags containing a hyphen, such as `v0.2.0-beta.1`, produce prereleases. Rerunning a tag workflow updates the APK on that release. The build job has read access; only the publish job can write releases through GitHub's automatic workflow token.
+See [publishing instructions](publishing.md) for matching version numbers, tag-triggered builds, and the PBW to upload to the Pebble app store. Keep the existing application ID, watch UUID, and permanent signing key for updates.
 
 ## Runtime secret handling
 

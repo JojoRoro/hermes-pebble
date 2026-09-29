@@ -21,7 +21,8 @@ def metadata_checks():
         json.loads(path.read_text())
     for path in (ROOT / 'android/app/src/main').rglob('*.xml'):
         ET.parse(path)
-    package = json.loads((ROOT / 'package.json').read_text())['pebble']
+    manifest = json.loads((ROOT / 'package.json').read_text())
+    package = manifest['pebble']
     native = (ROOT / 'src/c/protocol.h').read_text()
     kotlin = (SOURCES / 'pebble/Protocol.kt').read_text()
     for name, value in package['messageKeys'].items():
@@ -30,8 +31,10 @@ def metadata_checks():
         assert re.search(rf'KEY_{symbol}\s*=\s*{value}u\b', kotlin), name
     assert package['uuid'] in native and package['uuid'] in kotlin
     app_id = package['companionApp']['android']['apps'][0]['package']
-    assert f'applicationId = "{app_id}"' in (ROOT / 'android/app/build.gradle.kts').read_text()
-    print('JSON, XML, protocol keys, UUID, and application ID checks passed', flush=True)
+    android = (ROOT / 'android/app/build.gradle.kts').read_text()
+    assert f'applicationId = "{app_id}"' in android
+    assert f'versionName = "{manifest["version"]}"' in android, 'Watch and Android versions differ'
+    print('JSON, XML, protocol keys, UUID, application ID, and release version checks passed', flush=True)
 
 
 def main():

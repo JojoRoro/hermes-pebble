@@ -1,0 +1,145 @@
+diff --git a/cloudpebble/ide/models/project.py b/cloudpebble/ide/models/project.py
+index d04350a..c967b3d 100644
+--- a/cloudpebble/ide/models/project.py
++++ b/cloudpebble/ide/models/project.py
+@@ -43,6 +43,7 @@ class Project(IdeModel):
+     app_is_shown_on_communication = models.BooleanField(default=False)
+     app_capabilities = models.CharField(max_length=255, blank=True, null=True)
+     app_keys = models.TextField(default="{}")
++    app_companion = models.JSONField(default=dict, blank=True)
+     app_jshint = models.BooleanField(default=True)
+     app_platforms = models.TextField(max_length=255, blank=True, null=True)
+     app_modern_multi_js = models.BooleanField(default=True)
+@@ -333,6 +334,7 @@ class TemplateProject(Project):
+         project.app_is_hidden = self.app_is_hidden
+         project.app_is_shown_on_communication = self.app_is_shown_on_communication
+         project.app_keys = self.app_keys
++        project.app_companion = self.app_companion.copy()
+         project.app_jshint = self.app_jshint
+         project.app_modern_multi_js = self.app_modern_multi_js
+         project.save()
+diff --git a/cloudpebble/ide/utils/sdk/manifest.py b/cloudpebble/ide/utils/sdk/manifest.py
+index 3a4c2c9..da02269 100644
+--- a/cloudpebble/ide/utils/sdk/manifest.py
++++ b/cloudpebble/ide/utils/sdk/manifest.py
+@@ -54,6 +54,8 @@ def generate_v2_manifest_dict(project, resources):
+         "projectType": "native",
+         "sdkVersion": "2",
+     }
++    if project.app_companion:
++        manifest["companionApp"] = project.app_companion
+     if project.app_capabilities:
+         manifest["capabilities"] = project.app_capabilities.split(",")
+     if project.app_is_shown_on_communication:
+@@ -80,6 +82,8 @@ def generate_v3_manifest_dict(project, resources):
+             else project.project_type,
+         },
+     }
++    if project.app_companion:
++        manifest["pebble"]["companionApp"] = project.app_companion
+     if project.app_capabilities:
+         manifest["pebble"]["capabilities"] = project.app_capabilities.split(",")
+     if project.project_type == "package":
+@@ -324,6 +328,10 @@ def load_manifest_dict(manifest, manifest_kind, default_project_type="native"):
+         app_uuid = str(app_uuid)
+     if not isinstance(app_uuid, str) or not re.match(regexes.uuid, app_uuid):
+         app_uuid = str(uuid.uuid4())
++    companion = manifest.get("companionApp", {})
++    if not isinstance(companion, dict):
++        raise InvalidProjectArchiveException(_("companionApp must be an object"))
++    project["app_companion"] = companion
+     project["app_uuid"] = app_uuid
+     project["app_is_watchface"] = manifest.get("watchapp", {}).get("watchface", False)
+     project["app_is_hidden"] = manifest.get("watchapp", {}).get("hiddenApp", False)
+diff --git a/cloudpebble/ide/migrations/0015_project_app_companion.py b/cloudpebble/ide/migrations/0015_project_app_companion.py
+new file mode 100644
+index 0000000..05555c1
+--- /dev/null
++++ b/cloudpebble/ide/migrations/0015_project_app_companion.py
+@@ -0,0 +1,12 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++    dependencies = [("ide", "0014_buildresult_commit_sha")]
++    operations = [
++        migrations.AddField(
++            model_name="project",
++            name="app_companion",
++            field=models.JSONField(default=dict, blank=True),
++        ),
++    ]
+diff --git a/cloudpebble/ide/tests/test_companion_manifest.py b/cloudpebble/ide/tests/test_companion_manifest.py
+new file mode 100644
+index 0000000..707b9ea
+--- /dev/null
++++ b/cloudpebble/ide/tests/test_companion_manifest.py
+@@ -0,0 +1,68 @@
++"""Pure manifest round-trip tests; no database or Django setup required."""
++import ast
++import json
++from pathlib import Path
++import re
++from types import SimpleNamespace
++import unittest
++import uuid
++
++SOURCE = Path(__file__).resolve().parents[1] / 'utils/sdk/manifest.py'
++
++
++def manifest_functions():
++    names = {'load_manifest_dict', 'generate_v3_manifest_dict',
++             'generate_v2_manifest_dict', 'dict_to_pretty_json'}
++    tree = ast.parse(SOURCE.read_text())
++    tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
++    scope = dict(json=json, re=re, uuid=uuid, APPINFO_MANIFEST='appinfo.json',
++                 PACKAGE_MANIFEST='package.json', InvalidProjectArchiveException=ValueError,
++                 regexes=SimpleNamespace(uuid=r'^[0-9a-f-]{36}$'),
++                 generate_resource_dict=lambda project, resources: {'media': []},
++                 _=lambda value: value)
++    exec(compile(tree, str(SOURCE), 'exec'), scope)
++    return scope
++
++
++class CompanionManifestTests(unittest.TestCase):
++    def setUp(self):
++        self.functions = manifest_functions()
++        self.companion = {'android': {'url': 'https://example.org/download',
++                                      'apps': [{'package': 'dev.example.companion'}]}}
++        self.manifest = {'name': 'example', 'author': 'example', 'version': '1.0.0',
++                         'pebble': {'uuid': '7d07aa22-7d13-48c1-a400-2602a5ae4647',
++                                    'companionApp': self.companion}}
++
++    def roundtrip(self, manifest, kind):
++        settings, _, _ = self.functions['load_manifest_dict'](manifest, kind)
++        settings.setdefault('app_companion', {})
++        project = SimpleNamespace(**settings)
++        project.npm_name = 'example'
++        project.semver = '1.0.0'
++        project.keywords = []
++        project.get_dependencies = lambda: {}
++        project.app_platforms = 'emery'
++        project.app_platform_list = ['emery']
++        project.app_version_label = '1.0'
++        return self.functions['generate_v3_manifest_dict'](project, [])
++
++    def test_package_import_build_preserves_companion(self):
++        self.assertEqual(self.roundtrip(self.manifest, 'package.json')['pebble']['companionApp'], self.companion)
++
++    def test_legacy_import_build_preserves_companion(self):
++        manifest = dict(uuid=self.manifest['pebble']['uuid'], shortName='test', longName='test',
++                        companyName='test', versionLabel='1.0', companionApp=self.companion)
++        self.assertEqual(self.roundtrip(manifest, 'appinfo.json')['pebble']['companionApp'], self.companion)
++
++    def test_absent_companion_stays_absent(self):
++        del self.manifest['pebble']['companionApp']
++        self.assertNotIn('companionApp', self.roundtrip(self.manifest, 'package.json')['pebble'])
++
++    def test_invalid_companion_rejected(self):
++        self.manifest['pebble']['companionApp'] = []
++        with self.assertRaises(ValueError):
++            self.roundtrip(self.manifest, 'package.json')
++
++
++if __name__ == '__main__':
++    unittest.main()

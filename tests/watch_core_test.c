@@ -117,6 +117,27 @@ int main(void) {
   s_menu_count = 6;
   assert(menu_row_count() == 6); // Pending-draft menu also includes Reconnect.
 
+  s_stay_on_menu = false;
+  s_visible_capture_id = s_follow_capture_id = 123;
+  s_visible_status = HERMES_STATUS_COMPLETED;
+  s_visible_error = HERMES_ERROR_NONE;
+  s_visible_item_kind = HERMES_ITEM_KIND_REQUEST;
+  s_auto_result_requested = false;
+  assert(should_auto_fetch_result());
+  s_auto_result_requested = true;
+  assert(!should_auto_fetch_result()); // repeated status cannot refetch
+  s_auto_result_requested = false;
+  s_stay_on_menu = true;
+  assert(!should_auto_fetch_result()); // explicit Back keeps the menu
+  s_stay_on_menu = false;
+  s_visible_capture_id++;
+  assert(!should_auto_fetch_result()); // another capture cannot steal focus
+  s_visible_capture_id--;
+  s_visible_item_kind = HERMES_ITEM_KIND_NOTE;
+  assert(!should_auto_fetch_result()); // notes do not have Hermes replies
+  cancel_auto_result();
+  assert(s_follow_capture_id == 0 && s_auto_result_capture_id == 0);
+
   // Phone-originated probes prompt a correlated watch handshake, without
   // completing an unrelated request or pretending a transport ACK is success.
   InboundTransfer probe = { .kind = HERMES_KIND_HANDSHAKE_ACK, .transfer_id = 51 };

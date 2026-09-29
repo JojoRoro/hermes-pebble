@@ -16,15 +16,19 @@ The Pebble project is rooted at the repository root so CloudPebble can import it
 | Android minimum/target SDK | 26 / 36 |
 | Android compile SDK | 37.0 |
 | PebbleKit Android client | `io.rebble.pebblekit2:client:1.3.2` |
-| Repository | `https://github.com/hermes-pebble/hermes-pebble` |
+| Repository | `https://github.com/JojoRoro/hermes-pebble` |
 
-The root `package.json` is the source of truth for the watch UUID and companion declaration. The Android Gradle files are pinned to the researched AGP, Kotlin, KSP, and library baseline in `IMPLEMENTATION.md`. No version research or generated Room schema is included in this pass.
+The root `package.json` is the source of truth for the watch UUID and companion declaration. The Android Gradle files are pinned to the researched AGP, Kotlin, KSP, and library baseline in `IMPLEMENTATION.md`. Release tags build both the Android APK and the watch PBW.
 
-## Safety rule for first run
+## Get started
 
-The first-run setup is deliberately configuration-only and no-send. Configure the HTTPS Hermes API root, Hermes API credential, and the optional NetBird access header, then use only the read-only Test connection action. Do not send during that first run, even after the check succeeds: do not press Send, dictate a request intended for Hermes, or invoke Quick Launch with a live test recipient.
+1. Download `hermes-pebble.apk` and `hermes-pebble-store.pbw` from the [latest release](https://github.com/JojoRoro/hermes-pebble/releases/latest).
+2. Install the APK on Android and open the PBW with the official Pebble phone app. Once published, the Pebble app-store listing can supply the watch app instead.
+3. Open Android Setup and enter your Hermes API root and key. Enable the additional access header only if your proxy requires it. Save and test the connection.
+4. The official Pebble host is selected automatically when it is the only eligible host. Otherwise select it in Setup. Open the watch app and confirm the link.
+5. Choose **Ask Hermes**, dictate, review, and **Send**. Keep that screen open: progress changes to the answer automatically. Select **Reply to Hermes** from the answer's actions to continue the same conversation. **New conversation** starts a separate context.
 
-A successful setup or capability check is not permission to send a Matrix message. The later Matrix acceptance check must use an explicitly chosen test recipient. Local notes do not invoke Hermes. A transport acknowledgment is not proof that Hermes completed a run or that an external action was delivered.
+Long answers scroll with Up/Down; the actions menu offers the next page when needed. Fetch remains available for recovering an answer later. Test connection only checks the API; sending a request is a separate action.
 
 ## Hermes prerequisites
 
@@ -47,7 +51,7 @@ Both credentials are attached to every Hermes request when enabled. The URL is t
 
 ## Connection diagnostics and credential editing
 
-In Android **Setup**, first select the Pebble phone host. PebbleKit rejects incoming watch messages until a host is selected. Close and reopen Hermes on the watch after changing the host, or choose **Reconnect** in the watch menu. Install a finalized PBW so the Pebble host knows which Android companion to contact.
+Android **Setup** selects `coredevices.coreapp` automatically when it is the sole eligible Pebble host. If multiple hosts are installed, select the intended one. PebbleKit rejects incoming watch messages until a host is selected. Close and reopen Hermes on the watch after changing the host, or choose **Reconnect** in the watch menu. Install a finalized PBW so the Pebble host knows which Android companion to contact.
 
 The API key and additional header value load from encrypted storage. Tap either field to reveal and edit the saved value; leaving the field masks it again. Save edits before running **Test saved Hermes connection**. Saving unchanged values preserves the current connection profile.
 
@@ -67,9 +71,9 @@ Header names must be valid HTTP tokens. Control characters, line breaks, case-in
 
 ### Android APK
 
-Download `hermes-pebble-debug.apk` from the [latest GitHub Release](https://github.com/JojoRoro/hermes-pebble/releases/latest) and sideload it through the phone's normal APK installation flow.
+Download `hermes-pebble.apk` from the [latest GitHub Release](https://github.com/JojoRoro/hermes-pebble/releases/latest) and sideload it through the phone's normal APK installation flow.
 
-The Android workflow builds version tags matching `v*` and publishes the APK as a GitHub Release asset. Manual runs from the Actions UI upload the `hermes-pt2-android-debug` artifact. The authentic Gradle 9.4.1 wrapper files are included; the wrapper JAR checksum was verified during review. The workflow does not compile a watch app, call Hermes, or need any service secret. See [release instructions](docs/android-setup.md#publishing-a-version) for creating a new version.
+The **App Release** workflow builds version tags matching `v*` and publishes both the signed APK and a verified PBW. Manual runs upload `hermes-pt2-android-release` and `hermes-pebble-store` Actions artifacts without publishing a release. Builds do not contact Hermes or need Hermes/proxy credentials. See [publishing instructions](docs/publishing.md).
 
 Starting with v0.1.3, CI publishes `hermes-pebble.apk`, a release APK signed with one permanent key for `dev.hermespebble.companion`. It restores the PKCS12 key from `ANDROID_SIGNING_KEY_BASE64` and its password from `ANDROID_SIGNING_PASSWORD` repository Actions secrets. Missing secrets fail the build; there is no temporary-key fallback. The uploaded APK certificate must match `.github/android-signing-cert.sha256`. Local debug builds still use a developer debug key and cannot replace an installed release build.
 
@@ -77,15 +81,9 @@ Versions through v0.1.2 used disposable CI debug keys. Their private keys were n
 
 ### Pebble PBW
 
-Open CloudPebble, import the repository root, select the intended branch, and target Pebble Time 2/`emery`. CloudPebble manages the hosted SDK. The manifest keeps `"sdkVersion": "3"`; `4.33.1` is the reference SDK release, not a per-project pin. Build manually, download the PBW, and run the standard-library finalizer locally:
+Use `hermes-pebble-store.pbw` from the same GitHub release as the APK. It contains the companion declaration needed by the Pebble phone app and is ready to upload to the Pebble app store. End users do not need to build or modify it.
 
-```sh
-python3 tools/finalize_pbw.py --package package.json --input downloads/hermes-pt2.pbw --output downloads/hermes-pt2-ready.pbw
-```
-
-Install the `-ready.pbw` through the ordinary Pebble file-install flow. Do not use CloudPebble's direct-install button for an unfinalized PBW because it bypasses the companion metadata correction. Keep GitHub as the source of truth; CloudPebble exports must not replace the root `package.json` declaration.
-
-The finalizer restores only the PBW's top-level `companionApp`, checks the UUID, rejects duplicate archive members, and verifies every other member's uncompressed bytes. It refuses an existing or in-place output and removes an incomplete output on failure. `docs/cloudpebble.md` contains the complete sequence.
+CloudPebble currently loses that declaration while importing/building. Its direct-install button can install an app that opens but cannot contact Android. [CloudPebble details](docs/cloudpebble.md) include an upstream patch and a manual finalizer for developers who use the hosted builder. The release workflow runs the SDK and metadata verification automatically.
 
 ## Quick Launch
 
@@ -112,9 +110,7 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 
 ## Validation status
 
-`docs/validation.md` records the passing local regression checks and Android APK build, plus the remaining CloudPebble and device acceptance checks.
-
-Implementation reviewed and local regression checks passed. The [Android workflow passed on 26 September 2026](https://github.com/JojoRoro/hermes-pebble/actions/runs/36271723438), building and uploading the debug APK. Version 0.1.1 also builds an emery PBW locally and has emulator screenshots checked. The first installed version reported connection failures; physical watch routing and live NetBird/Hermes compatibility still require verification using the new diagnostics.
+[Validation results](docs/validation.md) distinguish emulator/build checks from physical-device checks. The user confirmed that installing the finalized PBW fixed watch routing and correcting the API key fixed Hermes authentication. Version 0.1.5 adds emulator coverage for automatic answers, follow-up requests, duplicate/late status updates, and completion arriving before the phone's saved receipt. Live Hermes and physical-watch verification of the new automatic flow remain device checks.
 
 ## Watch navigation
 

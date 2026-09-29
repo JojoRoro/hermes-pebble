@@ -1,7 +1,7 @@
 {
   "name": "hermes-pebble",
   "author": "hermes-pebble",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},
@@ -35,7 +35,7 @@
     "resources": { "media": [] },
     "companionApp": {
       "android": {
-        "url": "https://github.com/hermes-pebble/hermes-pebble",
+        "url": "https://github.com/JojoRoro/hermes-pebble/releases/latest",
         "apps": [{ "package": "dev.hermespebble.companion" }]
       }
     }

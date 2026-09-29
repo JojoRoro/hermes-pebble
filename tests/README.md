@@ -31,7 +31,7 @@ The Kotlin library directory must contain these Maven artifacts (no repository s
 
 `ProtocolCheck.kt` covers chunk retry/reassembly and idempotency deadlines. `NetworkCheck.kt` covers short HTTP responses, headers, URL prefixes, replayed terminal runs, history metadata, optional legacy idempotency/replay metadata, precise HTML/schema diagnostics, secret exclusion from diagnostic events, and rejection paths. `watch_core_test.c` covers UTF-8 boundaries, JSON parsing, pending-record recovery, checksum failure, and exact persistence return values. `test_finalize_pbw.py` covers metadata-only PBW transformations and failure cleanup.
 
-These checks do **not** compile the full Android app, run Room's processor, execute WorkManager, or validate Keystore/Compose behavior. The manual Android workflow, CloudPebble build, and real-device acceptance matrix remain in [validation.md](../docs/validation.md).
+These checks do **not** compile the full Android app, run Room's processor, execute WorkManager, or validate Keystore/Compose behavior. Build results and the real-device acceptance matrix are recorded in [validation.md](../docs/validation.md).
 
 ## Emulator smoke
 
@@ -40,3 +40,11 @@ With the Pebble SDK installed, build using `pebble build`. Run `tests/watch_emul
 It exercises the startup reply, a correlated phone probe, five rapid Down presses to Reconnect, and two rapid Back presses while awaiting a reply. It fails on missing handshakes or logged app faults. Inspect the screenshots in `build/watch-smoke`: linked screens should say LINKED, the fifth Down should select Reconnect, and the final screenshot should show the system home screen. This does not exercise Android's Bluetooth/host binding.
 
 The emulator smoke also sends a multiline diagnostic and compares the visible text before/after Up and Down, checks both scroll boundaries, toggles the watch touch-navigation setting, relaunches the app to check persistence, and re-enables touch using buttons. Use SDK 4.33.1 firmware (`pebble kill` before switching from an older running emulator). Touch gesture delivery itself still requires a touch-capable watch with system touch navigation enabled.
+
+## Automatic reply and conversation smoke
+
+After `pebble build`, run `tests/watch_conversation_smoke.py --emulator emery` in the same SDK Python environment as the navigation smoke. Optional `--pbw` and `--output` arguments work the same way. Do not run both emulator scripts concurrently.
+
+This test supplies a local dictation fixture and acts as the phone peer. It dictates/reviews/sends, sends progress and completion, and requires the watch to request and display the result without another button press. It checks duplicate completion does not replace the answer; Reply creates a new capture in the same conversation generation; late status does not replace a new draft; completion arriving before the saved receipt still fetches the result; and Back remains effective. Screenshots are written to `build/conversation-smoke` for visual inspection. It makes no live Hermes, speech-service, or Matrix requests.
+
+The CloudPebble operator patch includes separate manifest round-trip tests; apply and run them as described in [CloudPebble instructions](../docs/cloudpebble.md).

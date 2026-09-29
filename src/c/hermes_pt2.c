@@ -49,6 +49,7 @@
 #define HERMES_ACTION_NEXT_RESULT 11u
 #define HERMES_ACTION_STATUS 12u
 #define HERMES_ACTION_BACK 13u
+#define HERMES_ACTION_REPLY 14u
 
 #define HERMES_MENU_MAIN 0u
 #define HERMES_MENU_RECENT 1u
@@ -145,6 +146,11 @@ static bool s_exiting;
 static bool s_touch_navigation_enabled = true;
 static bool s_stay_on_menu;
 static uint32_t s_phone_probe_id;
+static uint32_t s_follow_capture_id;
+static uint32_t s_visible_generation;
+static uint32_t s_auto_result_capture_id;
+static bool s_auto_result_requested;
+static bool s_result_loading;
 static bool s_storage_corrupt;
 static bool s_identity_valid;
 static bool s_discard_in_progress;
@@ -205,6 +211,8 @@ static void ui_show_error(uint32_t code, const char *text);
 static void ui_show_actions(void);
 static void ui_destroy_content(void);
 static void ui_show_settings(void);
+static bool should_auto_fetch_result(void);
+static void cancel_auto_result(void);
 static void touch_navigation_apply(void);
 static void touch_navigation_load(void);
 static bool touch_navigation_save(bool enabled);
@@ -566,6 +574,7 @@ static void ui_show_menu(void) {
 }
 
 static void ui_show_settings(void) {
+  cancel_auto_result();
   const char *labels[] = {s_touch_navigation_enabled ? "Touch navigation: On" : "Touch navigation: Off"};
   s_screen = HERMES_SCREEN_SETTINGS;
   build_menu("Settings", labels, 1u, HERMES_MENU_SETTINGS);
@@ -612,6 +621,9 @@ static void ui_show_status(void) {
   if (s_visible_flags & HERMES_FLAG_MORE) {
     snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "More on phone\n");
   }
+  if (s_result_loading) {
+    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nLoading reply...\n");
+  }
   if (s_visible_input[0] != '\0') {
     snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nRequest:\n%s\n", s_visible_input);
   }
@@ -625,19 +637,13 @@ static void ui_show_status(void) {
 }
 
 static void ui_show_result(void) {
-  snprintf(s_body_text, sizeof(s_body_text), "%s", status_text(s_visible_status));
-  if (s_visible_input[0] != '\0') {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nRequest:\n%s\n", s_visible_input);
-  }
-  if (s_visible_output[0] != '\0') {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nAnswer:\n%s\n", s_visible_output);
-  } else {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nNo answer text on this page.\n");
-  }
+  snprintf(s_body_text, sizeof(s_body_text), "%s", s_visible_output[0] != '\0'
+      ? s_visible_output : "No answer text is available yet. Select actions to refresh.");
   if (s_result_more) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nMore on phone\n");
+    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text),
+        "\n\nSelect actions for the next page.");
   }
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: status", HERMES_SCREEN_RESULT);
+  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_RESULT);
 }
 
 static void ui_show_recent(void) {
@@ -715,10 +721,17 @@ static void ui_show_actions(void) {
     labels[count] = "Back to status";
     actions[count++] = HERMES_ACTION_STATUS;
   } else if (original == HERMES_SCREEN_RESULT) {
+    if (s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
+        s_visible_status == HERMES_STATUS_COMPLETED && s_visible_generation == s_generation && s_pending.operation == HERMES_PENDING_NONE) {
+      labels[count] = "Reply to Hermes";
+      actions[count++] = HERMES_ACTION_REPLY;
+    }
     if (s_result_more) {
       labels[count] = "Next result page";
       actions[count++] = HERMES_ACTION_NEXT_RESULT;
     }
+    labels[count] = "Refresh answer";
+    actions[count++] = HERMES_ACTION_FETCH_RESULT;
     labels[count] = "Recent";
     actions[count++] = HERMES_ACTION_RECENT;
     labels[count] = "Status";
@@ -959,7 +972,22 @@ static void ui_menu_down_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 /* Back always moves toward the system launcher; pending storage is never cleared. */
+static void cancel_auto_result(void) {
+  s_follow_capture_id = 0u;
+  s_auto_result_capture_id = 0u;
+  s_auto_result_requested = false;
+  s_result_loading = false;
+}
+
+static bool should_auto_fetch_result(void) {
+  return !s_exiting && !s_stay_on_menu && !s_auto_result_requested &&
+      s_follow_capture_id != 0u && s_follow_capture_id == s_visible_capture_id &&
+      s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
+      s_visible_status == HERMES_STATUS_COMPLETED && s_visible_error == HERMES_ERROR_NONE;
+}
+
 static bool navigation_back(void) {
+  cancel_auto_result();
   s_outbound.active = false;
   s_outbound.phase = HERMES_OUT_IDLE;
   s_inbound.active = false;
@@ -1012,6 +1040,10 @@ static void ui_click_config(void *context) {
 
 static void ui_action(uint8_t action) {
   switch (action) {
+    case HERMES_ACTION_REPLY:
+      // A normal request in the current generation reuses the phone's session.
+      start_dictation(HERMES_CAPTURE_REQUEST);
+      break;
     case HERMES_ACTION_SEND:
       if (s_capture_mode == HERMES_CAPTURE_NOTE) {
         prepare_capture(HERMES_PENDING_NOTE);
@@ -1056,6 +1088,7 @@ static void ui_action(uint8_t action) {
       start_fetch_recent();
       break;
     case HERMES_ACTION_MENU:
+      cancel_auto_result();
       s_stay_on_menu = true;
       s_screen = HERMES_SCREEN_MENU;
       ui_rebuild();
@@ -1650,7 +1683,7 @@ static void timer_ensure(void) {
 }
 
 static void timer_maybe_cancel(void) {
-  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u) {
+  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u && s_auto_result_capture_id == 0u) {
     if (s_timer != NULL) app_timer_cancel(s_timer);
     s_timer = NULL;
   }
@@ -1664,6 +1697,15 @@ static void timer_tick(void *context) {
     outbound_start(HERMES_KIND_HANDSHAKE, HERMES_KIND_HANDSHAKE_ACK, next_transfer_id(),
       0u, s_generation, 0u, 0u, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE,
       HERMES_ITEM_KIND_NONE, HERMES_STATUS_NONE, 0u, 0u, NULL, 0u);
+  }
+  if (s_auto_result_capture_id != 0u && !s_outbound.active && !s_inbound.active &&
+      s_pending.operation == HERMES_PENDING_NONE) {
+    uint32_t capture = s_auto_result_capture_id;
+    s_auto_result_capture_id = 0u;
+    if (should_auto_fetch_result() && capture == s_visible_capture_id) {
+      s_auto_result_requested = true;
+      start_fetch_result(capture, 0u);
+    }
   }
   if (s_inbound.active) {
     s_inbound_elapsed_ticks++;
@@ -1698,7 +1740,7 @@ static void timer_tick(void *context) {
       }
     }
   }
-  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u) timer_ensure();
+  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u || s_auto_result_capture_id != 0u) timer_ensure();
 }
 
 static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfer_id, uint32_t capture_id, uint32_t generation, uint32_t item_id, uint32_t page_offset, uint32_t total_bytes, uint8_t status, uint8_t error_code, uint8_t item_kind, uint8_t item_state, uint8_t page_count, uint8_t flags, const uint8_t *payload, uint16_t length) {
@@ -1859,6 +1901,8 @@ static void outbound_failed(uint32_t error_code, const char *text) {
   uint32_t capture_id = s_outbound.capture_id;
   s_outbound.active = false;
   s_outbound.phase = HERMES_OUT_IDLE;
+  s_result_loading = false;
+  s_auto_result_capture_id = 0u;
   if (text != NULL) {
     snprintf(s_error_text, sizeof(s_error_text), "%s", text);
   }
@@ -1923,6 +1967,7 @@ static void start_dictation(uint8_t mode) {
     }
     return;
   }
+  cancel_auto_result();
   s_dictation_mode = mode == HERMES_CAPTURE_NOTE ? HERMES_CAPTURE_NOTE : HERMES_CAPTURE_REQUEST;
   s_capture_mode = s_dictation_mode;
   s_capture_text[0] = '\0';
@@ -2047,6 +2092,9 @@ static void prepare_capture(uint8_t operation) {
   }
   s_pending = candidate;
   s_discard_capture_id = capture_id;
+  cancel_auto_result();
+  s_follow_capture_id = operation == HERMES_PENDING_REQUEST ? capture_id : 0u;
+  s_visible_generation = s_generation;
   s_visible_capture_id = capture_id;
   s_visible_item_id = 0u;
   s_visible_status = HERMES_STATUS_WAITING_PHONE;
@@ -2084,6 +2132,9 @@ static void resume_pending_capture(void) {
   } else {
     kind = HERMES_KIND_SAVE_NOTE;
   }
+  cancel_auto_result();
+  s_follow_capture_id = s_pending.operation == HERMES_PENDING_REQUEST ? s_pending.capture_id : 0u;
+  s_visible_generation = s_pending.generation;
   s_visible_capture_id = s_pending.capture_id;
   s_visible_item_kind = s_pending.operation == HERMES_PENDING_NOTE ? HERMES_ITEM_KIND_NOTE : HERMES_ITEM_KIND_REQUEST;
   s_visible_status = HERMES_STATUS_WAITING_PHONE;
@@ -2098,6 +2149,7 @@ static void resume_pending_capture(void) {
 }
 
 static void start_fetch_recent(void) {
+  cancel_auto_result();
   if (!s_app_message_open || s_outbound.active) {
     if (!s_app_message_open) {
       ui_show_error(HERMES_ERROR_WATCH_UNAVAILABLE, "The Pebble phone host is unavailable.");
@@ -2118,7 +2170,8 @@ static void start_fetch_result(uint32_t capture_id, uint32_t offset) {
   }
   s_result_offset = offset;
   s_result_more = 0u;
-  s_screen = HERMES_SCREEN_CONNECTING;
+  s_result_loading = true;
+  s_screen = HERMES_SCREEN_STATUS;
   ui_rebuild();
   outbound_start(HERMES_KIND_FETCH_RESULT, HERMES_KIND_RESULT_PAGE, next_transfer_id(), capture_id, s_generation, 0u, offset, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE, s_visible_item_kind, s_visible_status, 0u, 0u, NULL, 0u);
 }
@@ -2550,7 +2603,7 @@ static void process_durable_receipt(const InboundTransfer *message) {
   }
   s_visible_capture_id = message->capture_id;
   s_visible_item_id = message->item_id;
-  s_visible_status = message->status;
+  if (s_visible_status != HERMES_STATUS_COMPLETED) s_visible_status = message->status;
   s_visible_error = HERMES_ERROR_NONE;
   s_visible_flags = message->flags;
   s_visible_item_kind = expected_kind;
@@ -2568,23 +2621,28 @@ static void process_durable_receipt(const InboundTransfer *message) {
 }
 
 static void process_status_update(const InboundTransfer *message) {
-  if (message->capture_id == 0u) {
-    return;
-  }
-  if (message->capture_id != s_visible_capture_id && (s_pending.operation == HERMES_PENDING_NONE || message->capture_id != s_pending.capture_id)) {
-    return;
-  }
+  if (message->capture_id == 0u) return;
+  if (message->capture_id != s_visible_capture_id &&
+      (s_pending.operation == HERMES_PENDING_NONE || message->capture_id != s_pending.capture_id)) return;
+  // Do not let repeated/delayed statuses replace an answer or a new draft.
+  bool viewing_status = s_screen == HERMES_SCREEN_STATUS;
+  bool has_answer = s_screen == HERMES_SCREEN_RESULT ||
+      (s_screen == HERMES_SCREEN_ACTIONS && s_previous_screen == HERMES_SCREEN_RESULT);
   s_visible_capture_id = message->capture_id;
   s_visible_item_id = message->item_id;
-  s_visible_status = message->status;
-  s_visible_error = message->error_code;
+  if (!(s_visible_status == HERMES_STATUS_COMPLETED && message->status != HERMES_STATUS_COMPLETED)) {
+    s_visible_status = message->status;
+    s_visible_error = message->error_code;
+  }
   s_visible_flags = message->flags;
   s_visible_item_kind = message->item_kind == HERMES_ITEM_KIND_NONE ? s_visible_item_kind : message->item_kind;
-  if (s_outbound.active && s_outbound.kind == HERMES_KIND_STOP_REQUEST && (message->correlation_id == 0u || message->correlation_id == s_outbound.transfer_id)) {
-    outbound_finish();
+  if (s_outbound.active && s_outbound.kind == HERMES_KIND_STOP_REQUEST &&
+      (message->correlation_id == 0u || message->correlation_id == s_outbound.transfer_id)) outbound_finish();
+  if (!has_answer && should_auto_fetch_result()) {
+    s_auto_result_capture_id = message->capture_id;
+    timer_ensure();
   }
-  s_screen = HERMES_SCREEN_STATUS;
-  ui_rebuild();
+  if (viewing_status) ui_rebuild();
 }
 
 static void process_recent_page(const InboundTransfer *message) {
@@ -2611,6 +2669,7 @@ static void process_recent_page(const InboundTransfer *message) {
 }
 
 static void process_result_page(const InboundTransfer *message) {
+  s_result_loading = false;
   size_t length = message->payload_length;
   if (message->error_code != HERMES_ERROR_NONE) {
     outbound_finish();
@@ -2629,6 +2688,7 @@ static void process_result_page(const InboundTransfer *message) {
   }
   memcpy(s_result_raw, message->payload, length);
   s_result_raw[length] = '\0';
+  s_visible_generation = message->generation;
   s_result_offset = message->page_offset;
   s_result_total_bytes = message->total_bytes;
   s_result_more = (message->flags & HERMES_FLAG_MORE) != 0u;
@@ -2697,6 +2757,7 @@ static void process_conversation_ack(const InboundTransfer *message) {
 }
 
 static void process_structured_error(const InboundTransfer *message) {
+  s_result_loading = false;
   char detail[UI_ERROR_BUFFER_SIZE];
   uint32_t code = message->error_code;
   size_t length = message->payload_length;

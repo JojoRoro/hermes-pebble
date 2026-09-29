@@ -238,6 +238,7 @@ class PebbleBridge(
         sendTransfer(
             watch = watch,
             kind = WireMessageKind.RESULT_PAGE,
+            generation = command.conversationGeneration,
             captureId = requireNotNull(command.captureId),
             correlationId = request.transferId,
             itemId = command.id,
