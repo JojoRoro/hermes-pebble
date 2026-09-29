@@ -2,6 +2,16 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.6 handwritten notes (29 September 2026)
+
+- The emery watch builds with SDK 4.33.1 (51,636-byte RAM footprint, 79,436 bytes free). Emulator checks passed for handwriting menu/canvas/empty-save/Back, handshakes, scrolling bounds, touch-setting persistence, and navigation with menu touch disabled. The handwriting screen was visually inspected.
+- The conversation emulator regression passed: automatic answer, duplicate completion, Reply in the same conversation, fast completion before receipt, and Back. These checks use a simulated phone peer.
+- Native production-code tests passed for touch samples, straight-line simplification, multi-stroke characters, advance/undo/space, exact drawing capacity, interrupted writes, restart recovery, checksum corruption, and coexistence with a maximum pending transcript within 4 KiB. Kotlin decoded a C-produced stroke file and passed full-size binary reassembly, duplicate/reordered delivery, malformed envelopes, conflicts, offsets, and checksum checks. The existing protocol and offline HTTP tests also passed.
+- Room/KSP generated schema 2. The SQLite migration check passed for the new ink table, capture uniqueness, and preservation of existing table definitions and conversation data. Existing entities are unchanged.
+- Android 0.1.6 / code 7 signed `assembleRelease` and `lintRelease` passed; its APK signature matches the permanent certificate. Lint reports no errors and eight existing manifest/resource/target warnings. An initial Gradle process disappeared under local memory pressure; retrying with a 512 MiB heap, serial GC, and one worker succeeded.
+- PBW finalization and companion metadata verification passed. The watch retains one pending ink file until a correlated complete phone receipt. Data Logging supplies an additional background route; it does not replace the retained copy.
+- Physical finger sampling/letter pacing, Android viewer and notification taps, Bluetooth reconnect delivery with the watch app closed, and force-stop/host behavior remain device acceptance checks. No live Hermes or Matrix request was sent. Handwriting has no automatic Hermes submission path.
+
 ## 0.1.5 automatic answers and public distribution (29 September 2026)
 
 - The emery conversation smoke dictates, reviews, sends, receives completion, and requires an automatic result request without another button press. It verifies answer display, Reply in the same conversation generation, duplicate completion, late status during a new draft, completion before the durable receipt, and Back. Screenshots of the answer, Reply action, and follow-up answer were visually inspected.

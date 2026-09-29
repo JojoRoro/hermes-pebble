@@ -12,12 +12,14 @@ import androidx.room.TypeConverters
         CaptureReceiptEntity::class,
         ConversationSessionEntity::class,
         ConversationMessageEntity::class,
+        InkNoteEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(HermesDatabaseConverters::class)
 abstract class HermesDatabase : RoomDatabase() {
+    abstract fun inkNoteDao(): InkNoteDao
     abstract fun commandDao(): CommandDao
     abstract fun captureReceiptDao(): CaptureReceiptDao
     abstract fun conversationSessionDao(): ConversationSessionDao
@@ -28,6 +30,11 @@ abstract class HermesDatabase : RoomDatabase() {
             context.applicationContext,
             HermesDatabase::class.java,
             "hermes-pebble.db",
-        ).build()
+        ).addMigrations(object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS ink_notes (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, watchIdentifier TEXT NOT NULL, captureId INTEGER NOT NULL, total INTEGER NOT NULL, checksum INTEGER NOT NULL, bytes BLOB NOT NULL, receivedMask INTEGER NOT NULL, receivedAt INTEGER NOT NULL, completedAt INTEGER, notified INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_ink_notes_watchIdentifier_captureId ON ink_notes (watchIdentifier, captureId)")
+            }
+        }).build()
     }
 }

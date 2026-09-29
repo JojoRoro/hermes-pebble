@@ -91,6 +91,23 @@ Assign a Quick Launch button to Hermes Pebble in the official Pebble app's norma
 
 Quick Launch still depends on the phone's configured Pebble dictation service. It is not offline speech recognition and does not store microphone audio.
 
+## Handwritten notes (experimental)
+
+Open **Handwritten note** in the watch menu, whether connected or offline. Draw one character in the box. After you lift your finger and pause for one second, the canvas slides left for the next character. Add multiple strokes before that pause for letters such as `i` or `t`.
+
+- **Up:** undo; after an advance, the first press reopens the previous character.
+- **Down:** insert a word space.
+- **Select:** save on the watch and start syncing if the phone is connected.
+- **Back:** continue, save, or discard the current drawing.
+
+Open **Local notes** on Android to view the handwriting, including a larger zoom. This works without Hermes credentials. **Allow note sync notifications** enables an alert that opens the received note. Handwriting is stored as strokes, without recognition or automatic submission to Hermes.
+
+This first version supports **one pending handwritten note**. All watch persistence stays within a 4 KiB budget: the drawing gets up to 2,048 bytes, leaving room for the existing pending transcript, settings, and record overhead. Length depends on stroke complexity; the watch shows remaining bytes. Save before leaving the app: unfinished drawings exist only in memory.
+
+The saved copy survives app restarts. The watch tries direct delivery immediately and after reconnection while the app is open. A Data Logging copy also allows background delivery through a compatible Pebble host. If background delivery is delayed, reopen Hermes on the watch. The watch frees the pending slot only after a direct phone receipt confirms durable storage; reopen the watch app if a note has reached the phone but its watch slot is still occupied. See [the storage and transfer format](protocol/README.md#handwritten-notes).
+
+Touch capture requires compatible PT2 firmware exposing the SDK 4.33.1 touch API. The drawing area uses raw touch independently of the app's menu touch-navigation preference. Finger drawing quality and background reconnect behavior still need testing on physical devices.
+
 ## Android and GrapheneOS behavior
 
 The companion does not require Google Play Services, microphone permission, contacts, notification-listener access, accessibility access, or direct Bluetooth permission. Result notifications are optional and can use private lock-screen content.
@@ -110,7 +127,7 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 
 ## Validation status
 
-[Validation results](docs/validation.md) distinguish emulator/build checks from physical-device checks. The user confirmed that installing the finalized PBW fixed watch routing and correcting the API key fixed Hermes authentication. Version 0.1.5 adds emulator coverage for automatic answers, follow-up requests, duplicate/late status updates, and completion arriving before the phone's saved receipt. Live Hermes and physical-watch verification of the new automatic flow remain device checks.
+[Validation results](docs/validation.md) distinguish emulator/build checks from physical-device checks. The user confirmed that installing the finalized PBW fixed watch routing and correcting the API key fixed Hermes authentication. Version 0.1.6 adds handwritten notes with bounded watch storage, duplicate-safe phone delivery, and a local viewer. Host tests cover drawing/storage and the binary format; emulator checks cover navigation and the existing conversation flow. Live Hermes and physical-watch verification of the new automatic flow remain device checks.
 
 ## Watch navigation
 

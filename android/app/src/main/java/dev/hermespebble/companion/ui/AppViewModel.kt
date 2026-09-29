@@ -62,6 +62,9 @@ data class HermesUiState(
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as HermesPt2Application).requireContainer()
     private val commandRepository: CommandRepository = container.commandRepository
+    val inkNotes = container.inkRepository.notes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val selectedInkId = MutableStateFlow<Long?>(null)
+    fun openInkNote(id: Long) { selectedInkId.value = id; setSection(AppSection.NOTES) }
 
     private val selectedId = MutableStateFlow<Long?>(null)
     private val control = MutableStateFlow(ControlState())
@@ -96,7 +99,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             selectedCommand = currentSelected.first,
             conversationMessages = currentSelected.second,
             section = if ((currentSettings == null || !currentSettings.hasHermesKey || currentSettings.serverUrl.isBlank()) &&
-                currentControl.section != AppSection.DIAGNOSTICS) {
+                currentControl.section != AppSection.DIAGNOSTICS && currentControl.section != AppSection.NOTES) {
                 AppSection.SETUP
             } else if (currentControl.section == AppSection.SETUP && currentControl.initialized) {
                 AppSection.SETUP
@@ -163,6 +166,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun showNotes() {
+        selectedInkId.value = null
         setSection(AppSection.NOTES)
     }
 

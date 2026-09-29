@@ -149,6 +149,14 @@ class PebbleBridge(
         )
     }
 
+    suspend fun sendInkReceipt(watch: String, request: WireMessage, complete: Boolean) {
+        sendTransfer(watch = watch, kind = WireMessageKind.INK_RECEIPT,
+            captureId = request.captureId, correlationId = request.transferId,
+            pageOffset = request.pageOffset + request.payload.size, totalBytes = request.totalBytes,
+            generation = request.generation, flags = WireProtocol.FLAG_DURABLE_COMMIT,
+            status = if (complete) WireStatus.NOTE_SAVED.value else WireStatus.WAITING_FOR_PHONE.value)
+    }
+
     suspend fun sendStatus(watch: String, command: CommandItem): Boolean {
         val status = if (command.kind == CommandKind.WATCH_NOTE) WireStatus.NOTE_SAVED else command.state.toWireStatus()
         val error = command.errorCategory.toWireError()

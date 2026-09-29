@@ -104,7 +104,7 @@ fun HermesApp(viewModel: AppViewModel, onRequestNotificationPermission: () -> Un
                 AppSection.SETUP -> SetupScreen(state, viewModel)
                 AppSection.HOME -> HomeScreen(state, viewModel)
                 AppSection.DETAIL -> DetailScreen(state, viewModel)
-                AppSection.NOTES -> NotesScreen(state, viewModel)
+                AppSection.NOTES -> NotesScreen(state, viewModel, onRequestNotificationPermission)
                 AppSection.DIAGNOSTICS -> DiagnosticsScreen(
                     state = state,
                     viewModel = viewModel,
@@ -149,6 +149,7 @@ private fun SetupScreen(state: HermesUiState, viewModel: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         HostPicker(state, viewModel)
+        OutlinedButton(onClick = viewModel::showNotes) { Text("Open local notes") }
         HorizontalDivider()
         Text("Hermes connection", style = MaterialTheme.typography.headlineSmall)
         credentialError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -402,12 +403,36 @@ private fun DetailScreen(state: HermesUiState, viewModel: AppViewModel) {
 }
 
 @Composable
-private fun NotesScreen(state: HermesUiState, viewModel: AppViewModel) {
+private fun NotesScreen(state: HermesUiState, viewModel: AppViewModel, onRequestNotificationPermission: () -> Unit) {
     val notes = state.recent.filter { it.kind == CommandKind.WATCH_NOTE }
+    val inkNotes by viewModel.inkNotes.collectAsStateWithLifecycle()
+    val selectedInk by viewModel.selectedInkId.collectAsStateWithLifecycle()
+    val selected = inkNotes.firstOrNull { it.id == selectedInk }
+    if (selected != null) {
+        HandwritingDetail(selected, viewModel::showNotes)
+        return
+    }
     Column(Modifier.fillMaxSize()) {
         Text("Local notes", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))
-        Text("Notes are stored on the phone and are not sent to Hermes unless explicitly submitted.", style = MaterialTheme.typography.bodySmall)
-        RecentList(notes, viewModel::openCommand, Modifier.fillMaxSize())
+        Text("Handwriting stays on your phone for you to review.", style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = onRequestNotificationPermission) { Text("Allow note sync notifications") }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(inkNotes, key = { "ink-${it.id}" }) { note ->
+                Card(Modifier.fillMaxWidth().clickable { viewModel.openInkNote(note.id) }) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("Handwritten note", style = MaterialTheme.typography.titleMedium)
+                        Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(note.receivedAt)))
+                        HandwritingCanvas(note.bytes, 48, maxCells = 12)
+                    }
+                }
+            }
+            items(notes, key = { "text-${it.id}" }) { note ->
+                Card(Modifier.fillMaxWidth().clickable { viewModel.openCommand(note.id) }) {
+                    Text(note.input, Modifier.padding(12.dp), maxLines = 3)
+                }
+            }
+            if (notes.isEmpty() && inkNotes.isEmpty()) item { Text("No notes yet. Choose Handwritten note on your watch.", Modifier.padding(12.dp)) }
+        }
     }
 }
 

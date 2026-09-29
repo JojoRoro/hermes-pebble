@@ -60,6 +60,8 @@ def main():
             run('gcc', '-fsyntax-only', '-Wall', '-Wextra', *flags, 'src/c/hermes_pt2.c')
             run('gcc', *flags, '-ffunction-sections', '-fdata-sections', 'tests/watch_core_test.c', '-Wl,--gc-sections', '-o', temp / 'watch-check')
             run(temp / 'watch-check')
+            run('gcc', *flags, '-ffunction-sections', '-fdata-sections', 'tests/watch_ink_test.c', '-Wl,--gc-sections', '-o', temp / 'ink-check')
+            run(temp / 'ink-check', temp / 'ink-fixture.bin')
         if args.kotlin_libs:
             if not args.pebble_model:
                 parser.error('--pebble-model is required with --kotlin-libs')
@@ -71,10 +73,12 @@ def main():
                 '-no-stdlib', '-no-reflect', '-jvm-target', '17', '-classpath', classpath,
                 f'-Xplugin={plugin}', '-d', output,
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
-                SOURCES / 'pebble/Protocol.kt', args.pebble_model.resolve(),
-                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt')
+                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', args.pebble_model.resolve(),
+                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt')
             for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt']:
                 run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}')
+            fixture = [temp / 'ink-fixture.bin'] if args.sdk_headers else []
+            run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.InkCheckKt', *fixture)
 
 
 if __name__ == '__main__':

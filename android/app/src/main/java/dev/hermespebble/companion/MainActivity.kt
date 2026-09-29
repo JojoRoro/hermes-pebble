@@ -19,7 +19,12 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { }
+    ) { granted ->
+        if (granted) {
+            val container = (application as HermesPt2Application).requireContainer()
+            container.pebbleBridge.launch { container.inkNotifier.notifySaved() }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +61,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openRequestedCommand(intent: Intent?) {
+        val inkId = intent?.getLongExtra(EXTRA_INK_ID, -1L) ?: -1L
+        if (inkId > 0) { viewModel.openInkNote(inkId); return }
         val id = intent?.getLongExtra(EXTRA_COMMAND_ID, -1L) ?: return
         if (id > 0) viewModel.openCommandIfPresent(id)
     }
@@ -68,5 +75,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_COMMAND_ID = "command_id"
+        const val EXTRA_INK_ID = "ink_id"
     }
 }

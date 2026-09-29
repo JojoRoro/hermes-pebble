@@ -53,6 +53,8 @@ class AppContainer(context: Context) {
     private val started = AtomicBoolean(false)
 
     val database: HermesDatabase = HermesDatabase.create(applicationContext)
+    val inkRepository = dev.hermespebble.companion.data.local.InkRepository(database)
+    val inkNotifier = dev.hermespebble.companion.pebble.InkNotifier(applicationContext, database)
     val secretStore = SecretStore(applicationContext)
     val commandRepository = CommandRepository(database)
     val conversationRepository = ConversationRepository(database)
@@ -114,6 +116,7 @@ class AppContainer(context: Context) {
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        pebbleBridge.launch { inkNotifier.notifySaved() }
         applicationScope.launch {
             repeat(MAX_STARTUP_RECOVERY_ATTEMPTS) { attempt ->
                 try {

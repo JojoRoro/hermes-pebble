@@ -49,6 +49,7 @@ enum class WireMessageKind(val value: Int) {
     FETCH_RESULT(6),
     START_CONVERSATION(7),
     STOP_REQUEST(8),
+    INK_BLOCK(9),
     HANDSHAKE_ACK(101),
     DURABLE_RECEIPT(102),
     STATUS_UPDATE(103),
@@ -57,6 +58,7 @@ enum class WireMessageKind(val value: Int) {
     NEW_CONVERSATION_ACK(106),
     STRUCTURED_ERROR(107),
     CAPTURE_DISCARDED(108),
+    INK_RECEIPT(109),
     ;
 
     companion object {
@@ -243,7 +245,7 @@ class IncomingTransferAssembler(private val clock: () -> Long = System::currentT
             offset += chunk.size
         }
         try {
-            decodeUtf8(bytes)
+            if (kind != WireMessageKind.INK_BLOCK) decodeUtf8(bytes)
         } catch (_: Exception) {
             reset()
             return DecodedChunkResult.Error(WireError.MALFORMED, "The transfer is not valid UTF-8")

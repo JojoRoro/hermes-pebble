@@ -21,7 +21,7 @@ This document is the source of truth for the watch/phone wire format. The matchi
 
 A maximum-size message uses all 1,024 logical transfer bytes and therefore six chunks. The fixed tuples add at most 77 bytes when the key/type header and values are counted; a six-chunk dictionary remains below 1,101 bytes before platform tuple overhead and is not emitted as one dictionary. Each emitted dictionary contains one 192-byte payload chunk and a conservative full tuple set of approximately 274 bytes, well below the watch's 1,024-byte output limit. Android also rejects a decoded chunk larger than 192 bytes.
 
-Chunking operates on UTF-8 bytes. A sender chooses boundaries that do not split a code point. Receivers concatenate bytes, validate bounds and the complete UTF-8 sequence, then decode. A character count is never used as a transfer limit.
+Text chunking operates on UTF-8 bytes. Handwriting uses separate binary blocks described below. A sender chooses boundaries that do not split a code point. Receivers concatenate bytes, validate bounds and the complete UTF-8 sequence, then decode. A character count is never used as a transfer limit.
 
 ## Dictionary keys
 
@@ -35,7 +35,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 3 | `CaptureId` | `uint32_t` / `UInt32` | Durable watch capture; absent means zero |
 | 4 | `ChunkIndex` | `uint8_t` / `UInt8` | Zero-based chunk index |
 | 5 | `ChunkCount` | `uint8_t` / `UInt8` | Always 1–6, including empty payloads |
-| 6 | `Payload` | `byte[]` / `Bytes` | Raw UTF-8 bytes, never NUL-terminated |
+| 6 | `Payload` | `byte[]` / `Bytes` | UTF-8 bytes, or binary ink for kind 9; never NUL-terminated |
 | 7 | `Status` | `uint8_t` / `UInt8` | Status below |
 | 8 | `ErrorCode` | `uint8_t` / `UInt8` | Error below; zero means none |
 | 9 | `ItemId` | `uint32_t` / `UInt32` | Android command row ID, when safe and relevant |
@@ -62,6 +62,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 6 | Watch → phone | `FETCH_RESULT` | Transfer, capture, result byte offset |
 | 7 | Watch → phone | `START_CONVERSATION` | Transfer, current conversation generation |
 | 8 | Watch → phone | `STOP_REQUEST` | Transfer, original capture |
+| 9 | Watch → phone | `INK_BLOCK` | Capture, one binary block, byte offset, total ink bytes, whole-file CRC in generation |
 | 101 | Phone → watch | `HANDSHAKE_ACK` | Transfer, correlation, protocol version, conversation generation |
 | 102 | Phone → watch | `DURABLE_RECEIPT` | Transfer, correlation, capture, item kind, item ID when assigned, status |
 | 103 | Phone → watch | `STATUS_UPDATE` | Transfer, correlation zero, capture, item ID, status, error code, flags |
@@ -70,6 +71,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 106 | Phone → watch | `NEW_CONVERSATION_ACK` | Transfer, correlation, previous and new generation |
 | 107 | Phone → watch | `STRUCTURED_ERROR` | Transfer, correlation, error code, bounded UTF-8 diagnostic |
 | 108 | Phone → watch | `CAPTURE_DISCARDED` | Transfer, correlation, capture |
+| 109 | Phone → watch | `INK_RECEIPT` | Correlation, capture, end offset, total ink bytes, CRC, durable flag; status 13 when complete |
 
 A phone reply is stale and ignored when its `CorrelationId` does not match the current screen's outstanding transfer. A status for an older capture never replaces a newer visible screen.
 
@@ -185,3 +187,55 @@ Phone  -> Watch: 103, capture=42, status=9, flags=0x02
 If Android and the watch report different major protocol versions, neither side interprets the payload as a command. The phone returns error 1 and both UIs direct the user to update the apps.
 
 Conversation generations start at zero. The handshake returns the current phone generation; a submitted capture retains its saved generation. Repeated new-conversation requests are compared atomically against the phone generation. Discard of an unseen capture creates a durable cancellation record so delayed submissions cannot execute it. Result pagination offsets count decoded UTF-8 output bytes; JSON escaping is included in the page-size limit. Embedded NUL in result display is rendered as a space (one byte); the full original result remains on the phone.
+
+
+## Handwritten notes
+
+Added in 0.1.6; install matching APK/PBW versions. Handwriting has a separate local Room table and never creates a Hermes request or text note.
+
+### HIN1 stroke file
+
+All multi-byte integers are little-endian. Maximum file size is 2,048 bytes, including the 16-byte header. The canvas is 160 × 144 pixels.
+
+| Offset | Bytes | Meaning |
+| ---: | ---: | --- |
+| 0 | 4 | ASCII `HIN1` |
+| 4 | 1 | Width, 160 |
+| 5 | 1 | Height, 144 |
+| 6 | 2 | Stroke stream length |
+| 8 | 4 | Watch capture time, Unix seconds |
+| 12 | 4 | CRC-32 (IEEE) of the stroke stream |
+| 16 | variable | Two-byte coordinate or control pairs |
+
+A coordinate is `x, y`, with x < 160 and y < 144. `255,0` ends a stroke; `255,1` advances to the next character; `255,2` ends the current character if present and inserts a word space. Strokes must end before character/space markers and before EOF. Empty drawings are rejected. The watch simplifies nearly collinear samples and reserves space for the final pen-up marker. The phone lays the character cells out across rows without OCR.
+
+### Durability and 4 KiB budget
+
+The watch uses one immutable pending ink record, independent of its existing pending text capture. Ink chunks occupy keys 17–25, with up to 240 bytes per value. Key 16 is a 20-byte `HIS1` commit record: magic, capture ID, total length, whole-file CRC, metadata CRC. Chunks are written first and the commit record last. Loading requires every chunk, both CRCs, and valid stroke structure. Damaged committed data is retained until the user explicitly discards it. Unsaved drawings remain in RAM only.
+
+Maximum value bytes are 2,048 ink + 20 ink metadata + 1,024 existing transcript + 48 text metadata + 28 identity/preferences = 3,168. Allowing a conservative 32 bytes per used key across 26 keys gives 4,000 bytes, below 4,096. Tests enforce this budget with a maximum transcript and ink note present together. Data Logging consumes a separate shared OS spool and is an additional delivery route, not the sole retained copy.
+
+### Direct transfer
+
+Each kind-9 AppMessage is an independent one-chunk transfer with up to 192 binary bytes. `CaptureId` is the existing durable watch counter; `PageOffset` is the block offset, always a multiple of 192; `TotalBytes` is the full ink file length; `ConversationGeneration` holds its CRC-32 **only for kinds 9/109**. Other operations retain their conversation semantics and text limits.
+
+Android commits each block transactionally before sending kind 109 with durable flag `0x08`. The receipt echoes the capture, total, CRC, and request correlation, and advances `PageOffset` to the end of the committed block. Partial receipts use status 1. A complete receipt uses status 13 only after every block is present, the complete checksum matches, and the drawing decodes. The watch checks all fields and deletes its saved copy only after the final complete receipt. A lost receipt or app restart safely resends the same capture. Android deduplicates by watch identity/capture and block bitmap, rejecting conflicting bytes or metadata.
+
+### Background Data Logging route
+
+Tag `0x48494e31`, byte-array items of 212 bytes. Every item contains:
+
+| Offset | Bytes | Meaning |
+| ---: | ---: | --- |
+| 0 | 4 | ASCII `IHC1` |
+| 4 | 4 | Capture ID |
+| 8 | 2 | Total HIN1 bytes |
+| 10 | 2 | Block offset |
+| 12 | 2 | Payload count, up to 192 |
+| 14 | 2 | Reserved zero |
+| 16 | 4 | Whole-file CRC-32 |
+| 20 | 192 | Block bytes, zero-padded |
+
+The companion validates each envelope, stores its blocks in the same Room transaction path, and ACKs a batch only after storage. Duplicate or out-of-order blocks are safe across both routes. Incomplete phone assemblies older than 30 days are cleaned up; completed notes are retained.
+
+Data Logging delivery is host-dependent and its transport acknowledgment is not proof of companion storage. The independent watch copy remains until direct confirmation, even if background delivery already created the phone note. Reopening the watch app retries and clears that slot when confirmed. A sync notification is emitted after complete storage if notification permission is granted; opening it shows the local handwriting. Nothing is sent to Hermes.

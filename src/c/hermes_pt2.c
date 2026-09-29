@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "ink_core.h"
 
 #define UI_BODY_BUFFER_SIZE 2048u
 #define UI_ACTION_BUFFER_SIZE 128u
@@ -34,6 +35,10 @@
 #define HERMES_SCREEN_ERROR 8u
 #define HERMES_SCREEN_CONNECTING 9u
 #define HERMES_SCREEN_SETTINGS 10u
+#define HERMES_SCREEN_INK 11u
+#define HERMES_SCREEN_INK_STATUS 12u
+#define HERMES_SCREEN_INK_ACTIONS 13u
+#define HERMES_MENU_INK 4u
 
 #define HERMES_ACTION_NONE 0u
 #define HERMES_ACTION_SEND 1u
@@ -198,6 +203,26 @@ static DictationSession *s_dictation_session;
 static AppTimer *s_timer;
 static char s_menu_labels[8][UI_RECENT_LABEL_SIZE];
 static uint16_t s_menu_count;
+static uint8_t s_ink[INK_CAPACITY];
+static uint16_t s_ink_length = INK_HEADER;
+static uint32_t s_ink_capture;
+static uint32_t s_ink_checksum;
+static uint16_t s_ink_offset;
+static bool s_ink_saved;
+static bool s_ink_corrupt;
+static bool s_ink_sync_requested;
+static char s_ink_status[160];
+static void ink_open(void);
+static void ink_show(void);
+static void ink_cleanup(void);
+static void ink_load(void);
+static void ink_try_send(void);
+static void ink_receipt(const InboundTransfer *message);
+static void ink_failed(void);
+static void ink_menu_select(uint16_t row);
+static void ink_click_config(void);
+static void ink_connection(bool connected);
+static void ink_schedule_sync(void);
 
 static void ui_rebuild(void);
 static void ui_show_menu(void);
@@ -318,6 +343,7 @@ static void ui_window_unload(Window *window) {
 }
 
 static void ui_destroy_content(void) {
+  ink_cleanup();
   if (s_header_layer != NULL) {
     text_layer_destroy(s_header_layer);
     s_header_layer = NULL;
@@ -458,6 +484,7 @@ static const char *menu_subtitle(const char *label) {
   if (strcmp(label, "New conversation") == 0) return "Start with a fresh context";
   if (strcmp(label, "Status") == 0) return "Check your last request";
   if (strcmp(label, "Settings") == 0) return "Touch navigation";
+  if (strcmp(label, "Handwritten note") == 0) return "Draw letters; sync to phone";
   if (strcmp(label, "Reconnect") == 0) return "Test the phone connection";
   return "Continue your saved draft";
 }
@@ -517,6 +544,12 @@ static void ui_rebuild(void) {
     case HERMES_SCREEN_SETTINGS:
       ui_show_settings();
       break;
+    case HERMES_SCREEN_INK:
+      ink_show();
+      break;
+    case HERMES_SCREEN_INK_STATUS:
+      add_scroll_content(s_ink_status, s_ink_saved ? "SELECT: retry   BACK: menu" : "SELECT: new   BACK: menu", HERMES_SCREEN_INK_STATUS);
+      break;
     case HERMES_SCREEN_REVIEW:
       ui_show_review();
       break;
@@ -553,7 +586,7 @@ static void ui_rebuild(void) {
 }
 
 static void ui_show_menu(void) {
-  const char *labels[7];
+  const char *labels[8];
   uint16_t count = 0u;
   if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
     labels[count++] = "Saved draft";
@@ -567,6 +600,7 @@ static void ui_show_menu(void) {
     labels[count++] = "New conversation";
     labels[count++] = "Status";
   }
+  labels[count++] = "Handwritten note";
   labels[count++] = "Reconnect";
   labels[count++] = "Settings";
   s_screen = HERMES_SCREEN_MENU;
@@ -785,6 +819,10 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
       start_handshake();
       return;
     }
+    if (selection->row == s_menu_count - 3u) {
+      ink_open();
+      return;
+    }
     if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
       switch (selection->row) {
         case 0u:
@@ -826,6 +864,8 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
           break;
       }
     }
+  } else if (s_menu_kind == HERMES_MENU_INK) {
+    ink_menu_select(selection->row);
   } else if (s_menu_kind == HERMES_MENU_SETTINGS) {
     if (selection->row == 0u) {
       if (touch_navigation_save(!s_touch_navigation_enabled)) ui_show_settings();
@@ -988,8 +1028,10 @@ static bool should_auto_fetch_result(void) {
 
 static bool navigation_back(void) {
   cancel_auto_result();
-  s_outbound.active = false;
-  s_outbound.phase = HERMES_OUT_IDLE;
+  if (s_outbound.kind != HERMES_KIND_INK_BLOCK) {
+    s_outbound.active = false;
+    s_outbound.phase = HERMES_OUT_IDLE;
+  }
   s_inbound.active = false;
   s_phone_probe_id = 0u;
   if (s_screen == HERMES_SCREEN_MENU) {
@@ -1009,6 +1051,10 @@ static bool navigation_back(void) {
 static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+  if (s_screen == HERMES_SCREEN_INK_ACTIONS && !s_ink_corrupt) {
+    ink_open();
+    return;
+  }
   stop_dictation();
   bool exit_app = navigation_back();
   timer_maybe_cancel();
@@ -1018,6 +1064,10 @@ static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
 
 static void ui_click_config(void *context) {
   (void)context;
+  if (s_screen == HERMES_SCREEN_INK || s_screen == HERMES_SCREEN_INK_STATUS) {
+    ink_click_config();
+    return;
+  }
   if (s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_RECENT) {
     window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
     window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
@@ -1025,7 +1075,7 @@ static void ui_click_config(void *context) {
     window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
     return;
   }
-  if (s_screen == HERMES_SCREEN_ACTIONS || s_screen == HERMES_SCREEN_SETTINGS) {
+  if (s_screen == HERMES_SCREEN_ACTIONS || s_screen == HERMES_SCREEN_SETTINGS || s_screen == HERMES_SCREEN_INK_ACTIONS) {
     window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
     window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
     window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_menu_down_click);
@@ -1683,7 +1733,7 @@ static void timer_ensure(void) {
 }
 
 static void timer_maybe_cancel(void) {
-  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u && s_auto_result_capture_id == 0u) {
+  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u && s_auto_result_capture_id == 0u && !s_ink_sync_requested) {
     if (s_timer != NULL) app_timer_cancel(s_timer);
     s_timer = NULL;
   }
@@ -1693,6 +1743,7 @@ static void timer_tick(void *context) {
   (void)context;
   s_timer = NULL;
   if (s_exiting) return;
+  if (s_ink_sync_requested && !s_outbound.active && !s_inbound.active) ink_try_send();
   if (s_phone_probe_id != 0u && !s_outbound.active) {
     outbound_start(HERMES_KIND_HANDSHAKE, HERMES_KIND_HANDSHAKE_ACK, next_transfer_id(),
       0u, s_generation, 0u, 0u, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE,
@@ -1740,7 +1791,7 @@ static void timer_tick(void *context) {
       }
     }
   }
-  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u || s_auto_result_capture_id != 0u) timer_ensure();
+  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u || s_auto_result_capture_id != 0u || s_ink_sync_requested) timer_ensure();
 }
 
 static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfer_id, uint32_t capture_id, uint32_t generation, uint32_t item_id, uint32_t page_offset, uint32_t total_bytes, uint8_t status, uint8_t error_code, uint8_t item_kind, uint8_t item_state, uint8_t page_count, uint8_t flags, const uint8_t *payload, uint16_t length) {
@@ -1781,6 +1832,10 @@ static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfe
   if (length == 0u) {
     s_outbound.chunk_count = 1u;
     s_outbound.chunk_lengths[0] = 0u;
+    s_outbound.chunk_offsets[0] = 0u;
+  } else if (kind == HERMES_KIND_INK_BLOCK && length <= HERMES_CHUNK_PAYLOAD_SIZE) {
+    s_outbound.chunk_count = 1u;
+    s_outbound.chunk_lengths[0] = (uint8_t)length;
     s_outbound.chunk_offsets[0] = 0u;
   } else if (!utf8_valid(s_outbound.payload, length)) {
     memset(&s_outbound, 0, sizeof(s_outbound));
@@ -1897,6 +1952,15 @@ static void outbound_finish(void) {
 }
 
 static void outbound_failed(uint32_t error_code, const char *text) {
+  if (s_outbound.kind == HERMES_KIND_INK_BLOCK) {
+    outbound_finish();
+    ink_failed();
+    return;
+  }
+  if (s_screen == HERMES_SCREEN_INK || s_screen == HERMES_SCREEN_INK_ACTIONS) {
+    outbound_finish(); // A failed background handshake must not close the drawing.
+    return;
+  }
   bool keep_pending = s_outbound.kind == HERMES_KIND_SUBMIT_REQUEST || s_outbound.kind == HERMES_KIND_SAVE_NOTE || s_outbound.kind == HERMES_KIND_DISCARD_CAPTURE;
   uint32_t capture_id = s_outbound.capture_id;
   s_outbound.active = false;
@@ -2364,7 +2428,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     inbound_error(HERMES_ERROR_PROTOCOL_VERSION, "The phone and watch use incompatible protocol versions. Update both apps.");
     return;
   }
-  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_CAPTURE_DISCARDED) {
+  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_INK_RECEIPT) {
     inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported message kind.");
     return;
   }
@@ -2515,6 +2579,9 @@ static void process_phone_message(const InboundTransfer *message) {
     return;
   }
   switch (message->kind) {
+    case HERMES_KIND_INK_RECEIPT:
+      ink_receipt(message);
+      break;
     case HERMES_KIND_HANDSHAKE_ACK:
       if (message->error_code != HERMES_ERROR_NONE) {
         outbound_finish();
@@ -2528,6 +2595,7 @@ static void process_phone_message(const InboundTransfer *message) {
       }
       s_handshake_ready = true;
       outbound_finish();
+      ink_schedule_sync();
       if (s_screen == HERMES_SCREEN_CONNECTING || s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_ERROR) {
         s_screen = HERMES_SCREEN_MENU;
         ui_rebuild();
@@ -2616,6 +2684,7 @@ static void process_durable_receipt(const InboundTransfer *message) {
   }
   outbound_finish();
   s_discard_in_progress = false;
+  if (s_screen == HERMES_SCREEN_INK || s_screen == HERMES_SCREEN_INK_ACTIONS || s_screen == HERMES_SCREEN_INK_STATUS) return;
   s_screen = HERMES_SCREEN_STATUS;
   ui_rebuild();
 }
@@ -2757,6 +2826,11 @@ static void process_conversation_ack(const InboundTransfer *message) {
 }
 
 static void process_structured_error(const InboundTransfer *message) {
+  if (s_outbound.active && s_outbound.kind == HERMES_KIND_INK_BLOCK) {
+    outbound_finish();
+    ink_failed();
+    return;
+  }
   s_result_loading = false;
   char detail[UI_ERROR_BUFFER_SIZE];
   uint32_t code = message->error_code;
@@ -3164,6 +3238,8 @@ static bool parse_result_payload(const char *json, uint16_t length) {
   return true;
 }
 
+#include "ink_watch.h"
+
 static void handle_launch_reason(AppLaunchReason reason) {
   bool quick_launch = false;
   switch (reason) {
@@ -3199,7 +3275,9 @@ int main(void) {
   });
   s_screen = HERMES_SCREEN_MENU;
   storage_init();
+  ink_load();
   touch_navigation_load();
+  connection_service_subscribe((ConnectionHandlers){ .pebble_app_connection_handler = ink_connection });
   open_result = app_message_open(HERMES_APP_MESSAGE_INBOX_SIZE, HERMES_APP_MESSAGE_OUTBOX_SIZE);
   if (open_result == APP_MSG_OK) {
     s_app_message_open = true;
@@ -3215,8 +3293,11 @@ int main(void) {
     reason = launch_reason();
     start_handshake();
     handle_launch_reason(reason);
+    ink_schedule_sync();
   }
   app_event_loop();
+  connection_service_unsubscribe();
+  ink_shutdown();
   stop_dictation();
   if (s_timer != NULL) {
     app_timer_cancel(s_timer);

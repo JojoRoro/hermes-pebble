@@ -1,0 +1,611 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "b2bfba4c083691d2051ad6acf0a1ab70",
+    "entities": [
+      {
+        "tableName": "commands",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `kind` TEXT NOT NULL, `watchIdentifier` TEXT, `captureId` INTEGER, `targetProfileId` TEXT NOT NULL, `conversationGeneration` INTEGER NOT NULL, `input` TEXT NOT NULL, `visible` INTEGER NOT NULL, `state` TEXT NOT NULL, `serverState` TEXT, `serverStatusRaw` TEXT, `submittedSessionId` TEXT, `currentSessionId` TEXT, `runId` TEXT, `frozenPayloadJson` TEXT, `idempotencyKey` TEXT NOT NULL, `output` TEXT, `errorCategory` TEXT, `errorCode` TEXT, `errorMessage` TEXT, `httpStatus` INTEGER, `retryable` INTEGER NOT NULL, `requiresReconciliation` INTEGER NOT NULL, `firstSubmissionAttemptAt` INTEGER, `lastSubmissionAttemptAt` INTEGER, `nextAttemptAt` INTEGER, `submissionAttemptCount` INTEGER NOT NULL, `lastPolledAt` INTEGER, `monitorFailureCount` INTEGER NOT NULL, `stopRequested` INTEGER NOT NULL, `stopRequestedAt` INTEGER, `replayed` INTEGER NOT NULL, `leaseOwner` TEXT, `leaseUntil` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `completedAt` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchIdentifier",
+            "columnName": "watchIdentifier",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "captureId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "targetProfileId",
+            "columnName": "targetProfileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationGeneration",
+            "columnName": "conversationGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "input",
+            "columnName": "input",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "visible",
+            "columnName": "visible",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverState",
+            "columnName": "serverState",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverStatusRaw",
+            "columnName": "serverStatusRaw",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "submittedSessionId",
+            "columnName": "submittedSessionId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentSessionId",
+            "columnName": "currentSessionId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "runId",
+            "columnName": "runId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "frozenPayloadJson",
+            "columnName": "frozenPayloadJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "idempotencyKey",
+            "columnName": "idempotencyKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "output",
+            "columnName": "output",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorCategory",
+            "columnName": "errorCategory",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorMessage",
+            "columnName": "errorMessage",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "httpStatus",
+            "columnName": "httpStatus",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "retryable",
+            "columnName": "retryable",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requiresReconciliation",
+            "columnName": "requiresReconciliation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstSubmissionAttemptAt",
+            "columnName": "firstSubmissionAttemptAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastSubmissionAttemptAt",
+            "columnName": "lastSubmissionAttemptAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "nextAttemptAt",
+            "columnName": "nextAttemptAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "submissionAttemptCount",
+            "columnName": "submissionAttemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastPolledAt",
+            "columnName": "lastPolledAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "monitorFailureCount",
+            "columnName": "monitorFailureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stopRequested",
+            "columnName": "stopRequested",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stopRequestedAt",
+            "columnName": "stopRequestedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "replayed",
+            "columnName": "replayed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "leaseOwner",
+            "columnName": "leaseOwner",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "leaseUntil",
+            "columnName": "leaseUntil",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completedAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_commands_watchIdentifier_captureId",
+            "unique": true,
+            "columnNames": [
+              "watchIdentifier",
+              "captureId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_commands_watchIdentifier_captureId` ON `${TABLE_NAME}` (`watchIdentifier`, `captureId`)"
+          },
+          {
+            "name": "index_commands_idempotencyKey",
+            "unique": true,
+            "columnNames": [
+              "idempotencyKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_commands_idempotencyKey` ON `${TABLE_NAME}` (`idempotencyKey`)"
+          },
+          {
+            "name": "index_commands_targetProfileId_conversationGeneration_id",
+            "unique": false,
+            "columnNames": [
+              "targetProfileId",
+              "conversationGeneration",
+              "id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_commands_targetProfileId_conversationGeneration_id` ON `${TABLE_NAME}` (`targetProfileId`, `conversationGeneration`, `id`)"
+          },
+          {
+            "name": "index_commands_targetProfileId_state_nextAttemptAt",
+            "unique": false,
+            "columnNames": [
+              "targetProfileId",
+              "state",
+              "nextAttemptAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_commands_targetProfileId_state_nextAttemptAt` ON `${TABLE_NAME}` (`targetProfileId`, `state`, `nextAttemptAt`)"
+          },
+          {
+            "name": "index_commands_runId",
+            "unique": false,
+            "columnNames": [
+              "runId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_commands_runId` ON `${TABLE_NAME}` (`runId`)"
+          },
+          {
+            "name": "index_commands_visible_createdAt",
+            "unique": false,
+            "columnNames": [
+              "visible",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_commands_visible_createdAt` ON `${TABLE_NAME}` (`visible`, `createdAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "capture_receipts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `watchIdentifier` TEXT NOT NULL, `captureId` INTEGER NOT NULL, `commandId` INTEGER NOT NULL, `itemKind` TEXT NOT NULL, `state` TEXT NOT NULL, `inputDigest` TEXT NOT NULL, `durableAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchIdentifier",
+            "columnName": "watchIdentifier",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "captureId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandId",
+            "columnName": "commandId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "itemKind",
+            "columnName": "itemKind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inputDigest",
+            "columnName": "inputDigest",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durableAt",
+            "columnName": "durableAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_capture_receipts_watchIdentifier_captureId",
+            "unique": true,
+            "columnNames": [
+              "watchIdentifier",
+              "captureId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_capture_receipts_watchIdentifier_captureId` ON `${TABLE_NAME}` (`watchIdentifier`, `captureId`)"
+          },
+          {
+            "name": "index_capture_receipts_commandId",
+            "unique": true,
+            "columnNames": [
+              "commandId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_capture_receipts_commandId` ON `${TABLE_NAME}` (`commandId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "conversation_sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`profileId` TEXT NOT NULL, `conversationGeneration` INTEGER NOT NULL, `sessionId` TEXT NOT NULL, `serverConfirmed` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`profileId`, `conversationGeneration`))",
+        "fields": [
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationGeneration",
+            "columnName": "conversationGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "sessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverConfirmed",
+            "columnName": "serverConfirmed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "profileId",
+            "conversationGeneration"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_conversation_sessions_sessionId",
+            "unique": false,
+            "columnNames": [
+              "sessionId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conversation_sessions_sessionId` ON `${TABLE_NAME}` (`sessionId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "conversation_messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profileId` TEXT NOT NULL, `conversationGeneration` INTEGER NOT NULL, `sessionId` TEXT NOT NULL, `fingerprint` TEXT NOT NULL, `serverId` TEXT, `role` TEXT, `content` TEXT NOT NULL, `serverCreatedAt` TEXT, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationGeneration",
+            "columnName": "conversationGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "sessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fingerprint",
+            "columnName": "fingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverId",
+            "columnName": "serverId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverCreatedAt",
+            "columnName": "serverCreatedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_conversation_messages_profileId_sessionId_fingerprint",
+            "unique": true,
+            "columnNames": [
+              "profileId",
+              "sessionId",
+              "fingerprint"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_conversation_messages_profileId_sessionId_fingerprint` ON `${TABLE_NAME}` (`profileId`, `sessionId`, `fingerprint`)"
+          },
+          {
+            "name": "index_conversation_messages_profileId_sessionId_createdAt",
+            "unique": false,
+            "columnNames": [
+              "profileId",
+              "sessionId",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conversation_messages_profileId_sessionId_createdAt` ON `${TABLE_NAME}` (`profileId`, `sessionId`, `createdAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "ink_notes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `watchIdentifier` TEXT NOT NULL, `captureId` INTEGER NOT NULL, `total` INTEGER NOT NULL, `checksum` INTEGER NOT NULL, `bytes` BLOB NOT NULL, `receivedMask` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, `completedAt` INTEGER, `notified` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchIdentifier",
+            "columnName": "watchIdentifier",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "captureId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "total",
+            "columnName": "total",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "checksum",
+            "columnName": "checksum",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bytes",
+            "columnName": "bytes",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receivedMask",
+            "columnName": "receivedMask",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receivedAt",
+            "columnName": "receivedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "notified",
+            "columnName": "notified",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_ink_notes_watchIdentifier_captureId",
+            "unique": true,
+            "columnNames": [
+              "watchIdentifier",
+              "captureId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_ink_notes_watchIdentifier_captureId` ON `${TABLE_NAME}` (`watchIdentifier`, `captureId`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b2bfba4c083691d2051ad6acf0a1ab70')"
+    ]
+  }
+}

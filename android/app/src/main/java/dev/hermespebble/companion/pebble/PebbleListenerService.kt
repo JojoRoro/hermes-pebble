@@ -75,6 +75,32 @@ class PebbleListenerService : BasePebbleListenerService() {
         if (watchappUUID == WireProtocol.APP_UUID) bridge.onAppOpened(watch.value)
     }
 
+    override suspend fun onDataLogReceived(
+        watchappUUID: UUID,
+        session: io.rebble.pebblekit2.common.model.DataLogSession,
+        data: ByteArray,
+        itemsLeft: Long,
+        watch: WatchIdentifier,
+    ): ReceiveResult {
+        if (watchappUUID != WireProtocol.APP_UUID || session.tag != InkCodec.LOG_TAG ||
+            session.itemSize != InkCodec.LOG_ITEM_BYTES || data.isEmpty() || data.size % session.itemSize != 0) return ReceiveResult.Nack
+        return try {
+            for (offset in data.indices step session.itemSize) {
+                container.inkRepository.accept(watch.value, InkCodec.logBlock(data.copyOfRange(offset, offset + session.itemSize)))
+            }
+            bridge.launch { container.inkNotifier.notifySaved() }
+            ReceiveResult.Ack
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) { ReceiveResult.Nack }
+    }
+
+    override suspend fun onDataLogSessionFinished(
+        watchappUUID: UUID,
+        session: io.rebble.pebblekit2.common.model.DataLogSession,
+        watch: WatchIdentifier,
+    ): ReceiveResult = if (watchappUUID == WireProtocol.APP_UUID && session.tag == InkCodec.LOG_TAG &&
+        session.itemSize == InkCodec.LOG_ITEM_BYTES) ReceiveResult.Ack else ReceiveResult.Nack
+
     override fun onAppClosed(watchappUUID: UUID, watch: WatchIdentifier) {
         if (watchappUUID == WireProtocol.APP_UUID) {
             assemblers.remove(watch.value)
@@ -92,6 +118,15 @@ class PebbleListenerService : BasePebbleListenerService() {
         DiagnosticLog.record("Pebble", "RX complete: ${message.kind.name}; transfer ${message.transferId}")
         return try {
             when (message.kind) {
+                WireMessageKind.INK_BLOCK -> {
+                    val block = InkBlock(message.captureId, message.totalBytes.toInt(), message.pageOffset.toInt(), message.generation, message.payload)
+                    val note = container.inkRepository.accept(watch, block)
+                    bridge.launch {
+                        bridge.sendInkReceipt(watch, message, note.completedAt != null)
+                        container.inkNotifier.notifySaved()
+                    }
+                    ReceiveResult.Ack
+                }
                 WireMessageKind.SUBMIT_REQUEST,
                 WireMessageKind.SAVE_NOTE,
                 -> {
