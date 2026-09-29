@@ -2,6 +2,14 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.7 Hermes reply context (29 September 2026)
+
+- The user's screenshots show the same conversation ID on both requests. The published Hermes Agent 0.19.0 wheel's `/v1/runs` parser was exercised directly: a session ID alone does not restore history; explicit user/assistant history is retained. The verified wheel hash is recorded in the test instructions.
+- The production Kotlin compatibility checks passed for version detection, a follow-up containing the prior request and answer, first-turn omission, chronological role pairs, the 20-turn/64-KiB limits, UTF-8 boundaries, and byte-identical frozen retries. SQLite checks use the actual Room query and exclude other profiles, other conversations, notes, unfinished commands, cleared answers, and later commands.
+- The full offline Python, native C, Kotlin protocol, HTTP, and ink checks passed. Local Android Room/KSP and release Kotlin compilation passed. Final signed APK packaging and certificate verification run in the tag-triggered release workflow.
+- A clean emery build with SDK 4.33.1 passed with a 51,636-byte RAM footprint and 79,436 bytes free. The PBW version is 0.1.7, matching Android version name 0.1.7 / code 8.
+- The compatibility history contains locally retained user/assistant text, not full server tool traces. The actual follow-up on the user's server remains a device acceptance check. No live Hermes or Matrix request was sent.
+
 ## 0.1.6 handwritten notes (29 September 2026)
 
 - The emery watch builds with SDK 4.33.1 (51,636-byte RAM footprint, 79,436 bytes free). Emulator checks passed for handwriting menu/canvas/empty-save/Back, handshakes, scrolling bounds, touch-setting persistence, and navigation with menu touch disabled. The handwriting screen was visually inspected.

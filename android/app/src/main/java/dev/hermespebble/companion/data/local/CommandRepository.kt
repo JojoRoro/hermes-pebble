@@ -209,6 +209,11 @@ class CommandRepository internal constructor(
         }
     }
 
+    internal suspend fun replyHistory(command: CommandEntity) =
+        dev.hermespebble.companion.network.RunConversationContext.recent(
+            commandDao.replyHistory(command.targetProfileId, command.conversationGeneration, command.id),
+        )
+
     suspend fun confirmSession(
         profileId: String,
         conversationGeneration: Long,

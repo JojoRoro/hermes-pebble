@@ -21,6 +21,16 @@ interface CommandDao {
     @Query("SELECT * FROM commands WHERE id = :commandId")
     suspend fun get(commandId: Long): CommandEntity?
 
+    @Query("""
+        SELECT input, output FROM commands
+        WHERE targetProfileId = :profileId AND conversationGeneration = :generation
+          AND id < :beforeId AND state = 'COMPLETED'
+          AND kind IN ('WATCH_REQUEST', 'PHONE_REQUEST')
+          AND input != '' AND output IS NOT NULL AND output != ''
+        ORDER BY id DESC LIMIT 20
+    """)
+    suspend fun replyHistory(profileId: String, generation: Long, beforeId: Long): List<dev.hermespebble.companion.network.CompletedTurn>
+
     @Query("SELECT * FROM commands WHERE id = :commandId")
     fun observe(commandId: Long): Flow<CommandEntity?>
 

@@ -216,8 +216,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy {
             when (val result = container.dispatcher.testConnection()) {
                 is ConnectionTestResult.Succeeded -> {
-                    val message = "Hermes capabilities verified. Durable run idempotency: " +
-                        if (result.capabilities.runsIdempotencyDurable) "supported" else "not advertised"
+                    val message = "Hermes ${result.capabilities.serverVersion ?: "capabilities"} verified. Durable run idempotency: " +
+                        (if (result.capabilities.runsIdempotencyDurable) "supported" else "not advertised") +
+                        (if (result.capabilities.needsExplicitRunHistory) ". Reply context compatibility enabled." else "")
                     control.value = control.value.copy(connectionTest = message)
                     setMessage("Connection check succeeded.")
                 }

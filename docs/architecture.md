@@ -99,3 +99,12 @@ Each HTTP operation resolves credentials for its expected profile, so changing s
 The phone shows recovered conversation messages on the detail screen. HTTP reads are bounded and accept short bodies, numeric history identifiers/timestamps, tool-only messages, and completed idempotent replays. Stop responses trigger authoritative run polling rather than treating a sparse stop response as a completed result.
 
 The watch uses the SDK's MenuLayer callbacks, AppTimer handles, and typed Dictionary tuples. Persistent reads/writes require exact byte counts, and transcript records are checksum-validated. The phone keeps transfer state separately per watch and acknowledges repeated final chunks; outgoing pages account for JSON escaping. An explicit discard is committed before acknowledgment.
+
+
+## Hermes 0.19.0 reply compatibility
+
+The official PyPI 0.19.0 wheel does not call `_conversation_history_for_session()` in `_handle_runs`; it passes only caller-provided history to the agent. Capability discovery now also reads the fixed `/health` endpoint when advertised, using the same configured origin, URL prefix, credentials, bounds, and redirect restrictions. The parsed version is cached with capabilities. Older caches without a version are re-probed; known versions expire after 24 hours. An explicit connection test refreshes immediately. An unavailable or unrecognized health response leaves version unknown and does not guess compatibility.
+
+Only the verified affected version `0.19.0` receives explicit `conversation_history`. Room selects at most 20 earlier completed request rows, matching both profile and conversation generation, excluding notes/current/future requests and empty cleared content. The payload builder reverses them into chronological user/assistant pairs within a 64 KiB content budget. It keeps whole recent pairs, marking UTF-8-safe shortened text when the newest pair alone exceeds the limit. Tool transcripts are not reconstructed. New conversations have no matching rows. Other versions retain the original server-managed-history request shape.
+
+The full JSON body and submitted session are frozen before the first POST. Retries reuse both without reading newer history or a rotated session mapping, including requests saved before the app upgrade. Existing idempotency eligibility checks remain in place; the compatibility change does not grant safe retry guarantees to older servers.

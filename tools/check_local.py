@@ -73,9 +73,10 @@ def main():
                 '-no-stdlib', '-no-reflect', '-jvm-target', '17', '-classpath', classpath,
                 f'-Xplugin={plugin}', '-d', output,
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
+                SOURCES / 'network/RunConversationContext.kt',
                 SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', args.pebble_model.resolve(),
-                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt')
-            for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt']:
+                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt')
+            for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt']:
                 run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}')
             fixture = [temp / 'ink-fixture.bin'] if args.sdk_headers else []
             run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.InkCheckKt', *fixture)

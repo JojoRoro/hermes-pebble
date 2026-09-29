@@ -60,8 +60,20 @@ class HermesClient internal constructor(
         }
         response.requireSuccess(unsupportedCategory = true)
         return try {
-            parseCapabilities(response.requireJsonObject()).also {
+            val capabilities = parseCapabilities(response.requireJsonObject())
+            val version = if (capabilities.supports("GET", "/health")) {
+                try {
+                    val health = send(configuration, configuration.httpUrl().endpoint("health"), "GET")
+                    health.requireSuccess()
+                    val root = health.requireJsonObject()
+                    if (root.requiredString("platform") != "hermes-agent") null
+                    else root.requiredString("version").takeIf { it.length <= 64 && it.matches(Regex("[A-Za-z0-9.+_-]+")) }
+                } catch (error: CancellationException) { throw error }
+                catch (_: HermesApiException) { null }
+            } else null
+            capabilities.copy(serverVersion = version).also {
                 diagnostic("Capabilities parsed: required routes ${it.supportsRequiredV1Api}; idempotency supported ${it.runsIdempotencySupported}, durable ${it.runsIdempotencyDurable}")
+                diagnostic("Hermes version ${it.serverVersion ?: "unknown"}; reply history compatibility ${it.needsExplicitRunHistory}")
             }
         } catch (error: HermesApiException) {
             diagnostic("Capabilities schema: ${error.message}")

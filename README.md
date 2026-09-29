@@ -36,6 +36,14 @@ The server administrator must enable the Hermes HTTP API and provide an API prof
 
 The companion does not store Matrix credentials. Hermes uses its existing account and tools. A completed Hermes answer is displayed as the answer, not converted into an invented delivery receipt. Server-side approval requests remain blocked until the user acts in Hermes; this project does not automatically approve or weaken policies.
 
+## Reply context on Hermes 0.19.0
+
+The pip release `hermes-agent==0.19.0` accepts `session_id` on `/v1/runs` but does not load that session's earlier messages. Two requests can therefore show the same **Conversation** ID while Hermes forgets the first exchange. This is the [upstream history-loading bug](https://github.com/NousResearch/hermes-agent/issues/69204).
+
+Version 0.1.7 detects that release through the authenticated `/health` request and includes recent completed message/answer pairs with follow-ups. Existing locally retained conversations work after an in-place APK update. **Test saved Hermes connection** reports **Reply context compatibility enabled** when active. The first submission after upgrading also refreshes older cached capabilities automatically.
+
+The workaround includes up to 20 completed exchanges from the same connection profile and conversation, with a 64 KiB text budget. It uses the text retained by this companion; cleared history and full Hermes tool traces are unavailable. Oversized recent text is marked as shortened. **New conversation** starts without previous exchanges. Other server versions keep server-managed context. Version detection refreshes at least daily during use and immediately when testing the saved connection.
+
 ## Runtime connection settings
 
 Enter all connection settings on the phone. They are runtime data, not CI variables or source configuration.

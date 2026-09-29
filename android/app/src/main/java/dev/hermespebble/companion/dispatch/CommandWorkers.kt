@@ -12,26 +12,19 @@ import dev.hermespebble.companion.data.local.ImmutableCommandConflictException
 import dev.hermespebble.companion.network.HermesApiException
 import dev.hermespebble.companion.network.HermesErrorCategory
 import dev.hermespebble.companion.network.HermesRunSubmission
+import dev.hermespebble.companion.network.RunConversationContext
 import dev.hermespebble.companion.network.RunServerStatus
 import dev.hermespebble.companion.network.RetryDecision
 import dev.hermespebble.companion.network.retryDecision
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 class CommandSubmissionWorker(
     appContext: Context,
     workerParameters: WorkerParameters,
 ) : CoroutineWorker(appContext, workerParameters) {
     private val dependencies = workerDependencies(appContext)
-    private val json = Json {
-        encodeDefaults = true
-        explicitNulls = false
-        ignoreUnknownKeys = true
-        isLenient = false
-    }
 
     override suspend fun doWork(): Result {
         val commandId = inputData.getLong(COMMAND_ID, -1L)
@@ -86,7 +79,7 @@ class CommandSubmissionWorker(
             }
         }
         return try {
-            ensureCapabilities(commandId, settings.profileId)
+            val capabilities = ensureCapabilities(commandId, settings.profileId)
             val beforeSession = dependencies.settingsRepository.current()
             if (beforeSession.profileId != command.targetProfileId) {
                 dependencies.commandRepository.markPaused(
@@ -97,45 +90,34 @@ class CommandSubmissionWorker(
                 )
                 return Result.success()
             }
-            val session = dependencies.commandRepository.getOrCreateSession(
-                command.targetProfileId,
-                command.conversationGeneration,
-            )
-            val confirmedSession = if (session.serverConfirmed) {
-                session
-            } else {
-                val remote = dependencies.hermesClient.createOrReconcileSession(session.sessionId, command.targetProfileId)
-                val confirmed = dependencies.commandRepository.confirmSession(
+            val prepared = RunConversationContext.prepare(command.frozenPayloadJson, command.submittedSessionId) {
+                val session = dependencies.commandRepository.getOrCreateSession(
                     command.targetProfileId,
                     command.conversationGeneration,
-                    remote.id,
-                ) ?: throw HermesApiException(
-                    HermesErrorCategory.INVALID_RESPONSE,
-                    "Hermes session mapping changed unexpectedly",
                 )
-                val after = dependencies.settingsRepository.current()
-                if (after.profileId != command.targetProfileId) {
-                    dependencies.commandRepository.markPaused(
-                        commandId,
-                        HermesErrorCategory.PROFILE_CHANGED,
-                        "Session was created under the previous connection profile",
-                        requiresReconciliation = false,
+                val confirmedSession = if (session.serverConfirmed) {
+                    session
+                } else {
+                    val remote = dependencies.hermesClient.createOrReconcileSession(session.sessionId, command.targetProfileId)
+                    dependencies.commandRepository.confirmSession(
+                        command.targetProfileId,
+                        command.conversationGeneration,
+                        remote.id,
+                    ) ?: throw HermesApiException(
+                        HermesErrorCategory.INVALID_RESPONSE,
+                        "Hermes session mapping changed unexpectedly",
                     )
-                    return Result.success()
                 }
-                confirmed
+                val history = if (capabilities.needsExplicitRunHistory) {
+                    dependencies.commandRepository.replyHistory(command).takeIf { it.isNotEmpty() }
+                } else null
+                HermesRunSubmission(command.input, confirmedSession.sessionId, history)
             }
-            val payloadJson = json.encodeToString(
-                HermesRunSubmission(
-                    input = command.input,
-                    sessionId = confirmedSession.sessionId,
-                ),
-            )
             val frozen = dependencies.commandRepository.ensureFrozenPayload(
                 commandId = commandId,
                 owner = owner,
-                sessionId = confirmedSession.sessionId,
-                payloadJson = payloadJson,
+                sessionId = prepared.sessionId,
+                payloadJson = prepared.json,
             )
             val persistedPayload = frozen.frozenPayloadJson
                 ?: throw FrozenPayloadConflictException()
@@ -168,7 +150,7 @@ class CommandSubmissionWorker(
             }
             val acceptance = dependencies.hermesClient.submitRunPayload(
                 payloadJson = persistedPayload,
-                sessionId = confirmedSession.sessionId,
+                sessionId = prepared.sessionId,
                 idempotencyKey = frozen.idempotencyKey,
                 expectedProfileId = frozen.targetProfileId,
             )
@@ -209,7 +191,9 @@ class CommandSubmissionWorker(
             )
         }
         val cached = settings.capabilities
-        if (cached != null) {
+        // Re-probe pre-upgrade caches once; refresh version after a server update.
+        val fresh = settings.capabilitiesCheckedAtMillis?.let { dependencies.clock() - it in 0 until CAPABILITY_CACHE_MILLIS } == true
+        if (cached != null && cached.serverVersion != null && fresh) {
             if (!cached.supportsRequiredV1Api) {
                 throw HermesApiException(
                     HermesErrorCategory.UNSUPPORTED_API,
@@ -407,6 +391,7 @@ class CommandSubmissionWorker(
 
     companion object {
         const val COMMAND_ID = "command_id"
+        private const val CAPABILITY_CACHE_MILLIS = 24L * 60L * 60L * 1000L
         private const val SUBMISSION_LEASE_MILLIS = 2L * 60L * 1000L
         private const val PREFLIGHT_RETRY_DELAY_MILLIS = 30_000L
         private const val MAX_RETRY_AFTER_MILLIS = 15L * 60L * 1000L

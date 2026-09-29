@@ -16,7 +16,12 @@ data class HermesCapabilities(
     @SerialName("runs_idempotency_durable") val runsIdempotencyDurable: Boolean,
     @SerialName("runs_idempotency_retention_seconds") val runsIdempotencyRetentionSeconds: Long?,
     val endpoints: List<HermesEndpoint>,
+    val serverVersion: String? = null,
 ) {
+    // The published 0.19.0 wheel never restores SessionDB history in /v1/runs.
+    // Restrict the workaround to the verified affected release.
+    val needsExplicitRunHistory: Boolean get() = serverVersion == "0.19.0"
+
     val safeRetentionSeconds: Long?
         get() {
             val retention = runsIdempotencyRetentionSeconds ?: return null
@@ -169,7 +174,11 @@ data class HermesRequestConfiguration(
 data class HermesRunSubmission(
     val input: String,
     @SerialName("session_id") val sessionId: String,
+    @SerialName("conversation_history") val conversationHistory: List<RunHistoryMessage>? = null,
 )
+
+@Serializable
+data class RunHistoryMessage(val role: String, val content: String)
 
 enum class RetryDecision {
     SAFE,
