@@ -148,7 +148,7 @@ Result pages use UTF-8 JSON:
 {"captureId":42,"itemId":9,"state":7,"output":"Two reminders remain.","more":false}
 ```
 
-`output` is the actual Hermes answer. A completed HTTP run is not converted into a Matrix or other external-delivery receipt. If `more` is true, the watch displays “More on phone” and requests the next result page (at most 768 bytes including JSON encoding) with `FETCH_RESULT`.
+`output` is the actual Hermes answer. A completed HTTP run is not converted into a Matrix or other external-delivery receipt. If `more` is true, the watch automatically requests the next result chunk (at most 768 bytes including JSON encoding) with `FETCH_RESULT` and appends the decoded text without changing the reading position. Its 8-KiB text window also respects the drawing-height limit. Up/Down load adjacent windows at the boundaries; earlier window byte offsets allow backward reading without retaining the whole answer in watch RAM. The full answer remains stored on the phone.
 
 Structured errors have a short human-readable payload but remain categorized by `ErrorCode`; UI logic must not parse prose to determine state.
 

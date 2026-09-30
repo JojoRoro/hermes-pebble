@@ -57,8 +57,48 @@ int main(void) {
   const char *result = "{\"captureId\":5,\"itemId\":2,\"state\":7,\"output\":\"quoted \\\"more\\\":true and \\ud83d\\ude80\",\"more\":false}";
   s_result_more = 0;
   assert(parse_result_payload(result, (uint16_t)strlen(result)));
+  result_reset();
+  assert(result_append_page(0, (uint32_t)strlen(s_result_page), false));
   assert(strcmp(s_visible_output, "quoted \"more\":true and \xf0\x9f\x9a\x80") == 0);
   assert(s_result_more == 0);
+  // Transfer chunks form one UTF-8 answer; offsets count decoded bytes, not
+  // JSON escape characters. Invalid chunks cannot duplicate or skip text.
+  result_reset();
+  const char *first_page = "{\"captureId\":5,\"output\":\"quoted \\\"text\\\" \\ud83d\\ude80\\n\",\"more\":true}";
+  assert(parse_result_payload(first_page, (uint16_t)strlen(first_page)));
+  uint32_t first_bytes = (uint32_t)strlen(s_result_page);
+  uint32_t total_bytes = first_bytes + 4;
+  assert(result_append_page(0, total_bytes, true));
+  assert(s_result_next_offset == first_bytes && s_result_prefetch);
+  strcpy(s_result_page, "end.");
+  assert(!result_append_page(first_bytes - 1, total_bytes, false));
+  assert(!result_append_page(first_bytes, total_bytes - 1, false));
+  assert(!result_append_page(first_bytes, total_bytes, true));
+  assert(s_result_next_offset == first_bytes);
+  assert(result_append_page(first_bytes, total_bytes, false));
+  assert(strcmp(s_visible_output, "quoted \"text\" \xf0\x9f\x9a\x80\nend.") == 0);
+  assert(!s_result_more && !s_result_prefetch);
+  s_result_page[0] = '\0';
+  assert(!result_append_page(total_bytes, total_bytes + 1, true));
+  // Larger than one RAM window: every unread byte remains fetchable; no silent
+  // truncation or offset advancement when the next chunk does not fit.
+  result_reset();
+  memset(s_result_page, 'a', UI_RESULT_BUFFER_SIZE);
+  s_result_page[UI_RESULT_BUFFER_SIZE] = '\0';
+  for (unsigned i = 0; i < UI_RESULT_TEXT_SIZE / UI_RESULT_BUFFER_SIZE; i++) {
+    assert(result_append_page(s_result_next_offset, 20000, true));
+  }
+  uint32_t last_offset = s_result_next_offset;
+  assert(strlen(s_visible_output) > 7000);
+  assert(result_append_page(last_offset, 20000, true));
+  assert(s_result_window_full && s_result_more && !s_result_prefetch);
+  assert(s_result_next_offset == last_offset && strlen(s_visible_output) == last_offset);
+  result_reset();
+  s_result_window_end = 768;
+  assert(result_append_page(0, 20000, true));
+  assert(s_result_more && !s_result_prefetch); // stop at the preceding window's boundary
+  assert(!result_append_page(768, 20000, true));
+  result_reset();
   const char *recent = "{\"items\":[{\"captureId\":5,\"itemId\":2,\"state\":7,\"kind\":1,\"preview\":\"Hello\"}]}";
   assert(parse_recent_payload(recent, (uint16_t)strlen(recent)));
   assert(s_recent_count == 1 && s_recent_items[0].capture_id == 5);

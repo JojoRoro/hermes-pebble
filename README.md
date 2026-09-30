@@ -28,7 +28,9 @@ The root `package.json` is the source of truth for the watch UUID and companion 
 4. The official Pebble host is selected automatically when it is the only eligible host. Otherwise select it in Setup. Open the watch app and confirm the link.
 5. Choose **Ask Hermes**, dictate, review, and **Send**. Keep that screen open: progress changes to the answer automatically. Select **Reply to Hermes** from the answer's actions to continue the same conversation. **New conversation** starts a separate context.
 
-Long answers scroll with Up/Down; the actions menu offers the next page when needed. Fetch remains available for recovering an answer later. Test connection only checks the API; sending a request is a separate action.
+Long answers scroll with Up/Down. The watch joins phone transfer chunks automatically and preserves your reading position as more text arrives. Very long answers load adjacent text at either scroll boundary using the same buttons. Fetch remains available for recovering an answer later. Test connection only checks the API; sending a request is a separate action.
+
+Hermes requests use the asynchronous run API: Android submits once, then polls that run until it finishes. Polls are scheduled about every 3 seconds while the Android app is in the foreground, 30 seconds in the background, or 5 minutes when approval is required. Having the watch app open does not select the Android foreground interval. Network failures, Doze, and Android background restrictions can delay those checks. Once complete, Android stores the answer and notifies the active watch; fetching further text reads that saved answer, without another Hermes run.
 
 ## Hermes prerequisites
 

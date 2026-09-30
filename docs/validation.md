@@ -2,6 +2,14 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.8 continuous answer scrolling (30 September 2026)
+
+- The watch joins UTF-8 result chunks automatically in an 8-KiB text window and keeps its reading position during incoming chunks and Actions navigation. Down/Up load adjacent windows without a next-page action; the drawing height is bounded for newline-heavy text.
+- Python configuration/finalizer/SQLite checks and native production C checks passed. New cases cover decoded UTF-8 offsets, joining text, invalid/empty chunks, exact buffer boundaries, and stopping at a previous window's end. SDK 4.33.1 builds emery with a 61,581-byte RAM footprint and 69,491 bytes free; PBW metadata verification passed.
+- The conversation emulator checks passed with screenshot comparisons for automatic multi-chunk Unicode answers, stable scrolling, an open Actions menu, duplicate/late statuses, Reply, completion before receipt, and Back. The separate long-answer check passed for forward and backward byte offsets with an answer over 8 KiB; the emulator reported no remaining app allocations on exit. The SDK screenshot service timed out during the long transfer, so large-window assertions use protocol messages; physical long-answer reading remains a device check.
+- Android's polling behavior is unchanged: asynchronous runs are monitored about every 3 seconds in the Android foreground, 30 seconds in the background, or 5 minutes while approval is required, subject to WorkManager/OS delays. Further watch text chunks come from the saved phone answer. No live Hermes, speech-service, or Matrix request is part of these checks.
+- Watch and Android version name are 0.1.8; Android version code is 9. The tag-triggered workflow builds and verifies the signed APK and paired PBW.
+
 ## 0.1.7 Hermes reply context (29 September 2026)
 
 - The user's screenshots show the same conversation ID on both requests. The published Hermes Agent 0.19.0 wheel's `/v1/runs` parser was exercised directly: a session ID alone does not restore history; explicit user/assistant history is retained. The verified wheel hash is recorded in the test instructions.
