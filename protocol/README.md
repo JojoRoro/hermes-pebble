@@ -21,7 +21,7 @@ This document is the source of truth for the watch/phone wire format. The matchi
 
 A maximum-size message uses all 1,024 logical transfer bytes and therefore six chunks. The fixed tuples add at most 77 bytes when the key/type header and values are counted; a six-chunk dictionary remains below 1,101 bytes before platform tuple overhead and is not emitted as one dictionary. Each emitted dictionary contains one 192-byte payload chunk and a conservative full tuple set of approximately 274 bytes, well below the watch's 1,024-byte output limit. Android also rejects a decoded chunk larger than 192 bytes.
 
-Text chunking operates on UTF-8 bytes. Handwriting uses separate binary blocks described below. A sender chooses boundaries that do not split a code point. Receivers concatenate bytes, validate bounds and the complete UTF-8 sequence, then decode. A character count is never used as a transfer limit.
+Text chunking operates on UTF-8 bytes. Handwriting and audio use separate binary blocks described below. A text sender chooses boundaries that do not split a code point. Receivers concatenate bytes, validate bounds and the complete UTF-8 sequence, then decode. A character count is never used as a transfer limit.
 
 ## Dictionary keys
 
@@ -35,7 +35,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 3 | `CaptureId` | `uint32_t` / `UInt32` | Durable watch capture; absent means zero |
 | 4 | `ChunkIndex` | `uint8_t` / `UInt8` | Zero-based chunk index |
 | 5 | `ChunkCount` | `uint8_t` / `UInt8` | Always 1–6, including empty payloads |
-| 6 | `Payload` | `byte[]` / `Bytes` | UTF-8 bytes, or binary ink for kind 9; never NUL-terminated |
+| 6 | `Payload` | `byte[]` / `Bytes` | UTF-8 bytes, binary ink for kind 9, or binary PCM for kind 111; never NUL-terminated |
 | 7 | `Status` | `uint8_t` / `UInt8` | Status below |
 | 8 | `ErrorCode` | `uint8_t` / `UInt8` | Error below; zero means none |
 | 9 | `ItemId` | `uint32_t` / `UInt32` | Android command row ID, when safe and relevant |
@@ -63,6 +63,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 7 | Watch → phone | `START_CONVERSATION` | Transfer, current conversation generation |
 | 8 | Watch → phone | `STOP_REQUEST` | Transfer, original capture |
 | 9 | Watch → phone | `INK_BLOCK` | Capture, one binary block, byte offset, total ink bytes, whole-file CRC in generation |
+| 10 | Watch → phone | `AUDIO_STATUS` | Correlation, audio session in capture, audio status, confirmed byte offset, total audio bytes, checksum in generation |
 | 101 | Phone → watch | `HANDSHAKE_ACK` | Transfer, correlation, protocol version, conversation generation |
 | 102 | Phone → watch | `DURABLE_RECEIPT` | Transfer, correlation, capture, item kind, item ID when assigned, status |
 | 103 | Phone → watch | `STATUS_UPDATE` | Transfer, correlation zero, capture, item ID, status, error code, flags |
@@ -72,6 +73,10 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 107 | Phone → watch | `STRUCTURED_ERROR` | Transfer, correlation, error code, bounded UTF-8 diagnostic |
 | 108 | Phone → watch | `CAPTURE_DISCARDED` | Transfer, correlation, capture |
 | 109 | Phone → watch | `INK_RECEIPT` | Correlation, capture, end offset, total ink bytes, CRC, durable flag; status 13 when complete |
+| 110 | Phone → watch | `AUDIO_BEGIN` | Audio session in capture, total audio bytes, checksum in generation, format in flags |
+| 111 | Phone → watch | `AUDIO_BLOCK` | Session, offset, binary PCM block, total, checksum, format |
+| 112 | Phone → watch | `AUDIO_PLAY` | Session, total, checksum, format; empty payload |
+| 113 | Phone → watch | `AUDIO_CANCEL` | Session to discard/stop; empty payload |
 
 A phone reply is stale and ignored when its `CorrelationId` does not match the current screen's outstanding transfer. A status for an older capture never replaces a newer visible screen.
 
@@ -239,3 +244,26 @@ Tag `0x48494e31`, byte-array items of 212 bytes. Every item contains:
 The companion validates each envelope, stores its blocks in the same Room transaction path, and ACKs a batch only after storage. Duplicate or out-of-order blocks are safe across both routes. Incomplete phone assemblies older than 30 days are cleaned up; completed notes are retained.
 
 Data Logging delivery is host-dependent and its transport acknowledgment is not proof of companion storage. The independent watch copy remains until direct confirmation, even if background delivery already created the phone note. Reopening the watch app retries and clears that slot when confirmed. A sync notification is emitted after complete storage if notification permission is granted; opening it shows the local handwriting. Nothing is sent to Hermes.
+
+## Speaker test
+
+Added in 0.1.9; install matching APK/PBW versions. Kinds 10 and 110–113 use a separate transient audio session; they do not change conversation state or persist data. `CaptureId` is the phone-generated nonzero session ID, `TotalBytes` is 1–16,000, `ConversationGeneration` is the unsigned FNV-1a checksum of the complete PCM clip, and `Flags=1` selects mono signed 8-bit PCM at 8 kHz with no header. The checksum starts at `0x811c9dc5`, XORs each unsigned byte, then multiplies by `0x01000193` modulo 2³².
+
+Android first performs a correlated probe of an already-open watch app without launching it. `AUDIO_BEGIN` reserves a temporary watch heap buffer. Android waits for `AUDIO_STATUS`, then sends successive `AUDIO_BLOCK` messages of at most 1,024 bytes, each split into up to six 192-byte AppMessage chunks. PCM uses byte boundaries and bypasses UTF-8 validation. `PageOffset` is the block's start byte; a receipt reports the cumulative received byte count. Matching repeated blocks are accepted; holes, conflicting bytes, and inconsistent metadata are rejected.
+
+`AUDIO_PLAY` requires an empty payload, offset zero, complete data, and a matching checksum. It starts speaker playback; only the speaker finish callback can produce COMPLETE. A duplicate play for the same terminal session returns its recorded status without replaying. `AUDIO_CANCEL` discards/stops only the matching session and needs no acknowledgment. Back, dictation, and app shutdown cancel playback. Receive inactivity expires at 30 seconds and playback at 10 seconds; Android bounds its full exchange to 90 seconds.
+
+`AUDIO_STATUS` has an empty payload and correlates to the exact BEGIN, BLOCK, or PLAY transfer. Android validates watch identity, session, correlation, total, checksum, and confirmed offset. Its `Status` values are specific to kind 10:
+
+| Value | Audio meaning |
+| ---: | --- |
+| 1 | READY: temporary buffer reserved |
+| 2 | BUFFERED: block accepted |
+| 3 | COMPLETE: speaker finished naturally after all bytes drained |
+| 4 | MUTED: system speaker muted |
+| 5 | BUSY: speaker or dictation in use |
+| 6 | INVALID: format, bounds, session, payload, or checksum rejected |
+| 7 | FAILED: allocation, stream open, playback, or timeout failure |
+| 8 | CANCELLED: stopped or preempted |
+
+Speaker pumping uses partial writes and a timer, leaving the watch event loop responsive. Status replies wait for the existing watch outbox to become available. Transport ACKs do not establish audible playback, and a closed watch app does not queue audio for later.

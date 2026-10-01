@@ -69,6 +69,12 @@ Android **Diagnostics** provides a read-only API test, an **Open watch app & tes
 
 For a watch timeout, open Diagnostics and choose Reconnect on the watch. No RX event points to host selection, companion metadata, or host permissions. RX followed by a failed TX identifies the reply transport failure. TX Success confirms transport delivery, not a completed Hermes run. For API failures behind NetBird, HTTP 200 with HTML indicates a dashboard or proxy page instead of the expected JSON API response. Copy the report after reproducing the failure.
 
+## Watch speaker test
+
+Install the matching APK and PBW, open Hermes on Pebble Time 2, then tap **Diagnostics → Play test sound on watch** in Android. The watch should say **“Hello from your Pebble”** after the transfer finishes. A sample is bundled; no audio file, Hermes connection, or speech API is needed. The button checks that the watch app is already open and does not launch it.
+
+Android shows transfer progress and waits for the watch's speaker completion callback. If the speaker is muted or busy, it reports that instead. Check the watch's Sounds & Haptics and Quiet Time settings if muted. Back or leaving the watch app stops the test. This is a short playback experiment; spoken Hermes replies and cycling detection are not yet connected. See [audio test details](docs/audio-test.md).
+
 ## NetBird Custom Header
 
 When a NetBird reverse proxy protects the Hermes service, configure its Custom Header option with the exact header name and value entered in the companion. NetBird uses that header for service access and removes the matching access header before forwarding upstream. The Hermes Authorization header remains separate; using NetBird's Authorization preset would compete with Hermes authentication.

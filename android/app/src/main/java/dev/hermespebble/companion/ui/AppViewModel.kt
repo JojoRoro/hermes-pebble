@@ -152,6 +152,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy { setMessage(container.pebbleBridge.testWatchLink()) }
     }
 
+    val audioTestProgress = MutableStateFlow<String?>(null)
+
+    fun testWatchAudio() {
+        if (control.value.busy) return
+        launchBusy {
+            try {
+                val result = container.pebbleBridge.testWatchAudio { audioTestProgress.value = it }
+                audioTestProgress.value = result
+            } catch (error: CancellationException) {
+                audioTestProgress.value = "Audio test cancelled."
+                throw error
+            } catch (error: Exception) {
+                audioTestProgress.value = error.message ?: "The audio test could not be completed."
+                throw error
+            }
+        }
+    }
+
     fun setSection(section: AppSection) {
         control.value = control.value.copy(section = section, initialized = true)
     }

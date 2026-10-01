@@ -351,6 +351,19 @@ static void json_skip_space(const char *json, size_t length, size_t *position);
 static bool json_hex(char value, uint8_t *result);
 static size_t json_encode_utf8(uint32_t codepoint, char *output, size_t capacity);
 
+#include "audio_watch.h"
+
+static bool audio_dictation_active(void) { return s_dictation_session != NULL; }
+
+static bool audio_send_status(uint32_t session, uint32_t total, uint32_t checksum,
+                              uint32_t received, uint8_t status) {
+  if (s_exiting || !s_app_message_open || s_outbound.active) return false;
+  outbound_start(HERMES_KIND_AUDIO_STATUS, HERMES_KIND_NONE, next_transfer_id(),
+    session, checksum, 0u, received, total, status, 0u, HERMES_ITEM_KIND_NONE,
+    0u, 0u, 0u, NULL, 0u);
+  return s_outbound.active;
+}
+
 static void ui_window_load(Window *window) {
   (void)window;
   ui_rebuild();
@@ -1088,6 +1101,7 @@ static bool navigation_back(void) {
 static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+  if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
   if (s_screen == HERMES_SCREEN_INK_ACTIONS && !s_ink_corrupt) {
     ink_open();
     return;
@@ -1851,6 +1865,8 @@ static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfe
   if (kind == HERMES_KIND_HANDSHAKE) {
     s_outbound.correlation_id = s_phone_probe_id;
     s_phone_probe_id = 0u;
+  } else if (kind == HERMES_KIND_AUDIO_STATUS) {
+    s_outbound.correlation_id = s_audio_reply.request;
   }
   s_outbound.capture_id = capture_id;
   s_outbound.generation = generation;
@@ -1990,6 +2006,10 @@ static void outbound_finish(void) {
 }
 
 static void outbound_failed(uint32_t error_code, const char *text) {
+  if (s_outbound.kind == HERMES_KIND_AUDIO_STATUS) {
+    outbound_finish(); // A lost diagnostic reply must not replace the conversation UI.
+    return;
+  }
   if (s_outbound.kind == HERMES_KIND_INK_BLOCK) {
     outbound_finish();
     ink_failed();
@@ -2052,6 +2072,10 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
     outbound_send_current_chunk();
     return;
   }
+  if (s_outbound.kind == HERMES_KIND_AUDIO_STATUS) {
+    outbound_finish();
+    return;
+  }
   s_outbound.phase = s_outbound.kind == HERMES_KIND_SUBMIT_REQUEST || s_outbound.kind == HERMES_KIND_SAVE_NOTE ? HERMES_OUT_WAIT_RECEIPT : HERMES_OUT_WAIT_REPLY;
   s_outbound.elapsed_ticks = 0u;
   timer_ensure();
@@ -2081,6 +2105,7 @@ static void start_dictation(uint8_t mode) {
     return;
   }
   cancel_auto_result();
+  if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
   s_dictation_mode = mode == HERMES_CAPTURE_NOTE ? HERMES_CAPTURE_NOTE : HERMES_CAPTURE_REQUEST;
   s_capture_mode = s_dictation_mode;
   s_capture_text[0] = '\0';
@@ -2563,7 +2588,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     inbound_error(HERMES_ERROR_PROTOCOL_VERSION, "The phone and watch use incompatible protocol versions. Update both apps.");
     return;
   }
-  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_INK_RECEIPT) {
+  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_AUDIO_CANCEL) {
     inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported message kind.");
     return;
   }
@@ -2651,7 +2676,8 @@ static void process_inbound_transfer(void) {
     memcpy(s_inbound.payload + offset, s_inbound.chunks[i], s_inbound.chunk_lengths[i]);
     offset = (uint16_t)(offset + s_inbound.chunk_lengths[i]);
   }
-  if (offset != s_inbound.total_length || !utf8_valid(s_inbound.payload, offset)) {
+  if (offset != s_inbound.total_length ||
+      (s_inbound.kind != HERMES_KIND_AUDIO_BLOCK && !utf8_valid(s_inbound.payload, offset))) {
     inbound_error(HERMES_ERROR_MALFORMED, "The phone transfer was not valid UTF-8 text.");
     return;
   }
@@ -2706,6 +2732,11 @@ static bool queue_phone_probe(const InboundTransfer *message) {
 
 static void process_phone_message(const InboundTransfer *message) {
   if (s_exiting) return;
+  if (message->kind >= HERMES_KIND_AUDIO_BEGIN && message->kind <= HERMES_KIND_AUDIO_CANCEL) {
+    audio_handle(message->kind, message->capture_id, message->transfer_id, message->total_bytes,
+      message->generation, message->flags, message->page_offset, message->payload, message->payload_length);
+    return;
+  }
   if (queue_phone_probe(message)) {
     timer_ensure();
     return;
@@ -3447,6 +3478,7 @@ int main(void) {
     ink_schedule_sync();
   }
   app_event_loop();
+  audio_shutdown();
   connection_service_unsubscribe();
   ink_shutdown();
   stop_dictation();

@@ -50,6 +50,7 @@ enum class WireMessageKind(val value: Int) {
     START_CONVERSATION(7),
     STOP_REQUEST(8),
     INK_BLOCK(9),
+    AUDIO_STATUS(10),
     HANDSHAKE_ACK(101),
     DURABLE_RECEIPT(102),
     STATUS_UPDATE(103),
@@ -59,6 +60,10 @@ enum class WireMessageKind(val value: Int) {
     STRUCTURED_ERROR(107),
     CAPTURE_DISCARDED(108),
     INK_RECEIPT(109),
+    AUDIO_BEGIN(110),
+    AUDIO_BLOCK(111),
+    AUDIO_PLAY(112),
+    AUDIO_CANCEL(113),
     ;
 
     companion object {
@@ -245,7 +250,7 @@ class IncomingTransferAssembler(private val clock: () -> Long = System::currentT
             offset += chunk.size
         }
         try {
-            if (kind != WireMessageKind.INK_BLOCK) decodeUtf8(bytes)
+            if (kind != WireMessageKind.INK_BLOCK && kind != WireMessageKind.AUDIO_BLOCK) decodeUtf8(bytes)
         } catch (_: Exception) {
             reset()
             return DecodedChunkResult.Error(WireError.MALFORMED, "The transfer is not valid UTF-8")
@@ -327,7 +332,10 @@ object OutgoingProtocolCodec {
         require(pageOffset in 0..UInt.MAX_VALUE.toLong())
         require(totalBytes in 0..UInt.MAX_VALUE.toLong())
         require(generation in 0..UInt.MAX_VALUE.toLong())
-        val boundaries = utf8ChunkBoundaries(payload)
+        val boundaries = if (kind == WireMessageKind.AUDIO_BLOCK || kind == WireMessageKind.INK_BLOCK) {
+            if (payload.isEmpty()) listOf(0..0) else payload.indices.step(WireProtocol.MAX_CHUNK_PAYLOAD_BYTES)
+                .map { it until minOf(it + WireProtocol.MAX_CHUNK_PAYLOAD_BYTES, payload.size) }
+        } else utf8ChunkBoundaries(payload)
         if (boundaries.size > WireProtocol.MAX_CHUNKS) {
             throw IllegalArgumentException("Transfer needs too many chunks")
         }

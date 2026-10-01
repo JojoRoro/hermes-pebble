@@ -62,6 +62,8 @@ def main():
             run(temp / 'watch-check')
             run('gcc', *flags, '-ffunction-sections', '-fdata-sections', 'tests/watch_ink_test.c', '-Wl,--gc-sections', '-o', temp / 'ink-check')
             run(temp / 'ink-check', temp / 'ink-fixture.bin')
+            run('gcc', *flags, 'tests/watch_audio_test.c', '-o', temp / 'audio-check')
+            run(temp / 'audio-check')
         if args.kotlin_libs:
             if not args.pebble_model:
                 parser.error('--pebble-model is required with --kotlin-libs')
@@ -74,9 +76,9 @@ def main():
                 f'-Xplugin={plugin}', '-d', output,
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
                 SOURCES / 'network/RunConversationContext.kt',
-                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', args.pebble_model.resolve(),
-                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt')
-            for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt']:
+                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', args.pebble_model.resolve(),
+                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt', 'tests/AudioCheck.kt')
+            for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt', 'pebble.AudioCheckKt']:
                 run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}')
             fixture = [temp / 'ink-fixture.bin'] if args.sdk_headers else []
             run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.InkCheckKt', *fixture)

@@ -385,6 +385,7 @@ static void ink_space(ClickRecognizerRef recognizer, void *context) {
 
 static void ink_back(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
+  if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
   ink_end_stroke();
   if (s_screen != HERMES_SCREEN_INK || s_ink_length == INK_HEADER) { ui_back_click(recognizer, context); return; }
   const char *labels[] = {"Continue drawing", "Save handwritten note", "Discard drawing"};

@@ -2,6 +2,17 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.9 watch speaker test (1 October 2026)
+
+- Android Diagnostics adds **Play test sound on watch**, with a bundled 1.725-second spoken clip and visible transfer/playback progress. It probes an already-open watch app and makes no Hermes or speech API request.
+- SDK 4.33.1 builds the emery PBW with a 63,550-byte RAM footprint and 67,522 bytes available for heap allocations. The audio buffer is allocated only during a test, bounded at 16,000 bytes, and freed on completion, cancellation, expiry, or shutdown. This also respects the SDK's separate 65,535-byte static app-image limit.
+- Python configuration/finalizer/SQLite and native production-code checks passed. The audio harness covers full-size binary clips, partial and blocked writes, corrupt/incomplete data, wrong sessions, invalid offsets, duplicates, mute/busy/open failure, preemption, expiry, shutdown, and delayed completion receipts.
+- The full Kotlin suite passed: audio binary chunking and 16,000-byte delivery, watch/session/correlation matching, waiting for actual completion, timeout cancellation, and existing protocol, HTTP, reply-context, and ink interoperability checks.
+- The emery audio smoke transferred all 13,800 bundled PCM bytes, validated every receipt, rejected incomplete playback, observed the natural speaker finish callback, and acknowledged a duplicate play without replaying. The host's default audio output stalled after 8,192 bytes; restarting the emulator with `SDL_AUDIODRIVER=dummy` allowed the speaker to drain and the entire test to pass. This validates playback control and delivery, not audible sound.
+- The conversation emulator regression passed for automatic joined answers, stable scrolling, Actions preservation, Reply generation, completion before receipt, and Back. Its first run encountered a screenshot-service timeout; restarting the emulator resolved it. Android Room/KSP and Kotlin/Compose compilation passed locally; the temporary build environment reset before full APK/lint results could be collected, so complete APK packaging is verified in CI.
+- Actual Time 2 audibility, phone Bluetooth/host routing from the new button, muted-watch diagnostics, and closing the real watch app during a test remain hardware acceptance checks. No cycling detection or spoken Hermes replies are enabled by this diagnostic.
+- Watch and Android version name are 0.1.9; Android version code is 10. Final signed APK packaging and certificate verification run in the tag-triggered release workflow.
+
 ## 0.1.8 continuous answer scrolling (30 September 2026)
 
 - The watch joins UTF-8 result chunks automatically in an 8-KiB text window and keeps its reading position during incoming chunks and Actions navigation. Down/Up load adjacent windows without a next-page action; the drawing height is bounded for newline-heavy text.

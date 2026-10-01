@@ -449,6 +449,12 @@ private fun DiagnosticsScreen(
         HostPicker(state, viewModel)
         OutlinedButton(onClick = viewModel::testWatchLink, enabled = !state.busy) { Text("Open watch app & test link") }
         Text("This opens Hermes on connected watches and checks a complete round trip. Use the matching PBW from this release. RX means the phone received a message; TX Success alone is only a transport acknowledgment.")
+        OutlinedButton(onClick = viewModel::testWatchAudio, enabled = !state.busy) {
+            Text("Play test sound on watch")
+        }
+        Text("Keep Hermes open on your watch. Sends a short “Hello from your Pebble” voice clip to its speaker. No Hermes server or speech API is needed.")
+        val audioProgress by viewModel.audioTestProgress.collectAsStateWithLifecycle()
+        audioProgress?.let { Text(it) }
         OutlinedButton(onClick = viewModel::testConnection, enabled = state.connectionReady && !state.busy) {
             Text("Test Hermes API (read only)")
         }

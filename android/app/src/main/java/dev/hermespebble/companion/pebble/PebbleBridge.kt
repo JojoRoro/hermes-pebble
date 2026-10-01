@@ -54,6 +54,15 @@ class PebbleBridge(
     private val linkProbes = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<String>>()
     private val probeMutex = Mutex()
     private val lastStatus = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val audioTransfer = WatchAudioTransfer(
+        send = { watch, message -> sendTransfer(
+            watch = watch, kind = message.kind, captureId = message.captureId,
+            generation = message.generation, pageOffset = message.pageOffset,
+            totalBytes = message.totalBytes, flags = message.flags, payload = message.payload,
+            messageId = message.transferId,
+        ) },
+        nextId = ::transferId,
+    )
 
     val activeWatches: StateFlow<Set<String>> = activeWatchState.asStateFlow()
 
@@ -155,6 +164,48 @@ class PebbleBridge(
             pageOffset = request.pageOffset + request.payload.size, totalBytes = request.totalBytes,
             generation = request.generation, flags = WireProtocol.FLAG_DURABLE_COMMIT,
             status = if (complete) WireStatus.NOTE_SAVED.value else WireStatus.WAITING_FOR_PHONE.value)
+    }
+
+    fun onAudioStatus(watch: String, message: WireMessage) {
+        DiagnosticLog.record("Audio", "Watch status ${message.status}; confirmed ${message.pageOffset}/${message.totalBytes} bytes")
+        audioTransfer.onStatus(watch, message)
+    }
+
+    suspend fun testWatchAudio(progress: (String) -> Unit): String = probeMutex.withLock {
+        check(selectedHost() != null) { "Select the Pebble phone host first." }
+        progress("Checking for an open Hermes watch app…")
+        val probeId = transferId()
+        val reply = CompletableDeferred<String>()
+        linkProbes[probeId] = reply
+        val watch = try {
+            // Discover an already-open app even after Android process death. Never launch it.
+            val probe = OutgoingProtocolCodec.encode(WireMessageKind.HANDSHAKE_ACK, probeId,
+                generation = settingsRepository.current().conversationGeneration).single()
+            val sent = sendMutex.withLock {
+                callHost("Audio app check") { sender.sendDataToPebble(WireProtocol.APP_UUID, probe, watches = null) }
+            }
+            check(sent?.values?.any { it is TransmissionResult.Success } == true) {
+                "Open Hermes on the watch, then press Play test sound again. Check the selected Pebble host if Hermes is already open."
+            }
+            withTimeoutOrNull(25_000L) { reply.await() }
+                ?: error("The watch did not answer. Return to the Hermes watch menu and install the matching PBW.")
+        } finally {
+            linkProbes.remove(probeId)
+            reply.cancel()
+        }
+        val pcm = applicationContext.assets.open("watch_test.s8").use { it.readBytes() }
+        val started = android.os.SystemClock.elapsedRealtime()
+        try {
+            audioTransfer.play(watch, pcm) { stage ->
+                DiagnosticLog.record("Audio", stage)
+                progress(stage)
+            }.also {
+                DiagnosticLog.record("Audio", "Test completed: ${pcm.size} bytes; ${android.os.SystemClock.elapsedRealtime() - started} ms including playback")
+            }
+        } catch (error: Exception) {
+            DiagnosticLog.record("Audio", "Test stopped: ${error.javaClass.simpleName}")
+            throw error
+        }
     }
 
     suspend fun sendStatus(watch: String, command: CommandItem): Boolean {
@@ -431,11 +482,12 @@ class PebbleBridge(
         generation: Long = 0,
         flags: Int = 0,
         payload: ByteArray = ByteArray(0),
+        messageId: Long = transferId(),
     ): Boolean {
         if (watch !in activeWatchState.value) return false
         val dictionaries = OutgoingProtocolCodec.encode(
             kind = kind,
-            transferId = transferId(),
+            transferId = messageId,
             captureId = captureId,
             correlationId = correlationId,
             itemId = itemId,

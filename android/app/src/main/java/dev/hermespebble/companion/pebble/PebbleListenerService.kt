@@ -118,6 +118,10 @@ class PebbleListenerService : BasePebbleListenerService() {
         DiagnosticLog.record("Pebble", "RX complete: ${message.kind.name}; transfer ${message.transferId}")
         return try {
             when (message.kind) {
+                WireMessageKind.AUDIO_STATUS -> {
+                    bridge.onAudioStatus(watch, message)
+                    ReceiveResult.Ack
+                }
                 WireMessageKind.INK_BLOCK -> {
                     val block = InkBlock(message.captureId, message.totalBytes.toInt(), message.pageOffset.toInt(), message.generation, message.payload)
                     val note = container.inkRepository.accept(watch, block)
