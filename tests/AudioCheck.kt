@@ -5,6 +5,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 fun main() = runBlocking {
+    check(VoicePcm.spokenText("**Hello**\nworld") == "Hello world")
+    check(VoicePcm.spokenText("a ".repeat(300)).endsWith("Read the rest on your watch."))
+    check(VoicePcm.spokenText("🚀".repeat(401)).contains("🚀".repeat(400)))
+    check(VoicePcm.convert(byteArrayOf(0, 128.toByte(), 255.toByte()), 8000, 1, 3)
+        .contentEquals(byteArrayOf((-128).toByte(), 0, 127)))
+    check(VoicePcm.convert(byteArrayOf(0, 128.toByte(), 0, 0, 255.toByte(), 127), 8000, 1, 2)
+        .contentEquals(byteArrayOf((-128).toByte(), 0, 127)))
+    val floats = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        .putFloat(-1f).putFloat(1f).putFloat(Float.NaN).putFloat(0f).array()
+    check(VoicePcm.convert(floats, 8000, 2, 4).contentEquals(byteArrayOf(0, 0)))
+    check(VoicePcm.convert(ByteArray(44100 * 2) { 128.toByte() }, 44100, 2, 3).size == 8000)
+    check(VoicePcm.convert(byteArrayOf(0, 255.toByte()), 16000, 1, 3).contentEquals(byteArrayOf(0)))
+    for (invalid in listOf(byteArrayOf(), byteArrayOf(1))) {
+        check(runCatching { VoicePcm.convert(invalid, 8000, 1, 2) }.isFailure)
+    }
+    check(runCatching { VoicePcm.convert(byteArrayOf(0), 0, 1, 3) }.isFailure)
+    check(runCatching { VoicePcm.convert(ByteArray(8000 * 61), 8000, 1, 3) }.isFailure)
     val pcm = ByteArray(16000) { (it * 71).toByte() }
     val binary = ByteArray(1024) { 0x80.toByte() } // Never treat PCM as UTF-8.
     val chunks = OutgoingProtocolCodec.encode(WireMessageKind.AUDIO_BLOCK, 1, payload = binary)
@@ -17,6 +34,7 @@ fun main() = runBlocking {
     var receiver: WatchAudioTransfer? = null
     val buffer = ByteArray(16000)
     val transfer = WatchAudioTransfer(send = { watch, request ->
+        check(request.itemId == 42L) // Every clip operation stays bound to the opted-in capture.
         val status = when (request.kind) {
             WireMessageKind.AUDIO_BEGIN -> WatchAudioTransfer.READY
             WireMessageKind.AUDIO_BLOCK -> {
@@ -33,7 +51,7 @@ fun main() = runBlocking {
         true
     }, nextId = { ++id })
     receiver = transfer
-    val result = async { transfer.play("watch", pcm) {} }
+    val result = async { transfer.play("watch", pcm, replyCaptureId = 42) {} }
     while (play == null) delay(1)
     check(received == pcm.size && buffer.contentEquals(pcm))
     check(!result.isCompleted) // A transport ACK / full buffer cannot report success.

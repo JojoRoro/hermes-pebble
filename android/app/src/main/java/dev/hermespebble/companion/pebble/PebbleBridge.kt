@@ -20,6 +20,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.update
@@ -54,12 +57,15 @@ class PebbleBridge(
     private val linkProbes = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<String>>()
     private val probeMutex = Mutex()
     private val lastStatus = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val voiceJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val spokenReplies = LinkedHashSet<String>()
+    private val voiceMutex = Mutex()
     private val audioTransfer = WatchAudioTransfer(
         send = { watch, message -> sendTransfer(
             watch = watch, kind = message.kind, captureId = message.captureId,
             generation = message.generation, pageOffset = message.pageOffset,
             totalBytes = message.totalBytes, flags = message.flags, payload = message.payload,
-            messageId = message.transferId,
+            messageId = message.transferId, itemId = message.itemId,
         ) },
         nextId = ::transferId,
     )
@@ -89,6 +95,7 @@ class PebbleBridge(
     fun onAppClosed(watch: String) {
         DiagnosticLog.record("Pebble", "Watch app closed")
         activeWatchState.update { it - watch }
+        voiceJobs.remove(watch)?.cancel()
         lastStatus.remove(watch)
     }
 
@@ -99,6 +106,8 @@ class PebbleBridge(
     suspend fun selectHost(packageName: String?) = sendMutex.withLock {
         picker.selectApp(packageName)
         DiagnosticLog.record("Pebble", "Host selection saved; reopen the watch app")
+        voiceJobs.values.forEach { it.cancel() }
+        voiceJobs.clear()
         resetSender()
         activeWatchState.value = emptySet()
         lastStatus.clear()
@@ -294,7 +303,7 @@ class PebbleBridge(
             payload = payload.copy(output = pageText, more = true)
         }
         val more = payload.more
-        sendTransfer(
+        val delivered = sendTransfer(
             watch = watch,
             kind = WireMessageKind.RESULT_PAGE,
             generation = command.conversationGeneration,
@@ -310,6 +319,48 @@ class PebbleBridge(
             flags = if (more) WireProtocol.FLAG_MORE else 0,
             payload = json.encodeToString(payload).toByteArray(Charsets.UTF_8),
         )
+        if (delivered && offset == 0 && request.flags and WireProtocol.FLAG_VOICE_REPLY != 0 &&
+            command.kind == CommandKind.WATCH_REQUEST && command.state == CommandState.COMPLETED && output.isNotBlank()) {
+            startVoiceReply(watch, request.captureId, output)
+        }
+    }
+
+    private fun startVoiceReply(watch: String, captureId: Long, text: String) {
+        val key = "$watch:$captureId"
+        synchronized(spokenReplies) {
+            if (!spokenReplies.add(key)) return
+            if (spokenReplies.size > 128) spokenReplies.remove(spokenReplies.first())
+        }
+        voiceJobs.remove(watch)?.cancel()
+        voiceJobs[watch] = scope.launch {
+            suspend fun status(message: String) {
+                DiagnosticLog.record("Voice", message)
+                sendTransfer(watch = watch, kind = WireMessageKind.VOICE_STATUS, captureId = captureId,
+                    payload = message.take(120).toByteArray(Charsets.UTF_8))
+            }
+            try {
+                withTimeout(10 * 60_000L) {
+                    voiceMutex.withLock {
+                        status("Preparing voice on phone")
+                        val pcm = WatchSpeech(applicationContext).synthesize(text)
+                        val count = (pcm.size + WatchAudioTransfer.MAX_BYTES - 1) / WatchAudioTransfer.MAX_BYTES
+                        for ((index, offset) in pcm.indices.step(WatchAudioTransfer.MAX_BYTES).withIndex()) {
+                            check(watch in activeWatchState.value) { "Watch app closed. Voice stopped." }
+                            status("Voice ${index + 1}/$count - BACK stops")
+                            audioTransfer.play(watch, pcm.copyOfRange(offset, minOf(offset + WatchAudioTransfer.MAX_BYTES, pcm.size)),
+                                replyCaptureId = captureId) { }
+                        }
+                        status("Voice reply finished")
+                    }
+                }
+            } catch (_: TimeoutCancellationException) {
+                status("Voice timed out. Read the answer below.")
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                status(error.message ?: "Voice unavailable. Read the answer below.")
+            }
+        }
     }
 
     suspend fun sendNewConversationAck(watch: String, request: WireMessage, newGeneration: Long) {

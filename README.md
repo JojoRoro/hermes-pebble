@@ -69,11 +69,19 @@ Android **Diagnostics** provides a read-only API test, an **Open watch app & tes
 
 For a watch timeout, open Diagnostics and choose Settings › Reconnect phone on the watch. No RX event points to host selection, companion metadata, or host permissions. RX followed by a failed TX identifies the reply transport failure. TX Success confirms transport delivery, not a completed Hermes run. For API failures behind NetBird, HTTP 200 with HTML indicates a dashboard or proxy page instead of the expected JSON API response. Copy the report after reproducing the failure.
 
+## Spoken replies on the watch
+
+With matching v0.1.13 or newer APK and PBW installed, choose **Ask Hermes**, dictate, press Select on the review, and choose **Send + voice reply**. The answer appears automatically and is then spoken by the watch speaker. Regular **Send to Hermes** remains text only. This also works when dictating a follow-up with **Reply to Hermes** or using Quick Launch. No bike detection is required.
+
+Keep Hermes open on the watch. Android uses an installed offline text-to-speech voice in the phone's configured speech language; no extra speech API key is needed. If speech is unavailable, install/download an offline voice in Android's text-to-speech settings. The answer stays readable and Diagnostics records the voice error.
+
+This first version reads up to 400 characters, followed by “Read the rest on your watch” for longer answers. Audio arrives in buffered sections of up to two seconds, with transfer pauses between sections. **Back** or starting another dictation stops voice, including sections not yet received. Quiet Time and speaker mute still block playback. Voice is per request and is not resumed after closing the app or restarting the phone process. It does not replay when refreshing an answer.
+
 ## Watch speaker test
 
 Install the matching APK and PBW, open Hermes on Pebble Time 2, then tap **Diagnostics → Play test sound on watch** in Android. The watch should say **“Hello from your Pebble”** after the transfer finishes. A sample is bundled; no audio file, Hermes connection, or speech API is needed. The button checks that the watch app is already open and does not launch it.
 
-Android shows transfer progress and waits for the watch's speaker completion callback. If the speaker is muted or busy, it reports that instead. Check the watch's Sounds & Haptics and Quiet Time settings if muted. Back or leaving the watch app stops the test. This is a short playback experiment; spoken Hermes replies and cycling detection are not yet connected. See [audio test details](docs/audio-test.md).
+Android shows transfer progress and waits for the watch's speaker completion callback. If the speaker is muted or busy, it reports that instead. Check the watch's Sounds & Haptics and Quiet Time settings if muted. Back or leaving the watch app stops the test. Spoken Hermes replies are available through **Send + voice reply**; cycling detection is independent. See [audio test details](docs/audio-test.md).
 
 From v0.1.10, **Quiet Time always blocks audio**, independently of the system speaker-mute preference. Turning it on during a transfer or playback discards the clip and stops playback. Turn Quiet Time off and start a new test to play audio again.
 

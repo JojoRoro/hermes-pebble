@@ -94,6 +94,7 @@
 #define HERMES_ACTION_STATUS 12u
 #define HERMES_ACTION_BACK 13u
 #define HERMES_ACTION_REPLY 14u
+#define HERMES_ACTION_SEND_VOICE 15u
 
 #define HERMES_MENU_MAIN 0u
 #define HERMES_MENU_RECENT 1u
@@ -206,6 +207,10 @@ static uint8_t s_result_answer_block;
 static int16_t s_result_text_height;
 static bool s_result_height_valid;
 static bool s_result_announce;
+// Voice consent lasts only for this open watch session and this capture.
+static uint32_t s_voice_capture_id;
+static bool s_voice_requested;
+static char s_voice_status[128];
 static bool s_app_message_open;
 static bool s_handshake_ready;
 static bool s_exiting;
@@ -1069,6 +1074,7 @@ static void ui_show_status(void) {
   if (!s_handshake_ready) ui_status_caption("Phone not linked. Reconnect from Settings.");
   if (s_visible_error != HERMES_ERROR_NONE) ui_status_caption(error_text(s_visible_error));
   if (s_visible_flags & HERMES_FLAG_MORE) ui_status_caption("More on your phone.");
+  if (s_voice_capture_id == s_visible_capture_id && s_voice_status[0]) ui_status_caption(s_voice_status);
   if (s_result_loading) ui_status_caption("Loading the answer…");
   if (s_pending.operation != HERMES_PENDING_NONE) ui_status_caption("Your draft stays on this watch until the phone saves it.");
   if (s_visible_status == HERMES_STATUS_NONE && s_visible_input[0] == '\0') ui_status_caption("Choose Ask Hermes in the menu to start.");
@@ -1102,7 +1108,7 @@ static void ui_show_result(void) {
     ui_block(UI_BLOCK_CAPTION, "No answer text yet. SELECT to refresh.", GColorDarkGray, 0u);
   }
   s_result_answer_block = s_block_count - 1u;
-  ui_present(HERMES_SCREEN_RESULT, "Answer", false, true, s_result_retry ? "DOWN: retry loading" : NULL);
+  ui_present(HERMES_SCREEN_RESULT, "Answer", false, true, s_result_retry ? "DOWN: retry loading" : (s_voice_status[0] ? s_voice_status : NULL));
   ui_scroll(s_result_scroll_to_end ? MAX_TEXT_HEIGHT : offset);
   if (s_result_more && !s_result_window_full && !s_result_retry && !s_result_loading &&
       s_result_next_offset != s_result_window_end) s_result_prefetch = true;
@@ -1200,6 +1206,8 @@ static void ui_show_actions(void) {
     } else {
       labels[count] = "Send to Hermes";
       actions[count++] = HERMES_ACTION_SEND;
+      labels[count] = "Send + voice reply";
+      actions[count++] = HERMES_ACTION_SEND_VOICE;
       labels[count] = "Save as local note";
       actions[count++] = HERMES_ACTION_SAVE_NOTE;
     }
@@ -1528,6 +1536,8 @@ static bool navigation_back(void) {
 static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+  s_voice_capture_id = 0u;
+  s_voice_status[0] = '\0';
   if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
   if (s_screen == HERMES_SCREEN_INK_ACTIONS && !s_ink_corrupt) {
     ink_open();
@@ -1564,6 +1574,15 @@ static void ui_action(uint8_t action) {
     case HERMES_ACTION_REPLY:
       // A normal request in the current generation reuses the phone's session.
       start_dictation(HERMES_CAPTURE_REQUEST);
+      break;
+    case HERMES_ACTION_SEND_VOICE:
+      prepare_capture(HERMES_PENDING_REQUEST);
+      if (s_pending.operation == HERMES_PENDING_REQUEST && s_screen == HERMES_SCREEN_STATUS) {
+        s_voice_capture_id = s_pending.capture_id;
+        s_voice_requested = false;
+        snprintf(s_voice_status, sizeof(s_voice_status), "Voice reply enabled");
+        ui_rebuild();
+      }
       break;
     case HERMES_ACTION_SEND:
       if (s_capture_mode == HERMES_CAPTURE_NOTE) {
@@ -2555,6 +2574,8 @@ static void start_dictation(uint8_t mode) {
     return;
   }
   cancel_auto_result();
+  s_voice_capture_id = 0u;
+  s_voice_status[0] = '\0';
   if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
   s_dictation_mode = mode == HERMES_CAPTURE_NOTE ? HERMES_CAPTURE_NOTE : HERMES_CAPTURE_REQUEST;
   s_capture_mode = s_dictation_mode;
@@ -2678,6 +2699,8 @@ static void prepare_capture(uint8_t operation) {
     ui_show_error(operation == HERMES_PENDING_NOTE ? HERMES_ERROR_NOTE_STORAGE : HERMES_ERROR_DURABLE_STORAGE, "The pending capture could not be committed on the watch.");
     return;
   }
+  s_voice_capture_id = 0u;
+  s_voice_status[0] = '\0';
   s_pending = candidate;
   s_discard_capture_id = capture_id;
   cancel_auto_result();
@@ -2820,7 +2843,10 @@ static void start_result_chunk(uint32_t capture_id, uint32_t offset) {
   s_result_offset = offset;
   s_result_loading = true;
   if (s_screen == HERMES_SCREEN_STATUS) ui_rebuild();
-  outbound_start(HERMES_KIND_FETCH_RESULT, HERMES_KIND_RESULT_PAGE, next_transfer_id(), capture_id, s_generation, 0u, offset, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE, s_visible_item_kind, s_visible_status, 0u, 0u, NULL, 0u);
+  outbound_start(HERMES_KIND_FETCH_RESULT, HERMES_KIND_RESULT_PAGE, next_transfer_id(), capture_id, s_generation, 0u, offset, 0u, HERMES_STATUS_NONE, HERMES_ERROR_NONE, s_visible_item_kind, s_visible_status, 0u,
+      offset == 0u && capture_id == s_voice_capture_id && !s_voice_requested &&
+      s_visible_status == HERMES_STATUS_COMPLETED ? HERMES_FLAG_VOICE_REPLY : 0u, NULL, 0u);
+  if (s_outbound.active && (s_outbound.flags & HERMES_FLAG_VOICE_REPLY)) s_voice_requested = true;
 }
 
 static void start_fetch_result(uint32_t capture_id, uint32_t offset) {
@@ -3041,7 +3067,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     inbound_error(HERMES_ERROR_PROTOCOL_VERSION, "The phone and watch use incompatible protocol versions. Update both apps.");
     return;
   }
-  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_AUDIO_CANCEL) {
+  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_VOICE_STATUS) {
     inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported message kind.");
     return;
   }
@@ -3185,7 +3211,24 @@ static bool queue_phone_probe(const InboundTransfer *message) {
 
 static void process_phone_message(const InboundTransfer *message) {
   if (s_exiting) return;
+  if (message->kind == HERMES_KIND_VOICE_STATUS) {
+    if (message->capture_id == s_voice_capture_id && s_voice_capture_id != 0u) {
+      size_t length = message->payload_length < sizeof(s_voice_status) ? message->payload_length : sizeof(s_voice_status) - 1u;
+      while (length > 0u && length < message->payload_length && is_utf8_continuation(message->payload[length])) length--;
+      memcpy(s_voice_status, message->payload, length);
+      s_voice_status[length] = '\0';
+      if (s_screen == HERMES_SCREEN_RESULT || s_screen == HERMES_SCREEN_STATUS) ui_rebuild();
+    }
+    return;
+  }
   if (message->kind >= HERMES_KIND_AUDIO_BEGIN && message->kind <= HERMES_KIND_AUDIO_CANCEL) {
+    // ItemId binds every voice clip to the user's current opt-in. Back also
+    // rejects clips still being synthesized or waiting between transfers.
+    if (message->item_id != 0u && message->item_id != s_voice_capture_id) {
+      audio_reply(message->capture_id, message->transfer_id, message->total_bytes,
+          message->generation, 0u, HERMES_AUDIO_CANCELLED);
+      return;
+    }
     audio_handle(message->kind, message->capture_id, message->transfer_id, message->total_bytes,
       message->generation, message->flags, message->page_offset, message->payload, message->payload_length);
     return;

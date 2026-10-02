@@ -34,6 +34,7 @@ object WireProtocol {
     const val KEY_FLAGS = 16u
     const val KEY_CORRELATION_ID = 17u
 
+    const val FLAG_VOICE_REPLY = 0x10
     const val FLAG_MORE = 0x01
     const val FLAG_STOP_REQUESTED = 0x02
     const val FLAG_REPLAYED = 0x04
@@ -64,6 +65,7 @@ enum class WireMessageKind(val value: Int) {
     AUDIO_BLOCK(111),
     AUDIO_PLAY(112),
     AUDIO_CANCEL(113),
+    VOICE_STATUS(114),
     ;
 
     companion object {

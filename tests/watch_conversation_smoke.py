@@ -13,6 +13,7 @@ from libpebble2.services.screenshot import Screenshot
 
 parser = argparse.ArgumentParser(parents=PebbleCommand._shared_parser())
 parser.add_argument('--pbw', default='build/hermes-pebble.pbw')
+parser.add_argument('--voice-only', action='store_true')
 parser.add_argument('--long-scroll-only', action='store_true')
 parser.add_argument('--output', type=Path, default=Path('build/conversation-smoke'))
 args = parser.parse_args()
@@ -67,7 +68,7 @@ def setup_voice(app, encoder):
 voice.register_handler('session_setup', setup_voice)
 transfer = 5000
 
-def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offset=0, total=0):
+def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offset=0, total=0, item_id=42):
     global transfer
     transfer += 1
     chunks = []
@@ -83,7 +84,7 @@ def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offs
         fields = {key: Uint32(0) for key in range(18)}
         fields.update({0:Uint32(1), 1:Uint32(kind), 2:Uint32(transfer), 3:Uint32(capture_id),
                        4:Uint32(i), 5:Uint32(len(chunks)), 6:ByteArray(chunk), 7:Uint32(status),
-                       9:Uint32(42), 10:Uint32(status), 11:Uint32(1), 12:Uint32(offset),
+                       9:Uint32(item_id), 10:Uint32(status), 11:Uint32(1), 12:Uint32(offset),
                        14:Uint32(total), 15:Uint32(7), 16:Uint32(flags), 17:Uint32(correlation)})
         service.send_message(app_id, fields)
         time.sleep(.15)
@@ -96,9 +97,11 @@ def dictate(words):
     time.sleep(1.5)
     capture('after-dictation')
 
-def send_review():
+def send_review(voice_reply=False):
     click(QemuButton.Button.Select)  # Review actions
     capture('review-actions')
+    if voice_reply: click(QemuButton.Button.Down)
+    capture('voice-review-actions' if voice_reply else 'text-review-actions')
     click(QemuButton.Button.Select)  # Send
     return receive(kind=2)
 
@@ -138,7 +141,7 @@ def finish(request, text):
     send(103, request[3], status=7)
     # No user input here: completion must trigger FETCH_RESULT automatically.
     fetch = receive(kind=6)
-    assert fetch[3] == request[3] and fetch[12] == 0
+    assert fetch[3] == request[3] and fetch[12] == 0 and not (fetch[16] & 16)
     offset = deliver_page(fetch, text)
     time.sleep(1)
     assert messages.empty(), 'The first screen must not download the whole answer'
@@ -165,6 +168,37 @@ ToolAppInstaller(connection,args.pbw,quiet=True).install()
 startup = receive()
 send(101, correlation=startup[2])
 time.sleep(.3)
+if args.voice_only:
+    click(QemuButton.Button.Select)
+    dictate('Say hello out loud')
+    request = send_review(voice_reply=True)
+    receipt(request)
+    send(103, request[3], status=7)
+    fetch = receive(kind=6)
+    assert fetch[3] == request[3] and fetch[16] & 16
+    deliver_page(fetch, 'Hello from Hermes.')
+    send(114, request[3], payload=b'Preparing voice on phone')
+    capture('voice-preparing')
+    send(110, capture_id=800, flags=1, total=2, item_id=request[3])
+    assert receive(kind=10)[7] == 1, 'Opted-in capture must accept audio'
+    click(QemuButton.Button.Back)
+    send(110, capture_id=801, flags=1, total=2, item_id=request[3])
+    assert receive(kind=10)[7] == 8, 'Back must reject later clips'
+    click(QemuButton.Button.Select)
+    dictate('Text only please')
+    regular = send_review()
+    receipt(regular)
+    send(103, regular[3], status=7)
+    fetch = receive(kind=6)
+    assert not (fetch[16] & 16), 'Regular send must not opt in'
+    deliver_page(fetch, 'This is a text reply.')
+    send(110, capture_id=802, flags=1, total=2, item_id=request[3])
+    assert receive(kind=10)[7] == 8, 'An old capture must not speak during a new request'
+    assert not faults, faults
+    capture('text-after-voice')
+    print('Voice opt-in, result flag, accepted audio, Back cancellation between clips, and text-only send passed.', flush=True)
+    service.shutdown()
+    raise SystemExit(0)
 if not args.long_scroll_only:
     click(QemuButton.Button.Select)  # Ask Hermes
     # Local voice fixture: never calls a speech service or Hermes.

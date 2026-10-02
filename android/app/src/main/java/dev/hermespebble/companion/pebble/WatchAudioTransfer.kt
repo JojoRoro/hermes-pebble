@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** A bounded, prebuffered audio test. Transport ACKs alone never mean playback succeeded. */
+/** A bounded, prebuffered audio transfer. Transport ACKs alone never mean playback succeeded. */
 class WatchAudioTransfer(
     private val send: suspend (String, WireMessage) -> Boolean,
     private val nextId: () -> Long,
@@ -27,14 +27,14 @@ class WatchAudioTransfer(
         if (waiter.watch == watch && waiter.session == message.captureId) waiter.reply.complete(message)
     }
 
-    suspend fun play(watch: String, pcm: ByteArray, progress: (String) -> Unit): String = mutex.withLock {
-        require(pcm.isNotEmpty() && pcm.size <= MAX_BYTES) { "The test clip exceeds the watch audio limit." }
+    suspend fun play(watch: String, pcm: ByteArray, replyCaptureId: Long = 0, progress: (String) -> Unit): String = mutex.withLock {
+        require(pcm.isNotEmpty() && pcm.size <= MAX_BYTES) { "The audio clip exceeds the watch audio limit." }
         val session = nextId()
         val checksum = checksum(pcm)
         var finished = false
         fun request(kind: WireMessageKind, offset: Int = 0, payload: ByteArray = ByteArray(0)) = WireMessage(
             kind = kind, transferId = nextId(), captureId = session, generation = checksum,
-            totalBytes = pcm.size.toLong(), pageOffset = offset.toLong(), flags = FORMAT, payload = payload,
+            totalBytes = pcm.size.toLong(), pageOffset = offset.toLong(), flags = FORMAT, payload = payload, itemId = replyCaptureId,
         )
         try {
             withTimeout(90_000L) {
@@ -43,15 +43,15 @@ class WatchAudioTransfer(
                 for (offset in pcm.indices.step(WireProtocol.MAX_TRANSFER_BYTES)) {
                     val end = minOf(offset + WireProtocol.MAX_TRANSFER_BYTES, pcm.size)
                     exchange(watch, request(WireMessageKind.AUDIO_BLOCK, offset, pcm.copyOfRange(offset, end)), BUFFERED, end)
-                    progress("Sending test sound: ${end * 100 / pcm.size}%")
+                    progress("Sending sound: ${end * 100 / pcm.size}%")
                 }
                 progress("Waiting for watch playback…")
                 exchange(watch, request(WireMessageKind.AUDIO_PLAY), COMPLETE, pcm.size)
                 finished = true
-                "Watch reported playback complete. You should have heard “Hello from your Pebble”."
+                "Watch reported playback complete."
             }
         } catch (_: TimeoutCancellationException) {
-            throw IllegalStateException("Audio test timed out. Keep Hermes open on the watch and install the matching PBW. Check Diagnostics for the last confirmed stage.")
+            throw IllegalStateException("Audio transfer timed out. Keep Hermes open on the watch and install the matching PBW. Check Diagnostics for the last confirmed stage.")
         } finally {
             if (!finished) withContext(NonCancellable) {
                 // No queued playback after cancellation; watch also expires incomplete clips.
@@ -68,14 +68,14 @@ class WatchAudioTransfer(
         val waiter = Pending(watch, request.captureId, CompletableDeferred())
         pending[request.transferId] = waiter
         try {
-            check(send(watch, request)) { "Could not deliver test audio. Open Hermes on the watch and check its connection in the Pebble phone app." }
+            check(send(watch, request)) { "Could not deliver audio. Open Hermes on the watch and check its connection in the Pebble phone app." }
             val reply = withTimeout(replyTimeoutMillis) { waiter.reply.await() }
             check(reply.status == expected) {
                 when (reply.status) {
-                    QUIET_TIME -> "Quiet Time is on. Turn it off on the watch, then start a new audio test."
+                    QUIET_TIME -> "Quiet Time is on. Turn it off on the watch, then try again."
                     MUTED -> "The watch speaker is muted. Check Sounds & Haptics and Quiet Time on the watch."
                     BUSY -> "The watch speaker or dictation is busy. Finish that activity and try again."
-                    INVALID -> "The watch rejected incomplete or damaged test audio. Try again with the matching PBW."
+                    INVALID -> "The watch rejected incomplete or damaged audio. Try again with the matching PBW."
                     CANCELLED -> "Watch audio playback was stopped. Keep Hermes open until the sound finishes."
                     else -> "The watch could not play the sound. Check its speaker support and firmware."
                 }

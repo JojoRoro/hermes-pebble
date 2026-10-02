@@ -270,3 +270,9 @@ Android first performs a correlated probe of an already-open watch app without l
 Speaker pumping uses partial writes and a timer, leaving the watch event loop responsive. Status replies wait for the existing watch outbox to become available. Transport ACKs do not establish audible playback, and a closed watch app does not queue audio for later.
 
 Quiet Time is checked before BEGIN allocation, BLOCK acceptance, and PLAY, as well as by the active audio timer and finish callback. Enabling it discards any incomplete/buffered clip and stops playback. A terminal Quiet Time session cannot be replayed after Quiet Time is disabled; the phone must start a new session.
+
+### Opt-in voice reply extension (v0.1.13)
+
+`Flags & 0x10` on `FETCH_RESULT` at offset zero requests speech for a completed watch request. The watch sets it once after **Send + voice reply**, only for the current open-session capture. It is not included in the durable command or pending-record format. Normal sends, notes, later pages, and refreshes do not request speech.
+
+The phone sends the result page first and deduplicates speech by watch/capture. It emits `VOICE_STATUS` (114), with the originating `CaptureId` and a UTF-8 status payload (up to 120 characters). This is presentation only; it cannot change command state. Each ordinary audio clip uses a fresh audio-session CaptureId and carries the originating request capture in `ItemId`. Zero ItemId retains the independent diagnostic sound behavior. A nonzero ItemId that no longer matches the watch's open-session voice consent is rejected with `AUDIO_CANCELLED`, including BEGIN/BLOCK/PLAY arriving after Back. The clip format and 16,000-byte limit are unchanged.
