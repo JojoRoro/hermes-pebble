@@ -14,6 +14,7 @@ from libpebble2.services.screenshot import Screenshot
 parser = argparse.ArgumentParser(parents=PebbleCommand._shared_parser())
 parser.add_argument('--pbw', default='build/hermes-pebble.pbw')
 parser.add_argument('--voice-only', action='store_true')
+parser.add_argument('--recent-voice-only', action='store_true')
 parser.add_argument('--long-scroll-only', action='store_true')
 parser.add_argument('--output', type=Path, default=Path('build/conversation-smoke'))
 args = parser.parse_args()
@@ -68,7 +69,7 @@ def setup_voice(app, encoder):
 voice.register_handler('session_setup', setup_voice)
 transfer = 5000
 
-def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offset=0, total=0, item_id=42):
+def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offset=0, total=0, item_id=42, generation=7):
     global transfer
     transfer += 1
     chunks = []
@@ -85,7 +86,7 @@ def send(kind, capture_id=0, correlation=0, status=0, flags=0, payload=b'', offs
         fields.update({0:Uint32(1), 1:Uint32(kind), 2:Uint32(transfer), 3:Uint32(capture_id),
                        4:Uint32(i), 5:Uint32(len(chunks)), 6:ByteArray(chunk), 7:Uint32(status),
                        9:Uint32(item_id), 10:Uint32(status), 11:Uint32(1), 12:Uint32(offset),
-                       14:Uint32(total), 15:Uint32(7), 16:Uint32(flags), 17:Uint32(correlation)})
+                       14:Uint32(total), 15:Uint32(generation), 16:Uint32(flags), 17:Uint32(correlation)})
         service.send_message(app_id, fields)
         time.sleep(.15)
 
@@ -108,7 +109,7 @@ def send_review(voice_reply=False):
 def receipt(request):
     send(102, request[3], request[2], status=2, flags=8)
 
-def deliver_page(fetch, text, end=None):
+def deliver_page(fetch, text, end=None, generation=7):
     data = text.encode()
     offset = fetch[12]
     assert offset < len(data)
@@ -120,7 +121,7 @@ def deliver_page(fetch, text, end=None):
                               output=data[offset:stop].decode(), more=more), ensure_ascii=False).encode()
     assert len(payload) <= 768
     send(105, fetch[3], fetch[2], status=7, flags=int(more), payload=payload,
-         offset=offset, total=len(data))
+         offset=offset, total=len(data), generation=generation)
     time.sleep(.3)
     return stop
 
@@ -199,7 +200,7 @@ if args.voice_only:
     print('Voice opt-in, result flag, accepted audio, Back cancellation between clips, and text-only send passed.', flush=True)
     service.shutdown()
     raise SystemExit(0)
-if not args.long_scroll_only:
+if not args.long_scroll_only and not args.recent_voice_only:
     click(QemuButton.Button.Select)  # Ask Hermes
     # Local voice fixture: never calls a speech service or Hermes.
     dictate('Tell me about the moon')
@@ -255,6 +256,42 @@ send(104, correlation=recent[2], payload=payload)
 time.sleep(.3)
 click(QemuButton.Button.Select)
 fetch = receive(kind=6)
+if args.recent_voice_only:
+    assert not (fetch[16] & 16), 'Opening an existing answer must stay silent'
+    text = 'Saved answer from an older conversation.\n\n' * 45
+    deliver_page(fetch, text, generation=6)
+    click(QemuButton.Button.Select)
+    capture('recent-voice-actions')
+    click(QemuButton.Button.Select)  # Play voice reply; Reply is unavailable for generation 6.
+    first_play = receive(kind=6)
+    assert first_play[3] == 4242 and first_play[12] == 0 and first_play[16] & 16
+    deliver_page(first_play, text, generation=6)
+    send(114, 4242, payload=b'Voice reply finished')
+    # Select playback while a later text page is still in flight.
+    pending_page = fetch_while_reading()
+    assert pending_page[12] > 0 and not (pending_page[16] & 16)
+    click(QemuButton.Button.Select)
+    click(QemuButton.Button.Select)
+    deliver_page(pending_page, text, generation=6)
+    replay = receive(kind=6)
+    assert replay[3] == 4242 and replay[12] == 0 and replay[16] & 16
+    assert replay[2] != first_play[2], 'Explicit replay needs a fresh request identity'
+    deliver_page(replay, text, generation=6)
+    send(110, capture_id=900, flags=1, total=2, item_id=4242)
+    assert receive(kind=10)[7] == 1
+    click(QemuButton.Button.Select)
+    click(QemuButton.Button.Down)  # Refresh answer
+    click(QemuButton.Button.Select)
+    refresh = receive(kind=6)
+    assert not (refresh[16] & 16), 'Refresh must not replay speech'
+    deliver_page(refresh, text, generation=6)
+    click(QemuButton.Button.Back)
+    send(110, capture_id=901, flags=1, total=2, item_id=4242)
+    assert receive(kind=10)[7] == 8
+    assert not faults, faults
+    print('Recent answer voice action, old conversation, repeat playback, queued playback during text loading, silent refresh, and Back passed.', flush=True)
+    service.shutdown()
+    raise SystemExit(0)
 large_answer = ('A long answer continues here with mountains, stars, and the Moon. ' * 150) + 'FINAL SENTINEL.'
 offset = 0
 used = 0

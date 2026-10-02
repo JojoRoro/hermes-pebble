@@ -73,6 +73,8 @@ For a watch timeout, open Diagnostics and choose Settings › Reconnect phone on
 
 With matching v0.1.13 or newer APK and PBW installed, choose **Ask Hermes**, dictate, press Select on the review, and choose **Send + voice reply**. The answer appears automatically and is then spoken by the watch speaker. Regular **Send to Hermes** remains text only. This also works when dictating a follow-up with **Reply to Hermes** or using Quick Launch. No bike detection is required.
 
+From v0.1.14, open an existing answer in **Recent**, press **Select**, and choose **Play voice reply**. This works for older conversations too. Select it again to replay; opening or refreshing an answer stays silent.
+
 Keep Hermes open on the watch. Android uses an installed offline text-to-speech voice in the phone's configured speech language; no extra speech API key is needed. If speech is unavailable, install/download an offline voice in Android's text-to-speech settings. The answer stays readable and Diagnostics records the voice error.
 
 This first version reads up to 400 characters, followed by “Read the rest on your watch” for longer answers. Audio arrives in buffered sections of up to two seconds, with transfer pauses between sections. **Back** or starting another dictation stops voice, including sections not yet received. Quiet Time and speaker mute still block playback. Voice is per request and is not resumed after closing the app or restarting the phone process. It does not replay when refreshing an answer.

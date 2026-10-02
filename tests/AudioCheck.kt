@@ -5,6 +5,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 fun main() = runBlocking {
+    val requests = VoiceReplyRequests()
+    val voiceFetch = WireMessage(kind = WireMessageKind.FETCH_RESULT, transferId = 1,
+        captureId = 42, flags = WireProtocol.FLAG_VOICE_REPLY, payload = ByteArray(0))
+    check(!requests.accept("watch", voiceFetch.copy(flags = 0))) // Ordinary open/refresh stays silent.
+    check(!requests.accept("watch", voiceFetch.copy(pageOffset = 520)))
+    check(!requests.accept("watch", voiceFetch.copy(kind = WireMessageKind.SAVE_NOTE)))
+    check(requests.accept("watch", voiceFetch))
+    check(!requests.accept("watch", voiceFetch)) // Transport retry cannot speak twice.
+    check(requests.accept("watch", voiceFetch.copy(transferId = 2))) // Explicit replay of same capture.
+    check(!requests.accept("watch", voiceFetch.copy(transferId = 2)))
+    check(requests.accept("another watch", voiceFetch))
+
     check(VoicePcm.spokenText("**Hello**\nworld") == "Hello world")
     check(VoicePcm.spokenText("a ".repeat(300)).endsWith("Read the rest on your watch."))
     check(VoicePcm.spokenText("🚀".repeat(401)).contains("🚀".repeat(400)))

@@ -80,3 +80,5 @@ Run `tests/watch_bike_smoke.py --emulator emery` with the same SDK Python enviro
 ## Spoken reply checks
 
 Run the optional local suite for speech PCM conversion and capture-bound transfers, then `tests/watch_conversation_smoke.py --emulator emery --voice-only --pbw <built.pbw>`. This verifies the voice send option, first-result speech flag, valid capture acceptance, Back rejecting later audio sections, and a subsequent text-only send. These tests use synthetic audio and local transcripts. Installed Android offline voices, phone background execution, Bluetooth pacing, and physical speaker audibility require device acceptance.
+
+For saved answers, run `tests/watch_conversation_smoke.py --emulator emery --recent-voice-only --pbw <built.pbw>`. It verifies playback from an older conversation, repeat playback with a fresh transfer ID, queued playback while text is loading, silent refresh, and Back cancellation. Kotlin checks also verify that transport retries do not replay audio while a new explicit request does.

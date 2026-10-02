@@ -58,7 +58,7 @@ class PebbleBridge(
     private val probeMutex = Mutex()
     private val lastStatus = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val voiceJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
-    private val spokenReplies = LinkedHashSet<String>()
+    private val voiceRequests = VoiceReplyRequests()
     private val voiceMutex = Mutex()
     private val audioTransfer = WatchAudioTransfer(
         send = { watch, message -> sendTransfer(
@@ -319,18 +319,13 @@ class PebbleBridge(
             flags = if (more) WireProtocol.FLAG_MORE else 0,
             payload = json.encodeToString(payload).toByteArray(Charsets.UTF_8),
         )
-        if (delivered && offset == 0 && request.flags and WireProtocol.FLAG_VOICE_REPLY != 0 &&
-            command.kind == CommandKind.WATCH_REQUEST && command.state == CommandState.COMPLETED && output.isNotBlank()) {
+        if (delivered && command.kind == CommandKind.WATCH_REQUEST && command.state == CommandState.COMPLETED &&
+            output.isNotBlank() && voiceRequests.accept(watch, request)) {
             startVoiceReply(watch, request.captureId, output)
         }
     }
 
     private fun startVoiceReply(watch: String, captureId: Long, text: String) {
-        val key = "$watch:$captureId"
-        synchronized(spokenReplies) {
-            if (!spokenReplies.add(key)) return
-            if (spokenReplies.size > 128) spokenReplies.remove(spokenReplies.first())
-        }
         voiceJobs.remove(watch)?.cancel()
         voiceJobs[watch] = scope.launch {
             suspend fun status(message: String) {

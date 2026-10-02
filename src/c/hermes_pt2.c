@@ -95,6 +95,7 @@
 #define HERMES_ACTION_BACK 13u
 #define HERMES_ACTION_REPLY 14u
 #define HERMES_ACTION_SEND_VOICE 15u
+#define HERMES_ACTION_PLAY_VOICE 16u
 
 #define HERMES_MENU_MAIN 0u
 #define HERMES_MENU_RECENT 1u
@@ -210,6 +211,7 @@ static bool s_result_announce;
 // Voice consent lasts only for this open watch session and this capture.
 static uint32_t s_voice_capture_id;
 static bool s_voice_requested;
+static bool s_voice_play_pending;
 static char s_voice_status[128];
 static bool s_app_message_open;
 static bool s_handshake_ready;
@@ -1234,6 +1236,11 @@ static void ui_show_actions(void) {
       labels[count] = "Reply to Hermes";
       actions[count++] = HERMES_ACTION_REPLY;
     }
+    if (s_visible_capture_id != 0u && s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
+        s_visible_status == HERMES_STATUS_COMPLETED && s_visible_output[0] != '\0') {
+      labels[count] = "Play voice reply";
+      actions[count++] = HERMES_ACTION_PLAY_VOICE;
+    }
     labels[count] = "Refresh answer";
     actions[count++] = HERMES_ACTION_FETCH_RESULT;
     labels[count] = "Recent";
@@ -1490,6 +1497,7 @@ static void ui_menu_down_click(ClickRecognizerRef recognizer, void *context) {
 
 /* Back always moves toward the system launcher; pending storage is never cleared. */
 static void cancel_auto_result(void) {
+  s_voice_play_pending = false;
   s_follow_capture_id = 0u;
   s_auto_result_capture_id = 0u;
   s_auto_result_requested = false;
@@ -1574,6 +1582,18 @@ static void ui_action(uint8_t action) {
     case HERMES_ACTION_REPLY:
       // A normal request in the current generation reuses the phone's session.
       start_dictation(HERMES_CAPTURE_REQUEST);
+      break;
+    case HERMES_ACTION_PLAY_VOICE:
+      if (s_visible_capture_id != 0u && s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
+          s_visible_status == HERMES_STATUS_COMPLETED && s_visible_output[0] != '\0') {
+        s_voice_capture_id = s_visible_capture_id;
+        s_voice_play_pending = true;
+        s_voice_requested = true; // Only the queued fetch below may request speech.
+        snprintf(s_voice_status, sizeof(s_voice_status), "Requesting voice reply");
+        s_screen = HERMES_SCREEN_RESULT;
+        ui_rebuild();
+        timer_update();
+      }
       break;
     case HERMES_ACTION_SEND_VOICE:
       prepare_capture(HERMES_PENDING_REQUEST);
@@ -2245,7 +2265,7 @@ static bool result_prefetch_due(void) {
 
 static bool timer_work_ready(void) {
   bool idle = !s_outbound.active && !s_inbound.active;
-  return (s_ink_sync_requested && idle) || (s_phone_probe_id != 0u && !s_outbound.active) ||
+  return (s_voice_play_pending && idle) || (s_ink_sync_requested && idle) || (s_phone_probe_id != 0u && !s_outbound.active) ||
       (s_auto_result_capture_id != 0u && idle && s_pending.operation == HERMES_PENDING_NONE) ||
       (result_prefetch_due() && idle);
 }
@@ -2295,6 +2315,15 @@ static void timer_tick(void *context) {
       s_auto_result_requested = true;
       start_fetch_result(capture, 0u);
       s_result_announce = s_outbound.active;
+    }
+  }
+  // Wait for any text page/receipt already in flight before requesting replay.
+  if (s_voice_play_pending && !s_outbound.active && !s_inbound.active) {
+    s_voice_play_pending = false;
+    if (s_voice_capture_id != 0u && s_voice_capture_id == s_visible_capture_id &&
+        s_visible_status == HERMES_STATUS_COMPLETED) {
+      s_voice_requested = false;
+      start_fetch_result(s_voice_capture_id, 0u);
     }
   }
   if (result_prefetch_due() && !s_outbound.active && !s_inbound.active) {
