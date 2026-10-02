@@ -68,3 +68,11 @@ The implementation was also checked against the official `hermes_agent-0.19.0-py
 The optional local suite runs `watch_audio_test.c` against the production receiver/pump and `AudioCheck.kt` against the production phone transfer. These check arbitrary binary PCM, maximum-size clips, partial/blocked speaker writes, corruption and bounds rejection, duplicate blocks/play, muted/busy/open failure, cancellation, expiry, correlated receipts, and waiting for the finish callback rather than a transport ACK.
 
 After building the PBW, `tests/watch_audio_smoke.py --emulator emery` uses the same SDK Python environment as the other smoke scripts. It uploads the bundled speech clip, rejects an incomplete play, validates every block receipt, and requires playback completion. On a Linux build host without working audio, stop the existing emulator with `pebble kill`, then run the test with `SDL_AUDIODRIVER=dummy`. Without a draining audio backend, the emulator fills its 8 KiB speaker buffer and playback times out. The dummy backend exercises completion without producing audible sound. Physical audibility and Android Bluetooth/host behavior require the real phone and watch.
+
+Quiet Time cases run with speaker mute explicitly false: reject BEGIN, discard on BLOCK/PLAY, discard while waiting for blocks, stop active playback, and reject a replay after Quiet Time turns off. Kotlin checks that the new status displays an actionable message and sends no audio blocks after rejection.
+
+## Bike detection checks
+
+The default local check uses host GCC for `watch_bike_test.c`, which tests the production integer scoring model against deterministic synthetic accelerometer signals and HR freshness/bounds. The SDK-header check also runs `watch_bike_service_test.c` for subscription cleanup, sampling restoration, denied/unavailable HR, fresh-event gating, and sensor timeouts. These establish algorithm behavior, not real-world classification accuracy.
+
+Run `tests/watch_bike_smoke.py --emulator emery` with the same SDK Python environment as the other smoke tests. It opens the ninth menu option, checks stationary and continuously injected rapid-motion scores, resets, and returns/reopens the screen. Screenshots are written under `build/bike-smoke`. Do not run emulator scripts concurrently. Road testing is still needed to tune the heuristic.

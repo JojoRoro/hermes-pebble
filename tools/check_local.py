@@ -47,6 +47,8 @@ def main():
     run('python3', '-m', 'unittest', 'discover', '-s', 'tests', '-v')
     with tempfile.TemporaryDirectory(prefix='hermes-check-') as temp_name:
         temp = Path(temp_name)
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', 'tests/watch_bike_test.c', '-lm', '-o', temp / 'bike-check')
+        run(temp / 'bike-check')
         if args.sdk_headers:
             headers = temp / 'headers'
             shutil.copytree(args.sdk_headers, headers)
@@ -64,6 +66,8 @@ def main():
             run(temp / 'ink-check', temp / 'ink-fixture.bin')
             run('gcc', *flags, 'tests/watch_audio_test.c', '-o', temp / 'audio-check')
             run(temp / 'audio-check')
+            run('gcc', *flags, '-ffunction-sections', '-fdata-sections', 'tests/watch_bike_service_test.c', '-Wl,--gc-sections', '-o', temp / 'bike-service-check')
+            run(temp / 'bike-service-check')
         if args.kotlin_libs:
             if not args.pebble_model:
                 parser.error('--pebble-model is required with --kotlin-libs')

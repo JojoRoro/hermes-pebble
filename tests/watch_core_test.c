@@ -30,6 +30,8 @@ status_t persist_delete(const uint32_t key) {
 }
 
 int main(void) {
+  s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
+  assert(s_visible_output != NULL);
   uint32_t value = 999;
   assert(!storage_read_u32(20, &value));
   assert(value == 999);
@@ -205,5 +207,6 @@ int main(void) {
   assert(!queue_phone_probe(&probe));
 
   puts("Watch storage, parser, UTF-8, Back navigation, menu, and handshake checks passed");
+  free(s_visible_output);
   return 0;
 }

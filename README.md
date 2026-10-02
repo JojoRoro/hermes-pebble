@@ -75,6 +75,16 @@ Install the matching APK and PBW, open Hermes on Pebble Time 2, then tap **Diagn
 
 Android shows transfer progress and waits for the watch's speaker completion callback. If the speaker is muted or busy, it reports that instead. Check the watch's Sounds & Haptics and Quiet Time settings if muted. Back or leaving the watch app stops the test. This is a short playback experiment; spoken Hermes replies and cycling detection are not yet connected. See [audio test details](docs/audio-test.md).
 
+From v0.1.10, **Quiet Time always blocks audio**, independently of the system speaker-mute preference. Turning it on during a transfer or playback discards the clip and stops playback. Turn Quiet Time off and start a new test to play audio again.
+
+## Bike detection test (experimental)
+
+On the watch, select **Test bike detection** at the end of the main menu. The screen shows a live cycling percentage and heart-rate reading age. Allow about 4 seconds for the first motion window and 12–20 seconds for sustained evidence. **Select** resets the test; **Back** returns to the menu and releases its sensor subscriptions.
+
+The score emphasizes sustained rapid wrist vibration and reduces slower arm movement and isolated bumps. The watch's own vibration motor is ignored. Fresh elevated heart rate adds a small boost only when there is already motion evidence; stale readings lose weight and are ignored after ten minutes. The test requests heart-rate readings every 15 seconds while visible and restores normal sampling when you leave. The watch may deliver readings less often or provide none; motion detection still works.
+
+This is an uncalibrated estimate for trying on real rides, not a measured statistical probability. Rough car/bus travel or hand shaking can look similar; smooth roads, a loose watch, or hands off the handlebars can produce low scores. No sensor data leaves the watch or is saved. The score does not yet trigger spoken replies. See [algorithm and test details](docs/bike-detection.md).
+
 ## NetBird Custom Header
 
 When a NetBird reverse proxy protects the Hermes service, configure its Custom Header option with the exact header name and value entered in the companion. NetBird uses that header for service access and removes the matching access header before forwarding upstream. The Hermes Authorization header remains separate; using NetBird's Authorization preset would compete with Hermes authentication.

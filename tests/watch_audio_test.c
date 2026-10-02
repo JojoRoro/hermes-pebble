@@ -9,7 +9,7 @@
 #include "../src/c/protocol.h"
 #include "../src/c/audio_watch.h"
 
-static bool muted, dictating, fail_open, block_writes, block_status;
+static bool muted, quiet, dictating, fail_open, block_writes, block_status;
 static SpeakerStatus device_status;
 static SpeakerFinishedCallback finished;
 static uint32_t opens, stops, closes, output_length, status_count;
@@ -25,6 +25,7 @@ AppTimer *app_timer_register(uint32_t timeout, AppTimerCallback callback, void *
 }
 void app_timer_cancel(AppTimer *timer) { (void)timer; }
 bool speaker_is_muted(void) { return muted; }
+bool quiet_time_is_active(void) { return quiet; }
 SpeakerStatus speaker_get_status(void) { return device_status; }
 void speaker_set_finish_callback(SpeakerFinishedCallback callback, void *ctx) { (void)ctx; finished = callback; }
 bool speaker_stream_open(SpeakerPcmFormat format, uint8_t volume) {
@@ -68,6 +69,24 @@ static void load(uint32_t session) {
 int main(void) {
   for (uint32_t i = 0; i < sizeof(fixture); i++) fixture[i] = (uint8_t)(i * 71);
   hash = audio_checksum(fixture, sizeof(fixture));
+  // Quiet Time blocks reception even if the system speaker mute preference is OFF.
+  quiet = true;
+  message(HERMES_KIND_AUDIO_BEGIN, 20, 0, NULL, 0);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME && s_audio.bytes == NULL && opens == 0);
+  quiet = false;
+  message(HERMES_KIND_AUDIO_BEGIN, 21, 0, NULL, 0);
+  quiet = true;
+  message(HERMES_KIND_AUDIO_BLOCK, 21, 0, fixture, 1000);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME && s_audio.bytes == NULL && s_audio.received == 0);
+  quiet = false;
+  message(HERMES_KIND_AUDIO_PLAY, 21, 0, NULL, 0);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME && opens == 0);
+  load(22);
+  quiet = true;
+  message(HERMES_KIND_AUDIO_PLAY, 22, 0, NULL, 0);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME && s_audio.bytes == NULL && opens == 0);
+  quiet = false;
+  audio_shutdown();
   audio_handle(HERMES_KIND_AUDIO_BEGIN, 1, 1, HERMES_AUDIO_MAX_BYTES + 1, hash, 1, 0, NULL, 0);
   audio_tick(NULL);
   assert(receipt.status == HERMES_AUDIO_INVALID && s_audio.phase == 0);
@@ -131,5 +150,20 @@ int main(void) {
   message(HERMES_KIND_AUDIO_BEGIN, 6, 0, NULL, 0);
   for (int i = 0; i < 310; i++) audio_tick(NULL);
   assert(s_audio.phase == 3 && s_audio.terminal_status == HERMES_AUDIO_FAILED);
+  load(23);
+  quiet = true;
+  audio_tick(NULL); // Discard a paused upload without waiting for another phone message.
+  assert(s_audio.bytes == NULL && s_audio.terminal_status == HERMES_AUDIO_QUIET_TIME);
+  quiet = false;
+  load(24);
+  message(HERMES_KIND_AUDIO_PLAY, 24, 0, NULL, 0);
+  uint32_t previous_stops = stops;
+  quiet = true;
+  audio_tick(NULL);
+  assert(stops == previous_stops + 1 && finished == NULL && s_audio.bytes == NULL);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME);
+  quiet = false;
+  message(HERMES_KIND_AUDIO_PLAY, 24, 0, NULL, 0);
+  assert(receipt.status == HERMES_AUDIO_QUIET_TIME && stops == previous_stops + 1);
   return 0;
 }

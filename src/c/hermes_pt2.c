@@ -201,7 +201,8 @@ static uint32_t s_transfer_sequence;
 static uint8_t s_install_id[16];
 static char s_capture_text[HERMES_MAX_DICTATION_BYTES + 1u];
 static char s_visible_input[HERMES_MAX_DICTATION_BYTES + 1u];
-static char s_visible_output[UI_RESULT_TEXT_SIZE + 1u];
+// Keep the full answer window in runtime RAM, below the SDK's static-image limit.
+static char *s_visible_output;
 static char s_result_page[UI_RESULT_BUFFER_SIZE + 1u];
 static char s_body_text[UI_BODY_BUFFER_SIZE];
 static char s_action_text[UI_ACTION_BUFFER_SIZE];
@@ -216,7 +217,7 @@ static OutboundTransfer s_outbound;
 static InboundTransfer s_inbound;
 static DictationSession *s_dictation_session;
 static AppTimer *s_timer;
-static char s_menu_labels[8][UI_RECENT_LABEL_SIZE];
+static char s_menu_labels[9][UI_RECENT_LABEL_SIZE];
 static uint16_t s_menu_count;
 static uint8_t s_ink[INK_CAPACITY];
 static uint16_t s_ink_length = INK_HEADER;
@@ -352,6 +353,7 @@ static bool json_hex(char value, uint8_t *result);
 static size_t json_encode_utf8(uint32_t codepoint, char *output, size_t capacity);
 
 #include "audio_watch.h"
+#include "bike_watch.h"
 
 static bool audio_dictation_active(void) { return s_dictation_session != NULL; }
 
@@ -518,6 +520,7 @@ static const char *menu_subtitle(const char *label) {
   if (strcmp(label, "Settings") == 0) return "Touch navigation";
   if (strcmp(label, "Handwritten note") == 0) return "Draw letters; sync to phone";
   if (strcmp(label, "Reconnect") == 0) return "Test the phone connection";
+  if (strcmp(label, "Test bike detection") == 0) return "Live cycling estimate";
   return "Continue your saved draft";
 }
 
@@ -539,7 +542,7 @@ static void menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *ind
 static void build_menu(const char *title, const char *const *labels, uint16_t count, uint8_t menu_kind) {
   if (s_window == NULL || count == 0u) return;
   ui_destroy_content();
-  s_menu_count = count > 8u ? 8u : count;
+  s_menu_count = count > 9u ? 9u : count;
   for (uint16_t i = 0u; i < s_menu_count; i++) {
     snprintf(s_menu_labels[i], sizeof(s_menu_labels[i]), "%s", labels[i]);
   }
@@ -618,7 +621,7 @@ static void ui_rebuild(void) {
 }
 
 static void ui_show_menu(void) {
-  const char *labels[8];
+  const char *labels[9];
   uint16_t count = 0u;
   if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
     labels[count++] = "Saved draft";
@@ -635,6 +638,7 @@ static void ui_show_menu(void) {
   labels[count++] = "Handwritten note";
   labels[count++] = "Reconnect";
   labels[count++] = "Settings";
+  labels[count++] = "Test bike detection";
   s_screen = HERMES_SCREEN_MENU;
   build_menu("Hermes", labels, count, HERMES_MENU_MAIN);
 }
@@ -842,14 +846,20 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
   s_stay_on_menu = false;
   if (s_menu_kind == HERMES_MENU_MAIN) {
     if (selection->row == s_menu_count - 1u) {
-      ui_show_settings();
+      cancel_auto_result();
+      s_stay_on_menu = true;
+      bike_open();
       return;
     }
     if (selection->row == s_menu_count - 2u) {
-      start_handshake();
+      ui_show_settings();
       return;
     }
     if (selection->row == s_menu_count - 3u) {
+      start_handshake();
+      return;
+    }
+    if (selection->row == s_menu_count - 4u) {
       ink_open();
       return;
     }
@@ -3446,8 +3456,11 @@ static void handle_launch_reason(AppLaunchReason reason) {
 int main(void) {
   AppMessageResult open_result;
   AppLaunchReason reason;
+  s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
+  if (s_visible_output == NULL) return 1;
   s_window = window_create();
   if (s_window == NULL) {
+    free(s_visible_output);
     return 1;
   }
   window_set_click_config_provider(s_window, ui_click_config);
@@ -3478,6 +3491,7 @@ int main(void) {
     ink_schedule_sync();
   }
   app_event_loop();
+  bike_shutdown();
   audio_shutdown();
   connection_service_unsubscribe();
   ink_shutdown();
@@ -3492,6 +3506,8 @@ int main(void) {
   }
   ui_destroy_content();
   result_reset();
+  free(s_visible_output);
+  s_visible_output = NULL;
   window_destroy(s_window);
   s_window = NULL;
   return 0;

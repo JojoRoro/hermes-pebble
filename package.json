@@ -1,7 +1,7 @@
 {
   "name": "hermes-pebble",
   "author": "hermes-pebble",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},
@@ -11,6 +11,7 @@
     "sdkVersion": "3",
     "enableMultiJS": false,
     "targetPlatforms": ["emery"],
+    "capabilities": ["health"],
     "watchapp": { "watchface": false },
     "messageKeys": {
       "ProtocolVersion": 0,

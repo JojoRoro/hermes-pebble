@@ -265,5 +265,8 @@ Android first performs a correlated probe of an already-open watch app without l
 | 6 | INVALID: format, bounds, session, payload, or checksum rejected |
 | 7 | FAILED: allocation, stream open, playback, or timeout failure |
 | 8 | CANCELLED: stopped or preempted |
+| 9 | QUIET_TIME: Quiet Time rejects audio independently of speaker mute (since 0.1.10) |
 
 Speaker pumping uses partial writes and a timer, leaving the watch event loop responsive. Status replies wait for the existing watch outbox to become available. Transport ACKs do not establish audible playback, and a closed watch app does not queue audio for later.
+
+Quiet Time is checked before BEGIN allocation, BLOCK acceptance, and PLAY, as well as by the active audio timer and finish callback. Enabling it discards any incomplete/buffered clip and stops playback. A terminal Quiet Time session cannot be replayed after Quiet Time is disabled; the phone must start a new session.

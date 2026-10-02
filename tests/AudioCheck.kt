@@ -54,6 +54,24 @@ fun main() = runBlocking {
     }, nextId = { ++id }, replyTimeoutMillis = 10)
     val failure = runCatching { silent.play("watch", byteArrayOf(1, 2)) {} }.exceptionOrNull()
     check(failure?.message?.contains("timed out") == true && cancelled)
+    var quietReceiver: WatchAudioTransfer? = null
+    var quietCancel = false
+    var quietBlocks = 0
+    val quiet = WatchAudioTransfer(send = { watch, request ->
+        when (request.kind) {
+            WireMessageKind.AUDIO_BEGIN -> quietReceiver!!.onStatus(watch, request.copy(
+                kind = WireMessageKind.AUDIO_STATUS, correlationId = request.transferId,
+                status = WatchAudioTransfer.QUIET_TIME))
+            WireMessageKind.AUDIO_BLOCK -> quietBlocks++
+            WireMessageKind.AUDIO_CANCEL -> quietCancel = true
+            else -> Unit
+        }
+        true
+    }, nextId = { ++id })
+    quietReceiver = quiet
+    val quietError = runCatching { quiet.play("watch", pcm) {} }.exceptionOrNull()
+    check(quietError?.message?.contains("Quiet Time is on") == true)
+    check(quietBlocks == 0 && quietCancel)
     check(WatchAudioTransfer.checksum("hello".toByteArray()) == 0x4f9f2cabL)
     println("Audio binary transfer, correlated completion, and timeout checks passed")
 }

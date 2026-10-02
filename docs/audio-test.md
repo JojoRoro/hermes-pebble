@@ -19,4 +19,6 @@ Writes to the speaker may accept only part of a block. A short watch timer feeds
 
 Mute, busy dictation/speaker, invalid data, timeout, cancellation, and playback failure are reported. Back, starting dictation, and app shutdown stop active audio. Incomplete uploads expire after 30 seconds without a block; playback expires after 10 seconds; Android bounds the audio exchange to 90 seconds. Audio is never persisted or resumed after the app closes. The protocol is documented in [the wire contract](../protocol/README.md#speaker-test).
 
+From v0.1.10, the app checks [`quiet_time_is_active()`](https://developer.repebble.com/docs/c/User_Interface/Preferences/) separately from `speaker_is_muted()`. Quiet Time rejects BEGIN, BLOCK, and PLAY, releases any buffered audio, and stops active playback. The existing 100 ms upload / 20 ms playback timer also checks Quiet Time so interruption does not depend on another phone message. Android reports a distinct Quiet Time error. Disabling Quiet Time does not resume the discarded clip; start a new test. This also applies when the user has disabled the system's optional speaker mute during Quiet Time.
+
 Cycling detection, generated Hermes speech, longer clips, and background playback are outside this test.

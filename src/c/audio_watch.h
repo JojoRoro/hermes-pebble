@@ -69,6 +69,7 @@ static void audio_finished(SpeakerFinishReason reason, void *context) {
   uint8_t status = reason == SpeakerFinishReasonDone && s_audio.draining &&
     s_audio.written == s_audio.total ? HERMES_AUDIO_COMPLETE : HERMES_AUDIO_FAILED;
   if (reason == SpeakerFinishReasonStopped || reason == SpeakerFinishReasonPreempted) status = HERMES_AUDIO_CANCELLED;
+  if (quiet_time_is_active()) status = HERMES_AUDIO_QUIET_TIME;
   audio_terminal(status);
 }
 
@@ -76,6 +77,9 @@ static void audio_tick(void *context) {
   (void)context;
   s_audio_timer = NULL;
   s_audio.idle_ms += s_audio_tick_ms;
+  if ((s_audio.phase == 1u || s_audio.phase == 2u) && quiet_time_is_active()) {
+    audio_terminal(HERMES_AUDIO_QUIET_TIME);
+  }
   if (s_audio.phase == 1u && s_audio.idle_ms >= 30000u) audio_terminal(HERMES_AUDIO_FAILED);
   if (s_audio.phase == 2u) {
     if (speaker_is_muted()) {
@@ -117,6 +121,13 @@ static void audio_handle(uint8_t kind, uint32_t session, uint32_t request, uint3
       audio_terminal(HERMES_AUDIO_CANCELLED);
     }
     return;
+  }
+  // Quiet Time is independent of the user's optional "mute during Quiet Time" setting.
+  // Reject every stage, including blocks, and discard any already buffered clip.
+  if (quiet_time_is_active()) {
+    if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_QUIET_TIME);
+    status = HERMES_AUDIO_QUIET_TIME;
+    goto reply;
   }
   if (session == 0u || total == 0u || total > HERMES_AUDIO_MAX_BYTES || format != HERMES_AUDIO_FORMAT) goto reply;
   if (kind == HERMES_KIND_AUDIO_BEGIN) {

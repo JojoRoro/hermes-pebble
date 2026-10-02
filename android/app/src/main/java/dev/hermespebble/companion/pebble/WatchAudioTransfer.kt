@@ -72,6 +72,7 @@ class WatchAudioTransfer(
             val reply = withTimeout(replyTimeoutMillis) { waiter.reply.await() }
             check(reply.status == expected) {
                 when (reply.status) {
+                    QUIET_TIME -> "Quiet Time is on. Turn it off on the watch, then start a new audio test."
                     MUTED -> "The watch speaker is muted. Check Sounds & Haptics and Quiet Time on the watch."
                     BUSY -> "The watch speaker or dictation is busy. Finish that activity and try again."
                     INVALID -> "The watch rejected incomplete or damaged test audio. Try again with the matching PBW."
@@ -97,6 +98,7 @@ class WatchAudioTransfer(
         const val BUSY = 5
         const val INVALID = 6
         const val CANCELLED = 8
+        const val QUIET_TIME = 9
 
         fun checksum(bytes: ByteArray): Long {
             var hash = 0x811c9dc5u
