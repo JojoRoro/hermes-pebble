@@ -79,11 +79,13 @@ From v0.1.10, **Quiet Time always blocks audio**, independently of the system sp
 
 ## Bike detection test (experimental)
 
-On the watch, open **Settings › Bike detection test**. The screen shows a live cycling percentage and heart-rate reading age. Allow about 4 seconds for the first motion window and 12–20 seconds for sustained evidence. **Select** resets the test; **Back** returns to Settings and releases its sensor subscriptions. To save battery, the test pauses itself after 10 minutes and releases the sensors; **Select** resumes it.
+On the watch, open **Settings › Bike detection test**. **NEW** and **OLD** scores appear side by side on the same live sensor stream. Allow about 4 seconds for the first window and 12–20 seconds for sustained evidence. **Down** shows feature details. **Select** resets evidence; **Back** leaves and releases the sensors. After 10 minutes the test pauses to save battery; **Select** resumes it.
 
-The score emphasizes sustained rapid wrist vibration and reduces slower arm movement and isolated bumps. The watch's own vibration motor is ignored. Fresh elevated heart rate adds a small boost only when there is already motion evidence; stale readings lose weight and are ignored after ten minutes. The test requests heart-rate readings every 15 seconds while visible and restores normal sampling when you leave. The watch may deliver readings less often or provide none; motion detection still works.
+The new score requires continuous vibration across short blocks and repeated windows, reduces impacts and wrist swings, and treats recent steps as a walking cue. It **never uses heart rate**, so low BPM during an easy ride is not a penalty. The unchanged old score still gets its optional fresh-HR bonus; both ignore the watch's own haptics. The test keeps the old 15-second HR request for comparison and restores automatic sampling on exit.
 
-This is an uncalibrated estimate for trying on real rides, not a measured statistical probability. Rough car/bus travel or hand shaking can look similar; smooth roads, a loose watch, or hands off the handlebars can produce low scores. No sensor data leaves the watch or is saved. The score does not yet trigger spoken replies. See [algorithm and test details](docs/bike-detection.md).
+If typing still scores high, press **Up** and type normally for the 20-second desk-learning session. Similar motion then suppresses the new score. The baseline survives Select and auto-pause within this test; leaving discards it. **Hold Up** clears it. Compare rides with and without the baseline, since overlapping desk/ride motion can suppress real cycling too.
+
+These are heuristic scores, not measured probabilities. Rough car/bus travel or hand shaking can look similar; smooth roads, a loose watch, or hands off the handlebars can produce low scores. No sensor data leaves the watch or is saved. Neither score activates any feature. See [sensor assessment, algorithm, and field-test details](docs/bike-detection.md).
 
 ## NetBird Custom Header
 

@@ -49,6 +49,8 @@ def main():
         temp = Path(temp_name)
         run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', 'tests/watch_bike_test.c', '-lm', '-o', temp / 'bike-check')
         run(temp / 'bike-check')
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', 'tests/watch_bike_v2_test.c', '-lm', '-o', temp / 'bike-v2-check')
+        run(temp / 'bike-v2-check')
         if args.sdk_headers:
             headers = temp / 'headers'
             shutil.copytree(args.sdk_headers, headers)
