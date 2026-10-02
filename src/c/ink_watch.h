@@ -3,6 +3,10 @@ static Layer *s_ink_layer;
 static AppTimer *s_ink_advance_timer;
 static AppTimer *s_ink_animation_timer;
 static AppTimer *s_ink_retry_timer;
+// Unconfirmed syncs back off from 30 seconds to 5 minutes between attempts.
+#define INK_RETRY_MIN_MS 30000u
+#define INK_RETRY_MAX_MS 300000u
+static uint32_t s_ink_retry_ms = INK_RETRY_MIN_MS;
 static bool s_ink_touch_subscribed;
 static bool s_ink_pen_down;
 static uint16_t s_ink_stroke_start;
@@ -121,11 +125,16 @@ static void ink_draw(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_fill_color(ctx, UI_ACCENT);
+  graphics_fill_rect(ctx, GRect(0, 0, bounds.size.w, UI_HEADER_HEIGHT), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
   char title[48];
-  snprintf(title, sizeof(title), "Handwriting  %u B left", (unsigned)(INK_CAPACITY - s_ink_length));
-  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-      GRect(4, 0, bounds.size.w - 8, 28), GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  snprintf(title, sizeof(title), "%u%% left", (unsigned)((INK_CAPACITY - s_ink_length) * 100u / (INK_CAPACITY - INK_HEADER)));
+  graphics_draw_text(ctx, "Handwriting", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+      GRect(UI_MARGIN, -1, bounds.size.w - 80, 22), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+      GRect(bounds.size.w - 80, 2, 72, 18), GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_context_set_stroke_color(ctx, GColorLightGray);
   graphics_draw_rect(ctx, GRect(27, 34, INK_WIDTH + 2, INK_HEIGHT + 2));
   graphics_context_set_stroke_color(ctx, GColorBlack);
@@ -299,7 +308,7 @@ static void ink_retry(void *context) {
 static void ink_schedule_sync(void) {
   if (!s_exiting && s_ink_saved && !s_ink_corrupt && connection_service_peek_pebble_app_connection()) {
     s_ink_sync_requested = true;
-    timer_ensure();
+    timer_update();
   }
 }
 
@@ -318,7 +327,10 @@ static void ink_failed(void) {
   s_ink_sync_requested = false;
   snprintf(s_ink_status, sizeof(s_ink_status), "Saved on watch.\n\nPhone has not confirmed delivery. We will retry; check the phone host and matching app versions.");
   ink_cancel_timer(&s_ink_retry_timer);
-  if (s_ink_saved) s_ink_retry_timer = app_timer_register(30000, ink_retry, NULL);
+  if (s_ink_saved) {
+    s_ink_retry_timer = app_timer_register(s_ink_retry_ms, ink_retry, NULL);
+    s_ink_retry_ms = s_ink_retry_ms >= INK_RETRY_MAX_MS / 2u ? INK_RETRY_MAX_MS : s_ink_retry_ms * 2u;
+  }
   if (s_screen == HERMES_SCREEN_INK_STATUS) ui_rebuild();
 }
 
@@ -330,6 +342,7 @@ static void ink_receipt(const InboundTransfer *message) {
   uint16_t next = (uint16_t)message->page_offset;
   if (next == s_ink_length && message->status != HERMES_STATUS_NOTE_SAVED) return;
   outbound_finish();
+  s_ink_retry_ms = INK_RETRY_MIN_MS;
   if (next == s_ink_length) {
     if (!ink_clear_saved()) { ink_failed(); return; }
     ink_cancel_timer(&s_ink_retry_timer);
@@ -345,13 +358,19 @@ static void ink_connection(bool connected) {
   if (!connected) {
     s_handshake_ready = false;
     s_ink_sync_requested = false;
-  } else ink_schedule_sync();
+    ui_link_changed();
+  } else {
+    // A fresh connection is the best time to retry; restart the backoff.
+    s_ink_retry_ms = INK_RETRY_MIN_MS;
+    ink_cancel_timer(&s_ink_retry_timer);
+    ink_schedule_sync();
+  }
 }
 
 static void ink_select(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
   if (s_screen == HERMES_SCREEN_INK) ink_save();
-  else if (s_ink_saved) { ink_schedule_sync(); ink_try_send(); }
+  else if (s_ink_saved) { s_ink_retry_ms = INK_RETRY_MIN_MS; ink_schedule_sync(); ink_try_send(); }
   else ink_open();
 }
 

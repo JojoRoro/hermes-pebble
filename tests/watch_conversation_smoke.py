@@ -121,19 +121,33 @@ def deliver_page(fetch, text, end=None):
     time.sleep(.3)
     return stop
 
+def fetch_while_reading(timeout=30, button=QemuButton.Button.Down):
+    # The watch asks for more text only as the reader nears the loaded end.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            data = messages.get(timeout=.6)
+        except queue.Empty:
+            click(button)
+            continue
+        print('Watch RX kind', data.get(1), 'transfer', data.get(2), 'correlation', data.get(17), flush=True)
+        if data.get(1) == 6: return data
+    raise AssertionError('The watch did not request more text while scrolling')
+
 def finish(request, text):
     send(103, request[3], status=7)
     # No user input here: completion must trigger FETCH_RESULT automatically.
     fetch = receive(kind=6)
     assert fetch[3] == request[3] and fetch[12] == 0
     offset = deliver_page(fetch, text)
-    click(QemuButton.Button.Down)
-    click(QemuButton.Button.Down)
-    reading = capture('reading-first-chunk')
+    time.sleep(1)
+    assert messages.empty(), 'The first screen must not download the whole answer'
+    capture('reading-first-chunk')
     part = 1
     while offset < len(text.encode()):
-        fetch = receive(kind=6)
+        fetch = fetch_while_reading()
         assert fetch[3] == request[3] and fetch[12] == offset
+        reading = capture('reading-before-chunk-' + str(part))
         if part == 1:
             # A chunk arriving during Actions must leave that menu open.
             click(QemuButton.Button.Select)
@@ -198,8 +212,7 @@ if not args.long_scroll_only:
     raise SystemExit(0)
 # Open a saved completed request without dictation or any live Hermes call.
 # Separate runs keep the SDK emulator's long-lived connection out of this test.
-click(QemuButton.Button.Down)
-click(QemuButton.Button.Down)
+for _ in range(3): click(QemuButton.Button.Down)
 click(QemuButton.Button.Select)  # Recent
 recent = receive(kind=5)
 second = {3: 4242}
@@ -229,16 +242,14 @@ while offset < len(large_answer.encode()):
         continue
     used += stop - offset
     offset = stop
-    # Exercise reading during the longer transfer and keep emulator standby
-    # from disabling the screenshot service while the fixture sends text.
-    click(QemuButton.Button.Down)
-    click(QemuButton.Button.Up)
+    # Reading drives the next request; this also keeps emulator standby from
+    # disabling the screenshot service while the fixture sends text.
     if offset < len(large_answer.encode()):
-        fetch = receive(kind=6)
+        fetch = fetch_while_reading()
 assert boundary is not None
 print('Reached the final text window', flush=True)
-click(QemuButton.Button.Up)  # already at the top of the final window
-fetch = receive(kind=6)
+# Up pages to the top of the final window, then reloads the preceding one.
+fetch = fetch_while_reading(button=QemuButton.Button.Up)
 assert fetch[12] == 0, 'Up must reload the preceding window'
 offset = 0
 while offset < boundary:

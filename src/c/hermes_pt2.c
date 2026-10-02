@@ -9,15 +9,53 @@
 #include <time.h>
 #include "ink_core.h"
 
-#define UI_BODY_BUFFER_SIZE 2048u
-#define UI_ACTION_BUFFER_SIZE 128u
+#define UI_BODY_BUFFER_SIZE 1024u
+#define UI_MENU_LABEL_SIZE 32u
 #define UI_ERROR_BUFFER_SIZE 256u
 #define UI_RECENT_LABEL_SIZE 128u
 #define UI_RESULT_BUFFER_SIZE 768u
 #define UI_RESULT_TEXT_SIZE 8192u
 #define RESULT_WINDOW_HEIGHT 20000u
-#define SCROLL_STEP 48
 #define MAX_TEXT_HEIGHT 30000u
+// Keep one line of the previous page visible when paging through text.
+#define SCROLL_PAGE_OVERLAP 30
+#define SCROLL_REPEAT_MS 250u
+#define MENU_REPEAT_MS 120u
+// Fetch the next answer chunk only when the reader is this many screens from the end.
+#define RESULT_PREFETCH_SCREENS 2
+
+#define UI_HEADER_HEIGHT 24
+#define UI_HINT_HEIGHT 20
+#define UI_MARGIN 8
+#define UI_BLOCK_MAX 8u
+#define UI_ACCENT GColorCobaltBlue
+
+#define UI_BLOCK_TEXT 0u
+#define UI_BLOCK_BODY 1u
+#define UI_BLOCK_PILL 2u
+#define UI_BLOCK_LABEL 3u
+#define UI_BLOCK_QUOTE 4u
+#define UI_BLOCK_ICON 5u
+#define UI_BLOCK_TITLE 6u
+#define UI_BLOCK_CAPTION 7u
+
+// Menu rows and icons share identifiers so each row knows its glyph and action.
+#define ROW_ASK 0u
+#define ROW_NOTE 1u
+#define ROW_INK 2u
+#define ROW_RECENT 3u
+#define ROW_STATUS 4u
+#define ROW_NEW 5u
+#define ROW_SETTINGS 6u
+#define ROW_DRAFT 7u
+#define ROW_TOUCH 8u
+#define ROW_RECONNECT 9u
+#define ROW_BIKE 10u
+#define ROW_ERROR 11u
+
+// Ready work runs almost immediately; nothing polls on a fixed interval.
+#define TIMER_SOON_MS 50u
+#define TIMER_POLL_MS 1000u
 
 #define HERMES_OUT_IDLE 0u
 #define HERMES_OUT_SENDING 1u
@@ -84,8 +122,7 @@ typedef struct {
   uint8_t chunk_count;
   uint8_t next_chunk;
   uint8_t retry_count;
-  uint8_t wait_ticks;
-  uint16_t elapsed_ticks;
+  uint32_t deadline_ms;
   uint16_t length;
   uint32_t transfer_id;
   uint32_t capture_id;
@@ -139,6 +176,15 @@ typedef struct {
   char label[UI_RECENT_LABEL_SIZE];
 } RecentItem;
 
+typedef struct {
+  const char *text;
+  uint8_t kind;
+  uint8_t icon;
+  GColor color;
+  int16_t y;
+  int16_t h;
+} UiBlock;
+
 typedef struct ResultWindow {
   uint32_t offset;
   struct ResultWindow *previous;
@@ -147,10 +193,19 @@ typedef struct ResultWindow {
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 static ScrollLayer *s_scroll_layer;
-static TextLayer *s_header_layer;
-static char s_header_text[80];
-static TextLayer *s_body_text_layer;
-static TextLayer *s_action_text_layer;
+static Layer *s_header_layer;
+static char s_header_text[40];
+static Layer *s_content_layer;
+static Layer *s_overlay_layer;
+static TextLayer *s_hint_layer;
+static UiBlock s_blocks[UI_BLOCK_MAX];
+static uint8_t s_block_count;
+static bool s_select_tab;
+static bool s_blocks_centered;
+static uint8_t s_result_answer_block;
+static int16_t s_result_text_height;
+static bool s_result_height_valid;
+static bool s_result_announce;
 static bool s_app_message_open;
 static bool s_handshake_ready;
 static bool s_exiting;
@@ -183,7 +238,7 @@ static uint8_t s_recent_count;
 static uint16_t s_scroll_offset;
 static uint16_t s_result_scroll_offset;
 static uint16_t s_scroll_content_height;
-static uint16_t s_inbound_elapsed_ticks;
+static uint32_t s_inbound_deadline_ms;
 static uint32_t s_counter;
 static uint32_t s_generation;
 static uint32_t s_install_hash;
@@ -205,7 +260,6 @@ static char s_visible_input[HERMES_MAX_DICTATION_BYTES + 1u];
 static char *s_visible_output;
 static char s_result_page[UI_RESULT_BUFFER_SIZE + 1u];
 static char s_body_text[UI_BODY_BUFFER_SIZE];
-static char s_action_text[UI_ACTION_BUFFER_SIZE];
 static char s_error_text[UI_ERROR_BUFFER_SIZE];
 static char s_recent_raw[UI_RESULT_BUFFER_SIZE + 1u];
 static char s_result_raw[UI_RESULT_BUFFER_SIZE + 1u];
@@ -217,7 +271,9 @@ static OutboundTransfer s_outbound;
 static InboundTransfer s_inbound;
 static DictationSession *s_dictation_session;
 static AppTimer *s_timer;
-static char s_menu_labels[9][UI_RECENT_LABEL_SIZE];
+// Only action menus draw these; main, settings and recent rows draw from their own state.
+static char s_menu_labels[9][UI_MENU_LABEL_SIZE];
+static uint8_t s_menu_rows[9];
 static uint16_t s_menu_count;
 static uint8_t s_ink[INK_CAPACITY];
 static uint16_t s_ink_length = INK_HEADER;
@@ -298,8 +354,8 @@ static void outbound_timeout(void);
 static void outbound_message_sent(DictionaryIterator *iterator, void *context);
 static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResult result, void *context);
 static void timer_tick(void *context);
-static void timer_ensure(void);
-static void timer_maybe_cancel(void);
+static void timer_update(void);
+static bool result_prefetch_due(void);
 
 static void inbox_received(DictionaryIterator *iter, void *context);
 static void inbox_dropped(AppMessageResult result, void *context);
@@ -337,9 +393,7 @@ static uint32_t mix_capture_id(uint32_t counter);
 static const char *status_text(uint8_t status);
 static const char *error_text(uint32_t code);
 static const char *dictation_failure_text(int status);
-static void set_body_text(const char *text);
 static void build_menu(const char *title, const char *const *labels, uint16_t count, uint8_t menu_kind);
-static void add_scroll_content(const char *body, const char *actions, uint8_t screen);
 
 static bool json_string_in_span(const char *json, size_t length, size_t start, size_t end, const char *key, char *output, size_t capacity);
 static bool json_uint_in_span(const char *json, size_t length, size_t start, size_t end, const char *key, uint32_t *value);
@@ -379,16 +433,20 @@ static void ui_window_unload(Window *window) {
 static void ui_destroy_content(void) {
   ink_cleanup();
   if (s_header_layer != NULL) {
-    text_layer_destroy(s_header_layer);
+    layer_destroy(s_header_layer);
     s_header_layer = NULL;
   }
-  if (s_body_text_layer != NULL) {
-    text_layer_destroy(s_body_text_layer);
-    s_body_text_layer = NULL;
+  if (s_hint_layer != NULL) {
+    text_layer_destroy(s_hint_layer);
+    s_hint_layer = NULL;
   }
-  if (s_action_text_layer != NULL) {
-    text_layer_destroy(s_action_text_layer);
-    s_action_text_layer = NULL;
+  if (s_overlay_layer != NULL) {
+    layer_destroy(s_overlay_layer);
+    s_overlay_layer = NULL;
+  }
+  if (s_content_layer != NULL) {
+    layer_destroy(s_content_layer);
+    s_content_layer = NULL;
   }
   if (s_scroll_layer != NULL) {
     scroll_layer_destroy(s_scroll_layer);
@@ -398,107 +456,393 @@ static void ui_destroy_content(void) {
     menu_layer_destroy(s_menu_layer);
     s_menu_layer = NULL;
   }
+  s_block_count = 0u;
+  s_select_tab = false;
   s_scroll_offset = 0;
   s_scroll_content_height = 0;
 }
 
-static void set_body_text(const char *text) {
-  size_t length;
-  if (text == s_body_text) {
-    return;
+static const char *status_short(uint8_t status) {
+  switch (status) {
+    case HERMES_STATUS_WAITING_PHONE: return "Sending to phone";
+    case HERMES_STATUS_SAVED_QUEUED: return "Queued on phone";
+    case HERMES_STATUS_SUBMITTING: return "Submitting";
+    case HERMES_STATUS_ACCEPTED: return "Accepted";
+    case HERMES_STATUS_WORKING: return "Working";
+    case HERMES_STATUS_APPROVAL_NEEDED: return "Needs approval";
+    case HERMES_STATUS_COMPLETED: return "Answered";
+    case HERMES_STATUS_FAILED: return "Failed";
+    case HERMES_STATUS_STOPPING: return "Stopping";
+    case HERMES_STATUS_CANCELLED: return "Cancelled";
+    case HERMES_STATUS_INTERRUPTED: return "Interrupted";
+    case HERMES_STATUS_OUTCOME_UNKNOWN: return "Outcome unknown";
+    case HERMES_STATUS_NOTE_SAVED: return "Saved";
+    case HERMES_STATUS_WAITING_PROFILE: return "Waiting for profile";
+    case HERMES_STATUS_DISCARDED: return "Discarded";
+    default: return "No status";
   }
-  length = strlen(text);
-  if (length >= sizeof(s_body_text)) {
-    length = sizeof(s_body_text) - 1u;
-  }
-  memcpy(s_body_text, text, length);
-  s_body_text[length] = '\0';
 }
 
-/* Shared chrome keeps navigation and phone-link state visible on every screen. */
+static GColor status_color(uint8_t status) {
+  switch (status) {
+    case HERMES_STATUS_COMPLETED:
+    case HERMES_STATUS_NOTE_SAVED:
+      return GColorIslamicGreen;
+    case HERMES_STATUS_FAILED:
+    case HERMES_STATUS_INTERRUPTED:
+      return GColorDarkCandyAppleRed;
+    case HERMES_STATUS_APPROVAL_NEEDED:
+    case HERMES_STATUS_OUTCOME_UNKNOWN:
+    case HERMES_STATUS_WAITING_PROFILE:
+      return GColorWindsorTan;
+    case HERMES_STATUS_NONE:
+    case HERMES_STATUS_CANCELLED:
+    case HERMES_STATUS_DISCARDED:
+      return GColorDarkGray;
+    default:
+      return UI_ACCENT;
+  }
+}
+
+static GColor ui_row_color(uint8_t row) {
+  switch (row) {
+    case ROW_ASK:
+    case ROW_RECONNECT:
+      return GColorCobaltBlue;
+    case ROW_NOTE:
+    case ROW_BIKE:
+      return GColorIslamicGreen;
+    case ROW_INK: return GColorPurple;
+    case ROW_RECENT: return GColorBlueMoon;
+    case ROW_STATUS: return GColorWindsorTan;
+    case ROW_NEW: return GColorMidnightGreen;
+    case ROW_DRAFT: return GColorOrange;
+    case ROW_ERROR: return GColorDarkCandyAppleRed;
+    default: return GColorDarkGray;
+  }
+}
+
+static GPoint ui_offset(GPoint c, int dx, int dy) {
+  return GPoint(c.x + dx, c.y + dy);
+}
+
+/* Glyphs are drawn from primitives so the app needs no image resources. */
+static void ui_draw_icon(GContext *ctx, uint8_t icon, GPoint c, int r, GColor badge, bool inverted) {
+  GColor background = inverted ? GColorWhite : badge;
+  GColor glyph = inverted ? badge : GColorWhite;
+  int u = r / 2;
+  graphics_context_set_fill_color(ctx, background);
+  graphics_fill_circle(ctx, c, r);
+  graphics_context_set_fill_color(ctx, glyph);
+  graphics_context_set_stroke_color(ctx, glyph);
+  graphics_context_set_stroke_width(ctx, r >= 18 ? 3 : 2);
+  switch (icon) {
+    case ROW_ASK:
+      // Microphone: slim capsule, cradle arc, stem and base.
+      graphics_fill_rect(ctx, GRect(c.x - u / 2 + 1, c.y - u - 1, u - 1, u + 3), (u - 1) / 2, GCornersAll);
+      graphics_draw_arc(ctx, GRect(c.x - u + 1, c.y - u + 2, 2 * u - 2, 2 * u - 2), GOvalScaleModeFitCircle,
+          DEG_TO_TRIGANGLE(90), DEG_TO_TRIGANGLE(270));
+      graphics_draw_line(ctx, ui_offset(c, 0, u), ui_offset(c, 0, u + u / 3));
+      graphics_draw_line(ctx, ui_offset(c, -u / 2, u + u / 3), ui_offset(c, u / 2, u + u / 3));
+      break;
+    case ROW_NOTE:
+      graphics_fill_rect(ctx, GRect(c.x - u + 1, c.y - u, 2 * u - 2, 2 * u), 1, GCornersAll);
+      graphics_context_set_stroke_color(ctx, background);
+      graphics_context_set_stroke_width(ctx, 1);
+      for (int line = -u / 2; line <= u / 2; line += u / 2) {
+        graphics_draw_line(ctx, ui_offset(c, -u / 2, line), ui_offset(c, u / 2, line));
+      }
+      break;
+    case ROW_INK:
+      graphics_context_set_stroke_width(ctx, r >= 18 ? 5 : 3);
+      graphics_draw_line(ctx, ui_offset(c, -u + 2, u - 2), ui_offset(c, u, -u));
+      graphics_fill_circle(ctx, ui_offset(c, -u + 1, u - 1), 1);
+      break;
+    case ROW_RECENT:
+      graphics_draw_circle(ctx, c, u + 1);
+      graphics_draw_line(ctx, c, ui_offset(c, 0, -u + 1));
+      graphics_draw_line(ctx, c, ui_offset(c, u / 2 + 1, 0));
+      break;
+    case ROW_STATUS:
+      // Progress list: three bars of falling length.
+      for (int bar = 0; bar < 3; bar++) {
+        int y = (bar - 1) * (u * 2 / 3 + 1);
+        graphics_draw_line(ctx, ui_offset(c, -u + 1, y), ui_offset(c, u - 1 - bar * (u / 2), y));
+      }
+      break;
+    case ROW_NEW:
+      graphics_draw_line(ctx, ui_offset(c, -u, 0), ui_offset(c, u, 0));
+      graphics_draw_line(ctx, ui_offset(c, 0, -u), ui_offset(c, 0, u));
+      break;
+    case ROW_DRAFT:
+    case ROW_ERROR:
+      graphics_context_set_stroke_width(ctx, r >= 18 ? 4 : 3);
+      graphics_draw_line(ctx, ui_offset(c, 0, -u), ui_offset(c, 0, u / 3));
+      graphics_fill_circle(ctx, ui_offset(c, 0, u), r >= 18 ? 2 : 1);
+      break;
+    case ROW_RECONNECT:
+      graphics_draw_arc(ctx, GRect(c.x - u, c.y - u, 2 * u, 2 * u), GOvalScaleModeFitCircle,
+          DEG_TO_TRIGANGLE(70), DEG_TO_TRIGANGLE(360));
+      graphics_draw_line(ctx, ui_offset(c, 1, -u), ui_offset(c, -u / 2, -u - u / 2));
+      graphics_draw_line(ctx, ui_offset(c, 1, -u), ui_offset(c, -u / 2, -u + u / 2));
+      break;
+    case ROW_BIKE:
+      graphics_context_set_stroke_width(ctx, r >= 18 ? 2 : 1);
+      graphics_draw_circle(ctx, ui_offset(c, -u + 1, u / 2), u / 2 + 1);
+      graphics_draw_circle(ctx, ui_offset(c, u - 1, u / 2), u / 2 + 1);
+      graphics_draw_line(ctx, ui_offset(c, -u + 1, u / 2), ui_offset(c, 0, -u / 3));
+      graphics_draw_line(ctx, ui_offset(c, 0, -u / 3), ui_offset(c, u - 1, u / 2));
+      graphics_draw_line(ctx, ui_offset(c, -u / 3, -u / 2 - 1), ui_offset(c, u / 3, -u / 2 - 1));
+      break;
+    default: {
+      // Settings and touch navigation share a simple gear.
+      for (int angle = 0; angle < 180; angle += 45) {
+        int32_t trig = DEG_TO_TRIGANGLE(angle);
+        int dx = (int)(sin_lookup(trig) * (u + 2) / TRIG_MAX_RATIO);
+        int dy = (int)(cos_lookup(trig) * (u + 2) / TRIG_MAX_RATIO);
+        graphics_draw_line(ctx, ui_offset(c, -dx, -dy), ui_offset(c, dx, dy));
+      }
+      graphics_fill_circle(ctx, c, u);
+      graphics_context_set_fill_color(ctx, background);
+      graphics_fill_circle(ctx, c, u / 2);
+      break;
+    }
+  }
+}
+
+static void ui_header_draw(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, UI_ACCENT);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, s_header_text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+      GRect(UI_MARGIN, -1, bounds.size.w - 80, 22), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  // A quiet green dot when linked; spell out the offline state.
+  graphics_context_set_fill_color(ctx, s_handshake_ready ? GColorGreen : GColorMelon);
+  graphics_fill_circle(ctx, GPoint(bounds.size.w - 12, bounds.size.h / 2), 4);
+  if (!s_handshake_ready) {
+    graphics_draw_text(ctx, "offline", fonts_get_system_font(FONT_KEY_GOTHIC_14),
+        GRect(bounds.size.w - 80, 2, 60, 18), GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+  }
+}
+
 static void ui_add_header(const char *title) {
   Layer *root = window_get_root_layer(s_window);
   GRect bounds = layer_get_bounds(root);
-  snprintf(s_header_text, sizeof(s_header_text), "%s  /  %s", title,
-           s_handshake_ready ? "LINKED" : "OFFLINE");
-  s_header_layer = text_layer_create(GRect(0, 0, bounds.size.w, 38));
-  text_layer_set_background_color(s_header_layer, GColorBlack);
-  text_layer_set_text_color(s_header_layer, GColorWhite);
-  text_layer_set_font(s_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-  text_layer_set_text_alignment(s_header_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_header_layer, s_header_text);
-  layer_add_child(root, text_layer_get_layer(s_header_layer));
+  snprintf(s_header_text, sizeof(s_header_text), "%s", title);
+  s_header_layer = layer_create(GRect(0, 0, bounds.size.w, UI_HEADER_HEIGHT));
+  if (s_header_layer == NULL) return;
+  layer_set_update_proc(s_header_layer, ui_header_draw);
+  layer_add_child(root, s_header_layer);
 }
 
-static const char *ui_screen_title(uint8_t screen) {
-  switch (screen) {
-    case HERMES_SCREEN_REVIEW: return "Review";
-    case HERMES_SCREEN_STATUS: return "Request";
-    case HERMES_SCREEN_RESULT: return "Answer";
-    case HERMES_SCREEN_RECOVERY: return "Saved draft";
-    case HERMES_SCREEN_DICTATION: return "Dictation";
-    case HERMES_SCREEN_CONNECTING: return "Connect";
-    case HERMES_SCREEN_ERROR: return "Needs attention";
-    case HERMES_SCREEN_RECENT: return "Recent";
-    default: return "Hermes";
+static void ui_link_changed(void) {
+  if (s_header_layer != NULL) layer_mark_dirty(s_header_layer);
+  if (s_menu_layer != NULL) layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
+}
+
+static const char *ui_block_font(uint8_t kind) {
+  switch (kind) {
+    case UI_BLOCK_TEXT: return FONT_KEY_GOTHIC_24;
+    case UI_BLOCK_PILL: return FONT_KEY_GOTHIC_18_BOLD;
+    case UI_BLOCK_LABEL: return FONT_KEY_GOTHIC_14_BOLD;
+    case UI_BLOCK_TITLE: return FONT_KEY_GOTHIC_24_BOLD;
+    default: return FONT_KEY_GOTHIC_18;
   }
 }
 
-static void add_scroll_content(const char *body, const char *actions, uint8_t screen) {
-  Layer *root_layer;
+static int16_t ui_text_height(const char *text, const char *font, int width, GTextAlignment alignment) {
+  GSize size = graphics_text_layout_get_content_size(text, fonts_get_system_font(font),
+      GRect(0, 0, width, MAX_TEXT_HEIGHT), GTextOverflowModeWordWrap, alignment);
+  return (int16_t)size.h;
+}
+
+static int ui_text_width(void) {
+  return layer_get_bounds(window_get_root_layer(s_window)).size.w - 2 * UI_MARGIN;
+}
+
+/* One answer measurement per change; layout and the window bound share it. */
+static int16_t result_text_height(void) {
+  if (!s_result_height_valid) {
+    s_result_text_height = ui_text_height(s_visible_output, FONT_KEY_GOTHIC_24, ui_text_width(), GTextAlignmentLeft);
+    s_result_height_valid = true;
+  }
+  return s_result_text_height;
+}
+
+static void ui_block(uint8_t kind, const char *text, GColor color, uint8_t icon) {
+  if (s_block_count >= UI_BLOCK_MAX) return;
+  s_blocks[s_block_count++] = (UiBlock){ .text = text, .kind = kind, .icon = icon, .color = color };
+}
+
+static void ui_content_draw(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  int top = s_scroll_layer != NULL ? -scroll_layer_get_content_offset(s_scroll_layer).y : 0;
+  int view = s_scroll_layer != NULL ? layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h : bounds.size.h;
+  int width = bounds.size.w - 2 * UI_MARGIN;
+  GTextAlignment alignment = s_blocks_centered ? GTextAlignmentCenter : GTextAlignmentLeft;
+  for (uint8_t i = 0u; i < s_block_count; i++) {
+    const UiBlock *block = &s_blocks[i];
+    // Skip blocks outside the viewport; text layout is the expensive part of a redraw.
+    if (block->y + block->h < top || block->y > top + view) continue;
+    GRect frame = GRect(UI_MARGIN, block->y, width, block->h);
+    GTextAlignment block_alignment = alignment;
+    graphics_context_set_text_color(ctx, GColorBlack);
+    switch (block->kind) {
+      case UI_BLOCK_ICON:
+        ui_draw_icon(ctx, block->icon, GPoint(bounds.size.w / 2, block->y + block->h / 2), 22, block->color, false);
+        continue;
+      case UI_BLOCK_PILL:
+        graphics_context_set_fill_color(ctx, block->color);
+        graphics_fill_rect(ctx, frame, 6, GCornersAll);
+        graphics_context_set_text_color(ctx, GColorWhite);
+        frame = GRect(UI_MARGIN + 8, block->y + 1, width - 16, block->h - 2);
+        block_alignment = GTextAlignmentLeft;
+        break;
+      case UI_BLOCK_QUOTE:
+        graphics_context_set_fill_color(ctx, block->color);
+        graphics_fill_rect(ctx, GRect(UI_MARGIN, block->y + 5, 3, block->h - 8), 1, GCornersAll);
+        frame = GRect(UI_MARGIN + 9, block->y, width - 9, block->h);
+        block_alignment = GTextAlignmentLeft;
+        break;
+      case UI_BLOCK_LABEL:
+      case UI_BLOCK_CAPTION:
+        graphics_context_set_text_color(ctx, block->color);
+        break;
+      default:
+        break;
+    }
+    graphics_draw_text(ctx, block->text, fonts_get_system_font(ui_block_font(block->kind)), frame,
+        GTextOverflowModeWordWrap, block_alignment, NULL);
+  }
+}
+
+static void ui_overlay_draw(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  if (s_select_tab) {
+    // Points at the middle-right SELECT button: it opens this screen's actions.
+    int middle = layer_get_bounds(window_get_root_layer(s_window)).size.h / 2 - layer_get_frame(layer).origin.y;
+    graphics_context_set_fill_color(ctx, UI_ACCENT);
+    graphics_fill_rect(ctx, GRect(bounds.size.w - 4, middle - 14, 6, 28), 3, GCornersLeft);
+  }
+  if (s_scroll_content_height > bounds.size.h) {
+    int track = bounds.size.h - 8;
+    int thumb = track * bounds.size.h / s_scroll_content_height;
+    int range = s_scroll_content_height - bounds.size.h;
+    if (thumb < 12) thumb = 12;
+    graphics_context_set_fill_color(ctx, GColorDarkGray);
+    graphics_fill_rect(ctx, GRect(bounds.size.w - 3, 4 + (track - thumb) * s_scroll_offset / range, 2, thumb),
+        0, GCornerNone);
+  }
+}
+
+/* Lay out the queued blocks under a header, with an optional footer hint. */
+static void ui_present(uint8_t screen, const char *title, bool centered, bool select_tab, const char *hint) {
+  Layer *root;
   GRect bounds;
-  GRect scroll_frame;
-  GRect action_frame;
-  GSize content_size;
-  uint16_t content_height;
-  uint16_t view_height;
-  size_t length;
-
-  if (s_window == NULL) {
-    return;
+  int16_t view;
+  int16_t y = 6;
+  int width;
+  if (s_window == NULL) return;
+  root = window_get_root_layer(s_window);
+  bounds = layer_get_bounds(root);
+  width = bounds.size.w - 2 * UI_MARGIN;
+  view = bounds.size.h - UI_HEADER_HEIGHT - (hint != NULL ? UI_HINT_HEIGHT : 0);
+  s_blocks_centered = centered;
+  for (uint8_t i = 0u; i < s_block_count; i++) {
+    UiBlock *block = &s_blocks[i];
+    GTextAlignment alignment = centered ? GTextAlignmentCenter : GTextAlignmentLeft;
+    const char *font = ui_block_font(block->kind);
+    if (block->kind == UI_BLOCK_ICON) {
+      block->h = 52;
+    } else if (block->kind == UI_BLOCK_PILL) {
+      block->h = ui_text_height(block->text, font, width - 16, GTextAlignmentLeft) + 8;
+    } else if (block->kind == UI_BLOCK_QUOTE) {
+      block->h = ui_text_height(block->text, font, width - 9, GTextAlignmentLeft) + 6;
+    } else if (block->h == 0) {
+      block->h = ui_text_height(block->text, font, width, alignment) + (block->kind == UI_BLOCK_TEXT ? 8 : 4);
+    }
+    block->y = y;
+    y += block->h + (block->kind == UI_BLOCK_LABEL ? 0 : 6);
   }
-  root_layer = window_get_root_layer(s_window);
-  bounds = layer_get_bounds(root_layer);
-  view_height = bounds.size.h > 66 ? (uint16_t)(bounds.size.h - 66) : bounds.size.h;
-  GSize measured = graphics_text_layout_get_content_size(body,
-      fonts_get_system_font(FONT_KEY_GOTHIC_24), GRect(0, 0, bounds.size.w - 16, MAX_TEXT_HEIGHT),
-      GTextOverflowModeWordWrap, GTextAlignmentLeft);
-  content_height = measured.h + 12;
-  if (content_height < view_height) {
-    content_height = view_height;
+  y += 6;
+  if (centered && y < view) {
+    int16_t shift = (view - y) / 2;
+    for (uint8_t i = 0u; i < s_block_count; i++) s_blocks[i].y += shift;
   }
-  scroll_frame = GRect(0, 40, bounds.size.w, view_height);
-  content_size = GSize(bounds.size.w, content_height);
-  ui_destroy_content();
-  ui_add_header(ui_screen_title(screen));
-  s_scroll_layer = scroll_layer_create(scroll_frame);
-  s_body_text_layer = text_layer_create(GRect(8, 0, bounds.size.w - 16, content_height));
-  text_layer_set_font(s_body_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
-  text_layer_set_overflow_mode(s_body_text_layer, GTextOverflowModeWordWrap);
-  text_layer_set_text(s_body_text_layer, body);
-  text_layer_set_text_alignment(s_body_text_layer, GTextAlignmentLeft);
-  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_body_text_layer));
-  scroll_layer_set_content_size(s_scroll_layer, content_size);
+  if (y < view) y = view;
+  ui_add_header(title);
+  s_scroll_layer = scroll_layer_create(GRect(0, UI_HEADER_HEIGHT, bounds.size.w, view));
+  s_content_layer = layer_create(GRect(0, 0, bounds.size.w, y));
+  if (s_scroll_layer == NULL || s_content_layer == NULL) return;
+  scroll_layer_set_shadow_hidden(s_scroll_layer, true);
+  layer_set_update_proc(s_content_layer, ui_content_draw);
+  scroll_layer_add_child(s_scroll_layer, s_content_layer);
+  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, y));
   scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, 0), false);
-  action_frame = GRect(0, bounds.size.h - 24, bounds.size.w, 24);
-  s_action_text_layer = text_layer_create(action_frame);
-  length = strlen(actions);
-  if (length >= sizeof(s_action_text)) {
-    length = sizeof(s_action_text) - 1u;
+  layer_add_child(root, scroll_layer_get_layer(s_scroll_layer));
+  s_overlay_layer = layer_create(GRect(0, UI_HEADER_HEIGHT, bounds.size.w, view));
+  if (s_overlay_layer != NULL) {
+    layer_set_update_proc(s_overlay_layer, ui_overlay_draw);
+    layer_add_child(root, s_overlay_layer);
   }
-  memcpy(s_action_text, actions, length);
-  s_action_text[length] = '\0';
-  text_layer_set_font(s_action_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
-  text_layer_set_background_color(s_action_text_layer, GColorBlack);
-  text_layer_set_text_color(s_action_text_layer, GColorWhite);
-  text_layer_set_text(s_action_text_layer, s_action_text);
-  text_layer_set_text_alignment(s_action_text_layer, GTextAlignmentCenter);
-  layer_add_child(root_layer, scroll_layer_get_layer(s_scroll_layer));
-  layer_add_child(root_layer, text_layer_get_layer(s_action_text_layer));
+  if (hint != NULL) {
+    s_hint_layer = text_layer_create(GRect(0, bounds.size.h - UI_HINT_HEIGHT, bounds.size.w, UI_HINT_HEIGHT));
+    if (s_hint_layer != NULL) {
+      text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+      text_layer_set_background_color(s_hint_layer, GColorLightGray);
+      text_layer_set_text_color(s_hint_layer, GColorBlack);
+      text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
+      text_layer_set_text(s_hint_layer, hint);
+      layer_add_child(root, text_layer_get_layer(s_hint_layer));
+    }
+  }
+  s_select_tab = select_tab;
   s_scroll_offset = 0u;
-  s_scroll_content_height = content_height;
+  s_scroll_content_height = (uint16_t)y;
   s_screen = screen;
   window_set_click_config_provider(s_window, ui_click_config);
+}
+
+/* A centered notice: large glyph, title, and explanation. */
+static void ui_show_notice(uint8_t screen, const char *header, uint8_t icon, const char *title, const char *text, const char *hint) {
+  ui_destroy_content();
+  ui_block(UI_BLOCK_ICON, NULL, ui_row_color(icon), icon);
+  ui_block(UI_BLOCK_TITLE, title, GColorBlack, 0u);
+  ui_block(UI_BLOCK_CAPTION, text, GColorDarkGray, 0u);
+  ui_present(screen, header, true, false, hint);
+}
+
+static const char *ui_row_title(uint8_t row) {
+  switch (row) {
+    case ROW_ASK: return "Ask Hermes";
+    case ROW_NOTE: return "Save note";
+    case ROW_INK: return "Handwritten note";
+    case ROW_RECENT: return "Recent";
+    case ROW_STATUS: return "Status";
+    case ROW_NEW: return "New conversation";
+    case ROW_SETTINGS: return "Settings";
+    case ROW_DRAFT: return "Saved draft";
+    case ROW_TOUCH: return "Touch navigation";
+    case ROW_RECONNECT: return "Reconnect phone";
+    default: return "Bike detection test";
+  }
+}
+
+static const char *ui_row_subtitle(uint8_t row) {
+  switch (row) {
+    case ROW_ASK: return "Dictate, review, send";
+    case ROW_NOTE: return "Keep a note on your phone";
+    case ROW_INK: return "Draw letters, sync later";
+    case ROW_RECENT: return "Requests, notes & answers";
+    case ROW_STATUS: return s_visible_capture_id != 0u ? status_short(s_visible_status) : "Your last request";
+    case ROW_NEW: return "Start with a fresh context";
+    case ROW_SETTINGS: return "Touch, connection, tools";
+    case ROW_DRAFT: return "Not sent yet · open to resume";
+    case ROW_TOUCH: return s_touch_navigation_enabled ? "On · swipe to navigate" : "Off · buttons only";
+    case ROW_RECONNECT: return s_handshake_ready ? "Linked · test again" : "Not linked · try again";
+    default: return "Cycling estimate (beta)";
+  }
 }
 
 static uint16_t menu_get_rows(MenuLayer *menu_layer, uint16_t section, void *context) {
@@ -506,36 +850,54 @@ static uint16_t menu_get_rows(MenuLayer *menu_layer, uint16_t section, void *con
   return s_menu_count;
 }
 
-static int16_t menu_row_height(MenuLayer *menu, MenuIndex *index, void *context) {
-  (void)menu; (void)index; (void)context;
-  return s_menu_kind == HERMES_MENU_MAIN ? 60 : 50;
+static bool menu_has_subtitles(void) {
+  return s_menu_kind == HERMES_MENU_MAIN || s_menu_kind == HERMES_MENU_SETTINGS || s_menu_kind == HERMES_MENU_RECENT;
 }
 
-static const char *menu_subtitle(const char *label) {
-  if (strcmp(label, "Ask Hermes") == 0) return "Dictate, review, send";
-  if (strcmp(label, "Save note") == 0) return "Keep a note on your phone";
-  if (strcmp(label, "Recent") == 0) return "Requests, notes & answers";
-  if (strcmp(label, "New conversation") == 0) return "Start with a fresh context";
-  if (strcmp(label, "Status") == 0) return "Check your last request";
-  if (strcmp(label, "Settings") == 0) return "Touch navigation";
-  if (strcmp(label, "Handwritten note") == 0) return "Draw letters; sync to phone";
-  if (strcmp(label, "Reconnect") == 0) return "Test the phone connection";
-  if (strcmp(label, "Test bike detection") == 0) return "Live cycling estimate";
-  return "Continue your saved draft";
+static int16_t menu_row_height(MenuLayer *menu, MenuIndex *index, void *context) {
+  (void)menu; (void)index; (void)context;
+  return menu_has_subtitles() ? 52 : 44;
 }
 
 static void menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *index, void *context) {
   (void)context;
   if (index->row >= s_menu_count) return;
   GRect bounds = layer_get_bounds(cell_layer);
-  const char *label = s_menu_labels[index->row];
-  graphics_context_set_text_color(ctx, menu_cell_layer_is_highlighted(cell_layer) ? GColorWhite : GColorBlack);
-  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-      GRect(10, 3, bounds.size.w - 20, s_menu_kind == HERMES_MENU_MAIN ? 25 : 44),
-      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  if (s_menu_kind == HERMES_MENU_MAIN) {
-    graphics_draw_text(ctx, menu_subtitle(label), fonts_get_system_font(FONT_KEY_GOTHIC_14),
-        GRect(10, 30, bounds.size.w - 20, 25), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
+  const char *title = s_menu_labels[index->row];
+  const char *subtitle = NULL;
+  char recent_subtitle[48];
+  int x = 12;
+  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+  if (s_menu_kind == HERMES_MENU_MAIN || s_menu_kind == HERMES_MENU_SETTINGS) {
+    uint8_t row = s_menu_rows[index->row];
+    ui_draw_icon(ctx, row, GPoint(24, bounds.size.h / 2), 14, ui_row_color(row), highlighted);
+    title = ui_row_title(row);
+    subtitle = ui_row_subtitle(row);
+    x = 46;
+  } else if (s_menu_kind == HERMES_MENU_RECENT && index->row < s_recent_count) {
+    // Glyph shows the kind; its color shows the state.
+    const RecentItem *item = &s_recent_items[index->row];
+    title = item->label;
+    bool note = item->kind == HERMES_ITEM_KIND_NOTE;
+    ui_draw_icon(ctx, note ? ROW_NOTE : ROW_ASK, GPoint(24, bounds.size.h / 2), 14, status_color(item->state), highlighted);
+    snprintf(recent_subtitle, sizeof(recent_subtitle), "%s · %s", note ? "Note" : "Request", status_short(item->state));
+    subtitle = recent_subtitle;
+    x = 46;
+  } else if (!highlighted && (strncmp(title, "Discard", 7) == 0 || strncmp(title, "Stop", 4) == 0 ||
+                              strncmp(title, "Cancel", 6) == 0)) {
+    graphics_context_set_text_color(ctx, GColorDarkCandyAppleRed);
+  }
+  if (subtitle != NULL) {
+    graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        GRect(x, 3, bounds.size.w - x - 8, 24), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorDarkGray);
+    graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+        GRect(x, 26, bounds.size.w - x - 8, 20), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  } else {
+    graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        GRect(x, (bounds.size.h - 24) / 2 - 2, bounds.size.w - x - 8, 24),
+        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
 }
 
@@ -550,7 +912,7 @@ static void build_menu(const char *title, const char *const *labels, uint16_t co
   Layer *root_layer = window_get_root_layer(s_window);
   GRect bounds = layer_get_bounds(root_layer);
   ui_add_header(title);
-  s_menu_layer = menu_layer_create(GRect(0, 40, bounds.size.w, bounds.size.h - 64));
+  s_menu_layer = menu_layer_create(GRect(0, UI_HEADER_HEIGHT, bounds.size.w, bounds.size.h - UI_HEADER_HEIGHT));
   if (s_menu_layer == NULL) return;
   menu_layer_set_callbacks(s_menu_layer, NULL, (MenuLayerCallbacks){
     .get_num_rows = menu_get_rows,
@@ -558,13 +920,8 @@ static void build_menu(const char *title, const char *const *labels, uint16_t co
     .get_cell_height = menu_row_height,
   });
   menu_layer_set_normal_colors(s_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_menu_layer, GColorCobaltBlue, GColorWhite);
+  menu_layer_set_highlight_colors(s_menu_layer, UI_ACCENT, GColorWhite);
   layer_add_child(root_layer, menu_layer_get_layer(s_menu_layer));
-  s_action_text_layer = text_layer_create(GRect(0, bounds.size.h - 24, bounds.size.w, 24));
-  text_layer_set_font(s_action_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
-  text_layer_set_text_alignment(s_action_text_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_action_text_layer, "UP / DOWN   •   SELECT to open");
-  layer_add_child(root_layer, text_layer_get_layer(s_action_text_layer));
   window_set_click_config_provider(s_window, ui_click_config);
 }
 
@@ -583,7 +940,9 @@ static void ui_rebuild(void) {
       ink_show();
       break;
     case HERMES_SCREEN_INK_STATUS:
-      add_scroll_content(s_ink_status, s_ink_saved ? "SELECT: retry   BACK: menu" : "SELECT: new   BACK: menu", HERMES_SCREEN_INK_STATUS);
+      ui_show_notice(HERMES_SCREEN_INK_STATUS, "Handwriting", ROW_INK,
+          s_ink_saved ? "Waiting to sync" : "Note delivered", s_ink_status,
+          s_ink_saved ? "SELECT: retry sync now" : "SELECT: new note");
       break;
     case HERMES_SCREEN_REVIEW:
       ui_show_review();
@@ -607,11 +966,11 @@ static void ui_rebuild(void) {
       ui_show_dictation();
       break;
     case HERMES_SCREEN_ERROR:
-      add_scroll_content(s_error_text, "SELECT: menu   BACK: menu", HERMES_SCREEN_ERROR);
+      ui_show_notice(HERMES_SCREEN_ERROR, "Hermes", ROW_ERROR, "Needs attention", s_error_text, "SELECT: main menu");
       break;
     case HERMES_SCREEN_CONNECTING:
-      set_body_text("Waiting for phone…\n\nOpen Hermes Pebble on Android and select your Pebble host in Setup.");
-      add_scroll_content(s_body_text, "BACK: menu", HERMES_SCREEN_CONNECTING);
+      ui_show_notice(HERMES_SCREEN_CONNECTING, "Connect", ROW_RECONNECT, "Connecting…",
+          "Waiting for the phone. If this takes long, open Hermes Pebble on Android and select your Pebble host in Setup.", NULL);
       break;
     default:
       s_screen = HERMES_SCREEN_MENU;
@@ -622,32 +981,32 @@ static void ui_rebuild(void) {
 
 static void ui_show_menu(void) {
   const char *labels[9];
-  uint16_t count = 0u;
+  uint8_t count = 0u;
   if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
-    labels[count++] = "Saved draft";
-    labels[count++] = "Recent";
-    labels[count++] = "Status";
-    labels[count++] = "New conversation";
+    s_menu_rows[count++] = ROW_DRAFT;
   } else {
-    labels[count++] = "Ask Hermes";
-    labels[count++] = "Save note";
-    labels[count++] = "Recent";
-    labels[count++] = "New conversation";
-    labels[count++] = "Status";
+    s_menu_rows[count++] = ROW_ASK;
+    s_menu_rows[count++] = ROW_NOTE;
   }
-  labels[count++] = "Handwritten note";
-  labels[count++] = "Reconnect";
-  labels[count++] = "Settings";
-  labels[count++] = "Test bike detection";
+  s_menu_rows[count++] = ROW_INK;
+  s_menu_rows[count++] = ROW_RECENT;
+  s_menu_rows[count++] = ROW_STATUS;
+  s_menu_rows[count++] = ROW_NEW;
+  s_menu_rows[count++] = ROW_SETTINGS;
+  for (uint8_t i = 0u; i < count; i++) labels[i] = ui_row_title(s_menu_rows[i]);
   s_screen = HERMES_SCREEN_MENU;
   build_menu("Hermes", labels, count, HERMES_MENU_MAIN);
 }
 
 static void ui_show_settings(void) {
+  const char *labels[3];
   cancel_auto_result();
-  const char *labels[] = {s_touch_navigation_enabled ? "Touch navigation: On" : "Touch navigation: Off"};
+  s_menu_rows[0] = ROW_TOUCH;
+  s_menu_rows[1] = ROW_RECONNECT;
+  s_menu_rows[2] = ROW_BIKE;
+  for (uint8_t i = 0u; i < 3u; i++) labels[i] = ui_row_title(s_menu_rows[i]);
   s_screen = HERMES_SCREEN_SETTINGS;
-  build_menu("Settings", labels, 1u, HERMES_MENU_SETTINGS);
+  build_menu("Settings", labels, 3u, HERMES_MENU_SETTINGS);
 }
 
 static void touch_navigation_apply(void) {
@@ -671,51 +1030,106 @@ static bool touch_navigation_save(bool enabled) {
 }
 
 static void ui_show_review(void) {
-  snprintf(s_body_text, sizeof(s_body_text), "%s", s_capture_text);
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_REVIEW);
+  bool note = s_capture_mode == HERMES_CAPTURE_NOTE;
+  ui_destroy_content();
+  ui_block(UI_BLOCK_LABEL, note ? "NOTE TO SAVE" : "YOU SAID", GColorDarkGray, 0u);
+  ui_block(UI_BLOCK_TEXT, s_capture_text, GColorBlack, 0u);
+  ui_present(HERMES_SCREEN_REVIEW, note ? "Review note" : "Review", false, true,
+      note ? "SELECT: save or redo" : "SELECT: send or redo");
+}
+
+/* Copy at most limit bytes without splitting a UTF-8 sequence. */
+static size_t ui_copy_preview(char *output, size_t capacity, const char *text, size_t limit) {
+  size_t length = strlen(text);
+  bool cut = length > limit;
+  if (cut) {
+    length = limit;
+    while (length > 0u && is_utf8_continuation((uint8_t)text[length])) length--;
+  }
+  if (length + 4u > capacity) return 0u;
+  memcpy(output, text, length);
+  if (cut) {
+    memcpy(output + length, "…", 3u);
+    length += 3u;
+  }
+  output[length] = '\0';
+  return length + 1u;
+}
+
+static void ui_status_caption(const char *text) {
+  size_t used = strlen(s_body_text);
+  snprintf(s_body_text + used, sizeof(s_body_text) - used, "%s%s", used != 0u ? "\n" : "", text);
 }
 
 static void ui_show_status(void) {
-  const char *label = status_text(s_visible_status);
-  const char *error = s_visible_error == HERMES_ERROR_NONE ? "" : error_text(s_visible_error);
-  int written = snprintf(s_body_text, sizeof(s_body_text), "%s\n", label);
-  if (written < 0 || (size_t)written >= sizeof(s_body_text)) {
-    snprintf(s_body_text, sizeof(s_body_text), "Hermes status unavailable.");
-  }
-  if (!s_handshake_ready) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "Phone link not verified. Use Reconnect from the menu.\n");
-  }
-  if (s_visible_error != HERMES_ERROR_NONE) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "Error: %s\n", error);
-  }
-  if (s_visible_flags & HERMES_FLAG_MORE) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "More on phone\n");
-  }
-  if (s_result_loading) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nLoading reply...\n");
-  }
+  bool note = s_visible_item_kind == HERMES_ITEM_KIND_NOTE;
+  size_t used;
+  ui_destroy_content();
+  s_body_text[0] = '\0';
+  if (!s_handshake_ready) ui_status_caption("Phone not linked. Reconnect from Settings.");
+  if (s_visible_error != HERMES_ERROR_NONE) ui_status_caption(error_text(s_visible_error));
+  if (s_visible_flags & HERMES_FLAG_MORE) ui_status_caption("More on your phone.");
+  if (s_result_loading) ui_status_caption("Loading the answer…");
+  if (s_pending.operation != HERMES_PENDING_NONE) ui_status_caption("Your draft stays on this watch until the phone saves it.");
+  if (s_visible_status == HERMES_STATUS_NONE && s_visible_input[0] == '\0') ui_status_caption("Choose Ask Hermes in the menu to start.");
+  ui_block(UI_BLOCK_PILL, s_visible_status == HERMES_STATUS_NONE ? "Ready for a new request" : status_text(s_visible_status),
+      status_color(s_visible_status), 0u);
+  if (s_body_text[0] != '\0') ui_block(UI_BLOCK_CAPTION, s_body_text, GColorDarkGray, 0u);
   if (s_visible_input[0] != '\0') {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nRequest:\n%s\n", s_visible_input);
+    ui_block(UI_BLOCK_LABEL, note ? "YOUR NOTE" : "YOU ASKED", GColorDarkGray, 0u);
+    ui_block(UI_BLOCK_QUOTE, s_visible_input, UI_ACCENT, 0u);
   }
-  if (s_visible_output[0] != '\0') {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text),
-        "\nAnswer:\n%.768s\n", s_visible_output);
+  used = strlen(s_body_text) + 1u;
+  if (s_visible_output[0] != '\0' && used < sizeof(s_body_text) &&
+      ui_copy_preview(s_body_text + used, sizeof(s_body_text) - used, s_visible_output, 600u) != 0u) {
+    ui_block(UI_BLOCK_LABEL, "ANSWER", GColorDarkGray, 0u);
+    ui_block(UI_BLOCK_BODY, s_body_text + used, GColorBlack, 0u);
   }
-  if (s_pending.operation != HERMES_PENDING_NONE) {
-    snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nYour draft is safe on this watch until the phone confirms it is saved.\n");
-  }
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_STATUS);
+  ui_present(HERMES_SCREEN_STATUS, note ? "Note" : "Request", false, true, NULL);
 }
 
 static void ui_show_result(void) {
   uint16_t offset = s_result_scroll_offset;
-  add_scroll_content(s_visible_output[0] != '\0' ? s_visible_output
-      : "No answer text is available yet. Select actions to refresh.",
-      s_result_retry ? "DOWN: retry   SELECT: actions" : "SELECT: actions   BACK: menu", HERMES_SCREEN_RESULT);
+  ui_destroy_content();
+  if (s_visible_input[0] != '\0' && s_result_window_offset == 0u) {
+    ui_block(UI_BLOCK_LABEL, s_visible_item_kind == HERMES_ITEM_KIND_NOTE ? "YOUR NOTE" : "YOU ASKED", GColorDarkGray, 0u);
+    ui_block(UI_BLOCK_QUOTE, s_visible_input, UI_ACCENT, 0u);
+  }
+  if (s_visible_output[0] != '\0') {
+    ui_block(UI_BLOCK_TEXT, s_visible_output, GColorBlack, 0u);
+    s_blocks[s_block_count - 1u].h = result_text_height() + 8;
+  } else {
+    ui_block(UI_BLOCK_CAPTION, "No answer text yet. SELECT to refresh.", GColorDarkGray, 0u);
+  }
+  s_result_answer_block = s_block_count - 1u;
+  ui_present(HERMES_SCREEN_RESULT, "Answer", false, true, s_result_retry ? "DOWN: retry loading" : NULL);
   ui_scroll(s_result_scroll_to_end ? MAX_TEXT_HEIGHT : offset);
   if (s_result_more && !s_result_window_full && !s_result_retry && !s_result_loading &&
       s_result_next_offset != s_result_window_end) s_result_prefetch = true;
-  if (s_result_prefetch) timer_ensure();
+  timer_update();
+}
+
+/* A new chunk extends the answer in place, keeping layers and reading position. */
+static void ui_result_refresh(void) {
+  UiBlock *block;
+  int16_t view;
+  int16_t height;
+  if (s_screen != HERMES_SCREEN_RESULT || s_content_layer == NULL || s_hint_layer != NULL ||
+      s_result_answer_block >= s_block_count || s_blocks[s_result_answer_block].kind != UI_BLOCK_TEXT) {
+    ui_show_result();
+    return;
+  }
+  block = &s_blocks[s_result_answer_block];
+  block->h = result_text_height() + 8;
+  view = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
+  height = block->y + block->h + 12;
+  if (height < view) height = view;
+  s_scroll_content_height = (uint16_t)height;
+  layer_set_frame(s_content_layer, GRect(0, 0, layer_get_bounds(s_content_layer).size.w, height));
+  scroll_layer_set_content_size(s_scroll_layer, GSize(layer_get_bounds(s_content_layer).size.w, height));
+  ui_scroll(s_result_scroll_to_end ? MAX_TEXT_HEIGHT : 0);
+  layer_mark_dirty(s_content_layer);
+  timer_update();
 }
 
 static void ui_show_recent(void) {
@@ -726,8 +1140,8 @@ static void ui_show_recent(void) {
     labels[i] = s_recent_items[i].label;
   }
   if (count == 0u) {
-    s_screen = HERMES_SCREEN_RECENT;
-    add_scroll_content("No recent items are available on the phone.", "SELECT: refresh   BACK: menu", HERMES_SCREEN_RECENT);
+    ui_show_notice(HERMES_SCREEN_RECENT, "Recent", ROW_RECENT, "Nothing recent",
+        "Requests and notes appear here once your phone has saved them.", "SELECT: refresh");
     return;
   }
   s_screen = HERMES_SCREEN_RECENT;
@@ -735,22 +1149,36 @@ static void ui_show_recent(void) {
 }
 
 static void ui_show_recovery(void) {
+  size_t used;
   if (s_storage_corrupt) {
-    set_body_text("Pending capture storage is damaged.\n\nThe watch will not overwrite it. Use Discard to request durable removal from the phone.");
-  } else if (s_pending.operation == HERMES_PENDING_NONE) {
-    set_body_text("No pending capture.");
-  } else {
-    snprintf(s_body_text, sizeof(s_body_text), "Recover pending capture\n\nKind: %s\nCapture: %lu\nConversation: %lu\n\n%s\n\nResume uses the persisted transfer and capture ID. No second command will be created.", s_pending.operation == HERMES_PENDING_NOTE ? "local note" : "Hermes request", (unsigned long)s_pending.capture_id, (unsigned long)s_pending.generation, s_pending.text);
-    if (s_visible_error != HERMES_ERROR_NONE) {
-      snprintf(s_body_text + strlen(s_body_text), sizeof(s_body_text) - strlen(s_body_text), "\nLast error: %s", error_text(s_visible_error));
-    }
+    ui_show_notice(HERMES_SCREEN_RECOVERY, "Saved draft", ROW_ERROR, "Draft storage damaged",
+        "The watch will not overwrite it. Choose Discard to request removal from the phone.", NULL);
+    s_select_tab = true;
+    return;
   }
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: menu", HERMES_SCREEN_RECOVERY);
+  if (s_pending.operation == HERMES_PENDING_NONE) {
+    ui_show_notice(HERMES_SCREEN_RECOVERY, "Saved draft", ROW_DRAFT, "No saved draft", "Everything has reached your phone.", NULL);
+    return;
+  }
+  ui_destroy_content();
+  snprintf(s_body_text, sizeof(s_body_text), "%s · conversation %lu%s%s",
+      s_pending.operation == HERMES_PENDING_NOTE ? "Note" : "Request", (unsigned long)s_pending.generation,
+      s_visible_error != HERMES_ERROR_NONE ? "\nLast error: " : "",
+      s_visible_error != HERMES_ERROR_NONE ? error_text(s_visible_error) : "");
+  used = strlen(s_body_text) + 1u;
+  snprintf(s_body_text + used, sizeof(s_body_text) - used, "Resume reuses capture %lu, so nothing is sent twice.",
+      (unsigned long)s_pending.capture_id);
+  ui_block(UI_BLOCK_PILL, "Not sent yet", GColorOrange, 0u);
+  ui_block(UI_BLOCK_CAPTION, s_body_text, GColorDarkGray, 0u);
+  ui_block(UI_BLOCK_QUOTE, s_pending.text, GColorOrange, 0u);
+  ui_block(UI_BLOCK_CAPTION, s_body_text + used, GColorDarkGray, 0u);
+  ui_present(HERMES_SCREEN_RECOVERY, "Saved draft", false, true, NULL);
 }
 
 static void ui_show_dictation(void) {
-  set_body_text("Listening...\n\nUse the phone dictation service. The transcript will require review before anything is sent.");
-  add_scroll_content(s_body_text, "SELECT: actions   BACK: cancel", HERMES_SCREEN_DICTATION);
+  ui_show_notice(HERMES_SCREEN_DICTATION, "Dictation", ROW_ASK, "Listening…",
+      "Speak now. You'll review the text before anything is sent.", NULL);
+  s_select_tab = true;
 }
 
 static void ui_show_error(uint32_t code, const char *text) {
@@ -820,14 +1248,7 @@ static void ui_show_actions(void) {
     actions[count++] = HERMES_ACTION_REDICTATE;
     labels[count] = "Cancel dictation";
     actions[count++] = HERMES_ACTION_CANCEL;
-  } else if (original == HERMES_SCREEN_ERROR) {
-    labels[count] = "Main menu";
-    actions[count++] = HERMES_ACTION_MENU;
   } else {
-    labels[count] = "Main menu";
-    actions[count++] = HERMES_ACTION_MENU;
-  }
-  if (count == 0u) {
     labels[count] = "Main menu";
     actions[count++] = HERMES_ACTION_MENU;
   }
@@ -844,72 +1265,55 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
     return;
   }
   s_stay_on_menu = false;
-  if (s_menu_kind == HERMES_MENU_MAIN) {
-    if (selection->row == s_menu_count - 1u) {
-      cancel_auto_result();
-      s_stay_on_menu = true;
-      bike_open();
-      return;
-    }
-    if (selection->row == s_menu_count - 2u) {
-      ui_show_settings();
-      return;
-    }
-    if (selection->row == s_menu_count - 3u) {
-      start_handshake();
-      return;
-    }
-    if (selection->row == s_menu_count - 4u) {
-      ink_open();
-      return;
-    }
-    if (s_storage_corrupt || s_pending.operation != HERMES_PENDING_NONE) {
-      switch (selection->row) {
-        case 0u:
-          s_screen = HERMES_SCREEN_RECOVERY;
-          ui_rebuild();
-          break;
-        case 1u:
-          start_fetch_recent();
-          break;
-        case 2u:
-          s_screen = HERMES_SCREEN_STATUS;
-          ui_rebuild();
-          break;
-        case 3u:
-          start_new_conversation();
-          break;
-        default:
-          break;
-      }
-    } else {
-      switch (selection->row) {
-        case 0u:
-          start_dictation(HERMES_CAPTURE_REQUEST);
-          break;
-        case 1u:
-          start_dictation(HERMES_CAPTURE_NOTE);
-          break;
-        case 2u:
-          start_fetch_recent();
-          break;
-        case 3u:
-          start_new_conversation();
-          break;
-        case 4u:
-          s_screen = HERMES_SCREEN_STATUS;
-          ui_rebuild();
-          break;
-        default:
-          break;
-      }
+  if (s_menu_kind == HERMES_MENU_MAIN && selection->row < s_menu_count) {
+    switch (s_menu_rows[selection->row]) {
+      case ROW_ASK:
+        start_dictation(HERMES_CAPTURE_REQUEST);
+        break;
+      case ROW_NOTE:
+        start_dictation(HERMES_CAPTURE_NOTE);
+        break;
+      case ROW_INK:
+        ink_open();
+        break;
+      case ROW_RECENT:
+        start_fetch_recent();
+        break;
+      case ROW_STATUS:
+        s_screen = HERMES_SCREEN_STATUS;
+        ui_rebuild();
+        break;
+      case ROW_NEW:
+        start_new_conversation();
+        break;
+      case ROW_SETTINGS:
+        ui_show_settings();
+        break;
+      case ROW_DRAFT:
+        s_screen = HERMES_SCREEN_RECOVERY;
+        ui_rebuild();
+        break;
+      default:
+        break;
     }
   } else if (s_menu_kind == HERMES_MENU_INK) {
     ink_menu_select(selection->row);
-  } else if (s_menu_kind == HERMES_MENU_SETTINGS) {
-    if (selection->row == 0u) {
-      if (touch_navigation_save(!s_touch_navigation_enabled)) ui_show_settings();
-      else ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not save touch navigation. Please try again.");
+  } else if (s_menu_kind == HERMES_MENU_SETTINGS && selection->row < s_menu_count) {
+    switch (s_menu_rows[selection->row]) {
+      case ROW_TOUCH:
+        if (touch_navigation_save(!s_touch_navigation_enabled)) ui_show_settings();
+        else ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not save touch navigation. Please try again.");
+        break;
+      case ROW_RECONNECT:
+        start_handshake();
+        break;
+      case ROW_BIKE:
+        cancel_auto_result();
+        s_stay_on_menu = true;
+        bike_open();
+        break;
+      default:
+        break;
     }
   } else if (s_menu_kind == HERMES_MENU_RECENT) {
     if (selection->row < s_recent_count) {
@@ -918,7 +1322,9 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
       s_visible_status = s_recent_items[selection->row].state;
       s_visible_error = HERMES_ERROR_NONE;
       s_visible_flags = 0u;
+      s_visible_input[0] = '\0';
       s_visible_output[0] = '\0';
+      s_result_height_valid = false;
       s_result_offset = 0u;
       s_result_total_bytes = 0u;
       start_fetch_result(s_visible_capture_id, 0u);
@@ -954,6 +1360,16 @@ static void ui_scroll(int delta) {
   s_scroll_offset = (uint16_t)next;
   if (s_screen == HERMES_SCREEN_RESULT) s_result_scroll_offset = s_scroll_offset;
   scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, -(int)s_scroll_offset), false);
+  if (s_overlay_layer != NULL) layer_mark_dirty(s_overlay_layer);
+  if (result_prefetch_due()) timer_update();
+}
+
+/* Buttons page through text, keeping one line of context. */
+static int ui_page_step(void) {
+  int view;
+  if (s_scroll_layer == NULL) return 0;
+  view = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
+  return view > 2 * SCROLL_PAGE_OVERLAP ? view - SCROLL_PAGE_OVERLAP : view;
 }
 
 static void ui_select_click(ClickRecognizerRef recognizer, void *context) {
@@ -974,18 +1390,18 @@ static void ui_up_click(ClickRecognizerRef recognizer, void *context) {
   if (s_screen == HERMES_SCREEN_RESULT && s_scroll_offset == 0u && !s_result_loading &&
       result_move_window(false)) return;
   s_result_scroll_to_end = false;
-  ui_scroll(-SCROLL_STEP);
+  ui_scroll(-ui_page_step());
 }
 
 static void ui_down_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   uint16_t before = s_scroll_offset;
-  ui_scroll(SCROLL_STEP);
+  ui_scroll(ui_page_step());
   if (s_screen == HERMES_SCREEN_RESULT && s_result_retry && !s_result_loading) {
     s_result_retry = false;
     s_result_prefetch = true;
-    timer_ensure();
+    ui_show_result();
   } else if (s_screen == HERMES_SCREEN_RESULT && before == s_scroll_offset &&
       s_result_more && !s_result_loading && !s_result_prefetch) {
     result_move_window(true);
@@ -1072,6 +1488,7 @@ static void cancel_auto_result(void) {
   s_result_loading = false;
   s_result_prefetch = false;
   s_result_retry = false;
+  s_result_announce = false;
   if (s_outbound.active && s_outbound.kind == HERMES_KIND_FETCH_RESULT) {
     s_outbound.active = false;
     s_outbound.phase = HERMES_OUT_IDLE;
@@ -1118,7 +1535,7 @@ static void ui_back_click(ClickRecognizerRef recognizer, void *context) {
   }
   stop_dictation();
   bool exit_app = navigation_back();
-  timer_maybe_cancel();
+  timer_update();
   if (exit_app) window_stack_pop(false);
   else ui_rebuild();
 }
@@ -1129,23 +1546,16 @@ static void ui_click_config(void *context) {
     ink_click_config();
     return;
   }
-  if (s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_RECENT) {
+  if (s_menu_layer != NULL) {
     window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
-    window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
-    window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_menu_down_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_UP, MENU_REPEAT_MS, ui_menu_up_click);
+    window_single_repeating_click_subscribe(BUTTON_ID_DOWN, MENU_REPEAT_MS, ui_menu_down_click);
     window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
     return;
   }
-  if (s_screen == HERMES_SCREEN_ACTIONS || s_screen == HERMES_SCREEN_SETTINGS || s_screen == HERMES_SCREEN_INK_ACTIONS) {
-    window_single_click_subscribe(BUTTON_ID_SELECT, ui_menu_select_click);
-    window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_menu_up_click);
-    window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_menu_down_click);
-    window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
-    return;
-  }
-  window_single_click_subscribe(BUTTON_ID_SELECT, ui_select_click);
-  window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, ui_up_click);
-  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, ui_down_click);
+  window_single_click_subscribe(BUTTON_ID_SELECT, s_screen == HERMES_SCREEN_RECENT ? ui_menu_select_click : ui_select_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, SCROLL_REPEAT_MS, ui_up_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, SCROLL_REPEAT_MS, ui_down_click);
   window_single_click_subscribe(BUTTON_ID_BACK, ui_back_click);
 }
 
@@ -1784,22 +2194,74 @@ static uint32_t mix_capture_id(uint32_t counter) {
   return value;
 }
 
-static void timer_ensure(void) {
-  if (s_timer == NULL) s_timer = app_timer_register(1000u, timer_tick, NULL);
+static uint32_t clock_ms(void) {
+  time_t seconds = 0;
+  uint16_t milliseconds = 0u;
+  time_ms(&seconds, &milliseconds);
+  return (uint32_t)seconds * 1000u + milliseconds;
 }
 
-static void timer_maybe_cancel(void) {
-  if (!s_outbound.active && !s_inbound.active && s_phone_probe_id == 0u && s_auto_result_capture_id == 0u &&
-      !(s_result_prefetch && s_screen == HERMES_SCREEN_RESULT) && !s_ink_sync_requested) {
-    if (s_timer != NULL) app_timer_cancel(s_timer);
+static uint32_t deadline_after(uint32_t seconds) {
+  return clock_ms() + seconds * 1000u;
+}
+
+static int32_t deadline_remaining(uint32_t deadline, uint32_t now) {
+  int32_t remaining = (int32_t)(deadline - now);
+  // A wall-clock step backwards would postpone every wait; treat it as expired.
+  return remaining > (int32_t)(HERMES_DURABLE_RECEIPT_TIMEOUT_SECONDS * 1000u) ? 0 : remaining;
+}
+
+static void outbound_wait(uint8_t phase, uint32_t seconds) {
+  s_outbound.phase = phase;
+  s_outbound.deadline_ms = deadline_after(seconds);
+}
+
+static bool result_prefetch_due(void) {
+  int view;
+  if (!s_result_prefetch || s_screen != HERMES_SCREEN_RESULT || s_scroll_layer == NULL) return false;
+  // Lazy loading: fetch more text only when the reader approaches the end.
+  view = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
+  return (int)s_scroll_offset + view * (RESULT_PREFETCH_SCREENS + 1) >= (int)s_scroll_content_height;
+}
+
+static bool timer_work_ready(void) {
+  bool idle = !s_outbound.active && !s_inbound.active;
+  return (s_ink_sync_requested && idle) || (s_phone_probe_id != 0u && !s_outbound.active) ||
+      (s_auto_result_capture_id != 0u && idle && s_pending.operation == HERMES_PENDING_NONE) ||
+      (result_prefetch_due() && idle);
+}
+
+/* Wake only for the next deadline or ready work, never on a fixed tick. */
+static void timer_update(void) {
+  uint32_t now;
+  int32_t delay = INT32_MAX;
+  if (s_timer != NULL) {
+    app_timer_cancel(s_timer);
     s_timer = NULL;
   }
+  if (s_exiting) return;
+  now = clock_ms();
+  if (s_outbound.active) {
+    int32_t remaining = s_outbound.phase == HERMES_OUT_SENDING ? (int32_t)TIMER_POLL_MS :
+        deadline_remaining(s_outbound.deadline_ms, now);
+    if (remaining < delay) delay = remaining;
+  }
+  if (s_inbound.active) {
+    int32_t remaining = deadline_remaining(s_inbound_deadline_ms, now);
+    if (remaining < delay) delay = remaining;
+  }
+  if (timer_work_ready() && delay > (int32_t)TIMER_SOON_MS) delay = (int32_t)TIMER_SOON_MS;
+  if (delay == INT32_MAX) return;
+  if (delay < 1) delay = 1;
+  s_timer = app_timer_register((uint32_t)delay, timer_tick, NULL);
 }
 
 static void timer_tick(void *context) {
+  uint32_t now;
   (void)context;
   s_timer = NULL;
   if (s_exiting) return;
+  now = clock_ms();
   if (s_ink_sync_requested && !s_outbound.active && !s_inbound.active) ink_try_send();
   if (s_phone_probe_id != 0u && !s_outbound.active) {
     outbound_start(HERMES_KIND_HANDSHAKE, HERMES_KIND_HANDSHAKE_ACK, next_transfer_id(),
@@ -1813,47 +2275,26 @@ static void timer_tick(void *context) {
     if (should_auto_fetch_result() && capture == s_visible_capture_id) {
       s_auto_result_requested = true;
       start_fetch_result(capture, 0u);
+      s_result_announce = s_outbound.active;
     }
   }
-  if (s_result_prefetch && s_screen == HERMES_SCREEN_RESULT && !s_outbound.active && !s_inbound.active) {
+  if (result_prefetch_due() && !s_outbound.active && !s_inbound.active) {
     s_result_prefetch = false;
     start_result_chunk(s_visible_capture_id, s_result_next_offset);
   }
-  if (s_inbound.active) {
-    s_inbound_elapsed_ticks++;
-    if (s_inbound_elapsed_ticks >= HERMES_CHUNK_TIMEOUT_SECONDS) {
-      inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone transfer timed out before all chunks arrived.");
-    }
+  if (s_inbound.active && deadline_remaining(s_inbound_deadline_ms, now) <= 0) {
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone transfer timed out before all chunks arrived.");
   }
-  if (s_outbound.active) {
+  if (s_outbound.active && s_outbound.phase != HERMES_OUT_SENDING &&
+      deadline_remaining(s_outbound.deadline_ms, now) <= 0) {
     if (s_outbound.phase == HERMES_OUT_RETRY_WAIT) {
-      if (s_outbound.wait_ticks > 0u) {
-        s_outbound.wait_ticks--;
-      }
-      if (s_outbound.wait_ticks == 0u) {
-        s_outbound.phase = HERMES_OUT_SENDING;
-        s_outbound.elapsed_ticks = 0u;
-        outbound_send_current_chunk();
-      }
-    } else if (s_outbound.phase == HERMES_OUT_WAIT_CHUNK) {
-      s_outbound.elapsed_ticks++;
-      if (s_outbound.elapsed_ticks >= HERMES_CHUNK_TIMEOUT_SECONDS) {
-        outbound_timeout();
-      }
-    } else if (s_outbound.phase == HERMES_OUT_WAIT_REPLY) {
-      s_outbound.elapsed_ticks++;
-      if (s_outbound.elapsed_ticks >= HERMES_CHUNK_TIMEOUT_SECONDS) {
-        outbound_timeout();
-      }
-    } else if (s_outbound.phase == HERMES_OUT_WAIT_RECEIPT) {
-      s_outbound.elapsed_ticks++;
-      if (s_outbound.elapsed_ticks >= HERMES_DURABLE_RECEIPT_TIMEOUT_SECONDS) {
-        outbound_timeout();
-      }
+      s_outbound.phase = HERMES_OUT_SENDING;
+      outbound_send_current_chunk();
+    } else {
+      outbound_timeout();
     }
   }
-  if (s_outbound.active || s_inbound.active || s_phone_probe_id != 0u || s_auto_result_capture_id != 0u ||
-      (s_result_prefetch && s_screen == HERMES_SCREEN_RESULT) || s_ink_sync_requested) timer_ensure();
+  timer_update();
 }
 
 static void outbound_start(uint8_t kind, uint8_t expected_kind, uint32_t transfer_id, uint32_t capture_id, uint32_t generation, uint32_t item_id, uint32_t page_offset, uint32_t total_bytes, uint8_t status, uint8_t error_code, uint8_t item_kind, uint8_t item_state, uint8_t page_count, uint8_t flags, const uint8_t *payload, uint16_t length) {
@@ -1966,9 +2407,8 @@ static void outbound_send_current_chunk(void) {
     outbound_schedule_retry();
     return;
   }
-  s_outbound.phase = HERMES_OUT_WAIT_CHUNK;
-  s_outbound.elapsed_ticks = 0u;
-  timer_ensure();
+  outbound_wait(HERMES_OUT_WAIT_CHUNK, HERMES_CHUNK_TIMEOUT_SECONDS);
+  timer_update();
 }
 
 static void outbound_schedule_retry(void) {
@@ -1995,10 +2435,8 @@ static void outbound_schedule_retry(void) {
       delay = HERMES_RETRY_DELAY_8_SECONDS;
       break;
   }
-  s_outbound.wait_ticks = delay;
-  s_outbound.phase = HERMES_OUT_RETRY_WAIT;
-  s_outbound.elapsed_ticks = 0u;
-  timer_ensure();
+  outbound_wait(HERMES_OUT_RETRY_WAIT, delay);
+  timer_update();
 }
 
 static void outbound_timeout(void) {
@@ -2012,7 +2450,7 @@ static void outbound_timeout(void) {
 static void outbound_finish(void) {
   s_outbound.active = false;
   s_outbound.phase = HERMES_OUT_IDLE;
-  timer_maybe_cancel();
+  timer_update();
 }
 
 static void outbound_failed(uint32_t error_code, const char *text) {
@@ -2037,7 +2475,7 @@ static void outbound_failed(uint32_t error_code, const char *text) {
     s_result_prefetch = false;
     s_result_retry = true;
     if (s_screen == HERMES_SCREEN_RESULT) ui_show_result();
-    timer_maybe_cancel();
+    timer_update();
     return;
   }
   bool keep_pending = s_outbound.kind == HERMES_KIND_SUBMIT_REQUEST || s_outbound.kind == HERMES_KIND_SAVE_NOTE || s_outbound.kind == HERMES_KIND_DISCARD_CAPTURE;
@@ -2058,7 +2496,7 @@ static void outbound_failed(uint32_t error_code, const char *text) {
     s_visible_error = error_code;
     s_screen = HERMES_SCREEN_ERROR;
   }
-  timer_maybe_cancel();
+  timer_update();
   if (!keep_pending) snprintf(s_error_text, sizeof(s_error_text), "%s", text);
   ui_rebuild();
 }
@@ -2072,13 +2510,12 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
   if (!read_u32(iterator, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || transfer_id != s_outbound.transfer_id) return;
   if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
     outbound_finish();
-    timer_ensure();
+    timer_update();
     return;
   }
   if (s_outbound.next_chunk + 1u < s_outbound.chunk_count) {
     s_outbound.next_chunk++;
     s_outbound.phase = HERMES_OUT_SENDING;
-    s_outbound.elapsed_ticks = 0u;
     outbound_send_current_chunk();
     return;
   }
@@ -2086,9 +2523,12 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
     outbound_finish();
     return;
   }
-  s_outbound.phase = s_outbound.kind == HERMES_KIND_SUBMIT_REQUEST || s_outbound.kind == HERMES_KIND_SAVE_NOTE ? HERMES_OUT_WAIT_RECEIPT : HERMES_OUT_WAIT_REPLY;
-  s_outbound.elapsed_ticks = 0u;
-  timer_ensure();
+  if (s_outbound.kind == HERMES_KIND_SUBMIT_REQUEST || s_outbound.kind == HERMES_KIND_SAVE_NOTE) {
+    outbound_wait(HERMES_OUT_WAIT_RECEIPT, HERMES_DURABLE_RECEIPT_TIMEOUT_SECONDS);
+  } else {
+    outbound_wait(HERMES_OUT_WAIT_REPLY, HERMES_CHUNK_TIMEOUT_SECONDS);
+  }
+  timer_update();
 }
 
 static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResult result, void *context) {
@@ -2098,7 +2538,7 @@ static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResu
   if (s_outbound.active) {
     if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
       outbound_finish();
-      timer_ensure();
+      timer_update();
     } else {
       outbound_schedule_retry();
     }
@@ -2251,6 +2691,7 @@ static void prepare_capture(uint8_t operation) {
   s_visible_item_kind = operation == HERMES_PENDING_NOTE ? HERMES_ITEM_KIND_NOTE : HERMES_ITEM_KIND_REQUEST;
   s_result_more = 0u;
   s_visible_output[0] = '\0';
+  s_result_height_valid = false;
   memcpy(s_visible_input, s_capture_text, length + 1u);
   if (operation == HERMES_PENDING_REQUEST) {
     kind = HERMES_KIND_SUBMIT_REQUEST;
@@ -2316,6 +2757,7 @@ static void result_reset(void) {
     s_result_previous_windows = previous;
   }
   s_visible_output[0] = '\0';
+  s_result_height_valid = false;
   s_result_window_offset = 0u;
   s_result_window_end = 0u;
   s_result_next_offset = 0u;
@@ -2354,6 +2796,7 @@ static bool result_move_window(bool forward) {
     free(previous);
   }
   s_visible_output[0] = '\0';
+  s_result_height_valid = false;
   s_result_window_offset = s_result_next_offset = offset;
   s_result_window_end = end;
   s_result_more = 0u;
@@ -2405,6 +2848,7 @@ static bool result_append_page(uint32_t offset, uint32_t total, bool more) {
     return true;
   }
   memcpy(s_visible_output + used, s_result_page, page_length + 1u);
+  s_result_height_valid = false;
   s_result_next_offset = offset + (uint32_t)page_length;
   s_result_prefetch = more && s_result_next_offset != s_result_window_end;
   return true;
@@ -2538,7 +2982,6 @@ static bool common_fields_equal(const InboundTransfer *message, uint8_t protocol
 
 static void inbound_reset(void) {
   memset(&s_inbound, 0, sizeof(s_inbound));
-  s_inbound_elapsed_ticks = 0;
 }
 
 static void inbound_error(uint32_t code, const char *text) {
@@ -2628,8 +3071,8 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   if (first_chunk) {
     memset(&s_inbound, 0, sizeof(s_inbound));
     s_inbound.active = true;
-    s_inbound_elapsed_ticks = 0u;
-    timer_ensure();
+    s_inbound_deadline_ms = deadline_after(HERMES_CHUNK_TIMEOUT_SECONDS);
+    timer_update();
     s_inbound.protocol_version = protocol_version;
     s_inbound.kind = kind;
     s_inbound.transfer_id = transfer_id;
@@ -2664,7 +3107,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   }
   memcpy(s_inbound.chunks[chunk_index], payload, payload_length);
   s_inbound.chunk_lengths[chunk_index] = (uint8_t)payload_length;
-  s_inbound_elapsed_ticks = 0u;
+  s_inbound_deadline_ms = deadline_after(HERMES_CHUNK_TIMEOUT_SECONDS);
   s_inbound.total_length = (uint16_t)(s_inbound.total_length + payload_length);
   s_inbound.received_mask = (uint8_t)(s_inbound.received_mask | (uint8_t)(1u << chunk_index));
   if (s_inbound.received_mask == (uint8_t)((1u << chunk_count) - 1u)) {
@@ -2748,7 +3191,7 @@ static void process_phone_message(const InboundTransfer *message) {
     return;
   }
   if (queue_phone_probe(message)) {
-    timer_ensure();
+    timer_update();
     return;
   }
   if (!inbound_correlation_matches(message)) {
@@ -2770,6 +3213,7 @@ static void process_phone_message(const InboundTransfer *message) {
         return;
       }
       s_handshake_ready = true;
+      ui_link_changed();
       outbound_finish();
       ink_schedule_sync();
       if (s_screen == HERMES_SCREEN_CONNECTING || s_screen == HERMES_SCREEN_MENU || s_screen == HERMES_SCREEN_ERROR) {
@@ -2885,7 +3329,7 @@ static void process_status_update(const InboundTransfer *message) {
       (message->correlation_id == 0u || message->correlation_id == s_outbound.transfer_id)) outbound_finish();
   if (!has_answer && should_auto_fetch_result()) {
     s_auto_result_capture_id = message->capture_id;
-    timer_ensure();
+    timer_update();
   }
   if (viewing_status) ui_rebuild();
 }
@@ -2943,20 +3387,21 @@ static void process_result_page(const InboundTransfer *message) {
   }
   // Dense newline-heavy answers also need a bounded drawing height. Keep the
   // unread chunk on the phone and load it when Down reaches this window's end.
-  if (used != 0u && s_window != NULL) {
-    GRect bounds = layer_get_bounds(window_get_root_layer(s_window));
-    GSize measured = graphics_text_layout_get_content_size(s_visible_output,
-        fonts_get_system_font(FONT_KEY_GOTHIC_24), GRect(0, 0, bounds.size.w - 16, MAX_TEXT_HEIGHT),
-        GTextOverflowModeWordWrap, GTextAlignmentLeft);
-    if (measured.h >= (int)RESULT_WINDOW_HEIGHT) {
-      s_visible_output[used] = '\0';
-      s_result_next_offset = message->page_offset;
-      s_result_more = 1u;
-      s_result_prefetch = false;
-      s_result_window_full = true;
-    }
+  // This single measurement is reused by the layout below.
+  if (s_window != NULL && result_text_height() >= (int16_t)RESULT_WINDOW_HEIGHT && used != 0u) {
+    s_visible_output[used] = '\0';
+    s_result_height_valid = false;
+    s_result_next_offset = message->page_offset;
+    s_result_more = 1u;
+    s_result_prefetch = false;
+    s_result_window_full = true;
   }
   outbound_finish();
+  if (s_result_announce && message->page_offset == 0u) {
+    // One short buzz when an awaited answer arrives; Quiet Time stays silent.
+    s_result_announce = false;
+    if (!quiet_time_is_active()) vibes_short_pulse();
+  }
   if (message->status != HERMES_STATUS_NONE) {
     s_visible_status = message->status;
   }
@@ -2966,7 +3411,9 @@ static void process_result_page(const InboundTransfer *message) {
   if (message->capture_id != 0u) {
     s_visible_capture_id = message->capture_id;
   }
-  if (s_screen == HERMES_SCREEN_STATUS || s_screen == HERMES_SCREEN_RESULT) {
+  if (s_screen == HERMES_SCREEN_RESULT) {
+    ui_result_refresh();
+  } else if (s_screen == HERMES_SCREEN_STATUS) {
     ui_show_result();
   }
   if (!s_result_prefetch) s_result_scroll_to_end = false;
@@ -3005,6 +3452,12 @@ static void process_conversation_ack(const InboundTransfer *message) {
     return;
   }
   outbound_finish();
+  // The previous exchange belongs to the old conversation; do not show it as current.
+  result_reset();
+  s_visible_capture_id = 0u;
+  s_visible_item_kind = HERMES_ITEM_KIND_NONE;
+  s_visible_input[0] = '\0';
+  s_visible_flags = 0u;
   s_visible_status = HERMES_STATUS_NONE;
   s_visible_error = HERMES_ERROR_NONE;
   s_screen = HERMES_SCREEN_STATUS;
@@ -3356,11 +3809,11 @@ static bool parse_recent_payload(const char *json, uint16_t length) {
         preview[0] = '\0';
       }
       if (preview[0] == '\0' && input[0] != '\0') {
-        snprintf(item->label, sizeof(item->label), "%s: %s", status_text(item->state), input);
+        snprintf(item->label, sizeof(item->label), "%s", input);
       } else if (preview[0] != '\0') {
-        snprintf(item->label, sizeof(item->label), "%s: %s", status_text(item->state), preview);
+        snprintf(item->label, sizeof(item->label), "%s", preview);
       } else {
-        snprintf(item->label, sizeof(item->label), "%s: Capture %lu", status_text(item->state), (unsigned long)capture_id);
+        snprintf(item->label, sizeof(item->label), "Capture %lu", (unsigned long)capture_id);
       }
       if (json_bool_in_span(json, length, object_begin, object_end, "more", &more)) {
         item->more = more;
@@ -3406,9 +3859,8 @@ static bool parse_result_payload(const char *json, uint16_t length) {
       capture_id != s_outbound.capture_id) return false;
   memset(input, 0, sizeof(input));
   memset(output, 0, sizeof(output));
-  if (!json_string_in_span(json, length, begin, end, "input", input, sizeof(input))) {
-    input[0] = '\0';
-  }
+  // Phone pages normally omit the request; keep the watch's own copy then.
+  bool has_input = json_string_in_span(json, length, begin, end, "input", input, sizeof(input));
   if (!json_string_in_span(json, length, begin, end, "output", output, sizeof(output))) {
     return false;
   }
@@ -3425,7 +3877,7 @@ static bool parse_result_payload(const char *json, uint16_t length) {
     s_result_more = 1u;
   }
   s_visible_capture_id = capture_id;
-  memcpy(s_visible_input, input, strlen(input) + 1u);
+  if (has_input) memcpy(s_visible_input, input, strlen(input) + 1u);
   memcpy(s_result_page, output, strlen(output) + 1u);
   return true;
 }

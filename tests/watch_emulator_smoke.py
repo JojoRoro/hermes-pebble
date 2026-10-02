@@ -50,6 +50,13 @@ def capture(name):
     picture.save(args.output / (name + '.png'))
     return picture.crop((8, 48, picture.width - 8, picture.height - 30)).tobytes()
 
+def touch_row(name):
+    # Settings also shows the live link state; compare only the touch preference row.
+    rows=Screenshot(connection).grab_image()
+    picture = Image.frombytes('RGB',(len(rows[0])//3,len(rows)),b''.join(bytes(row) for row in rows))
+    picture.save(args.output / (name + '.png'))
+    return picture.crop((0, 24, picture.width, 76)).tobytes()
+
 def click(button):
     send_data_to_qemu(connection.transport,QemuButton(state=button))
     time.sleep(.08)
@@ -70,6 +77,9 @@ reply(4003,probe[2])
 time.sleep(.3)
 capture('probe-linked')
 for i in range(6): click(QemuButton.Button.Down)
+capture('settings-selected')
+click(QemuButton.Button.Select)  # Settings
+click(QemuButton.Button.Down)
 capture('reconnect-selected')
 click(QemuButton.Button.Select)
 request = receive()
@@ -93,11 +103,11 @@ for _ in range(12): click(QemuButton.Button.Up)
 assert capture('text-top-restored') == top, 'Could not return to the top'
 
 click(QemuButton.Button.Back)
-for _ in range(7): click(QemuButton.Button.Down)
+for _ in range(6): click(QemuButton.Button.Down)
 click(QemuButton.Button.Select)
-on = capture('settings-on')
+on = touch_row('settings-on')
 click(QemuButton.Button.Select)
-off = capture('settings-off')
+off = touch_row('settings-off')
 assert on != off, 'Touch preference did not toggle'
 click(QemuButton.Button.Back)
 click(QemuButton.Button.Back)
@@ -108,13 +118,13 @@ connection.send_packet(AppRunState(command=1, data=AppRunStateStart(uuid=app_id)
 reopened = receive()
 reply(4005, reopened[2])
 time.sleep(.3)
-for _ in range(7): click(QemuButton.Button.Down)
+for _ in range(6): click(QemuButton.Button.Down)
 click(QemuButton.Button.Select)
-assert capture('settings-after-restart') == off, 'Touch preference was not preserved'
+assert touch_row('settings-after-restart') == off, 'Touch preference was not preserved'
 click(QemuButton.Button.Select)
-assert capture('settings-on-restored') == on, 'Could not re-enable touch with buttons'
+assert touch_row('settings-on-restored') == on, 'Could not re-enable touch with buttons'
 click(QemuButton.Button.Back)
-for _ in range(5): click(QemuButton.Button.Down)
+for _ in range(2): click(QemuButton.Button.Down)
 click(QemuButton.Button.Select)
 blank_ink = capture('handwriting-canvas')
 click(QemuButton.Button.Select)

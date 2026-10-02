@@ -28,7 +28,7 @@ The root `package.json` is the source of truth for the watch UUID and companion 
 4. The official Pebble host is selected automatically when it is the only eligible host. Otherwise select it in Setup. Open the watch app and confirm the link.
 5. Choose **Ask Hermes**, dictate, review, and **Send**. Keep that screen open: progress changes to the answer automatically. Select **Reply to Hermes** from the answer's actions to continue the same conversation. **New conversation** starts a separate context.
 
-Long answers scroll with Up/Down. The watch joins phone transfer chunks automatically and preserves your reading position as more text arrives. Very long answers load adjacent text at either scroll boundary using the same buttons. Fetch remains available for recovering an answer later. Test connection only checks the API; sending a request is a separate action.
+Long answers page with Up/Down, one screen per press with a line of overlap. The watch shows your request above the answer, vibrates once when an awaited answer arrives (not during Quiet Time), and loads further text only as you read toward the end, so unread parts of an answer are not sent over Bluetooth. Your reading position is preserved as more text arrives. Very long answers load adjacent text at either scroll boundary using the same buttons. Fetch remains available for recovering an answer later. Test connection only checks the API; sending a request is a separate action.
 
 Hermes requests use the asynchronous run API: Android submits once, then polls that run until it finishes. Polls are scheduled about every 3 seconds while the Android app is in the foreground, 30 seconds in the background, or 5 minutes when approval is required. Having the watch app open does not select the Android foreground interval. Network failures, Doze, and Android background restrictions can delay those checks. Once complete, Android stores the answer and notifies the active watch; fetching further text reads that saved answer, without another Hermes run.
 
@@ -61,13 +61,13 @@ Both credentials are attached to every Hermes request when enabled. The URL is t
 
 ## Connection diagnostics and credential editing
 
-Android **Setup** selects `coredevices.coreapp` automatically when it is the sole eligible Pebble host. If multiple hosts are installed, select the intended one. PebbleKit rejects incoming watch messages until a host is selected. Close and reopen Hermes on the watch after changing the host, or choose **Reconnect** in the watch menu. Install a finalized PBW so the Pebble host knows which Android companion to contact.
+Android **Setup** selects `coredevices.coreapp` automatically when it is the sole eligible Pebble host. If multiple hosts are installed, select the intended one. PebbleKit rejects incoming watch messages until a host is selected. Close and reopen Hermes on the watch after changing the host, or choose **Settings › Reconnect phone** on the watch. Install a finalized PBW so the Pebble host knows which Android companion to contact.
 
 The API key and additional header value load from encrypted storage. Tap either field to reveal and edit the saved value; leaving the field masks it again. Save edits before running **Test saved Hermes connection**. Saving unchanged values preserves the current connection profile.
 
 Android **Diagnostics** provides a read-only API test, an **Open watch app & test link** test, network/battery status, and a copyable timestamped event log. HTTP events show status, JSON/HTML response type, size, and elapsed time; schema errors identify missing fields. DNS, TLS, timeout, and authentication failures are distinguished. A 401/403 still cannot identify which authentication layer rejected the request. Credentials, response bodies, and dictated text are excluded from the log; the in-app log retains the last 150 events in memory, and the same metadata is written to Android logcat under `HermesLink`. The watch test opens Hermes through the selected Pebble host and checks a correlated round trip, with separate start, delivery, and response diagnostics. Install the matching watch PBW before testing.
 
-For a watch timeout, open Diagnostics and choose Reconnect on the watch. No RX event points to host selection, companion metadata, or host permissions. RX followed by a failed TX identifies the reply transport failure. TX Success confirms transport delivery, not a completed Hermes run. For API failures behind NetBird, HTTP 200 with HTML indicates a dashboard or proxy page instead of the expected JSON API response. Copy the report after reproducing the failure.
+For a watch timeout, open Diagnostics and choose Settings › Reconnect phone on the watch. No RX event points to host selection, companion metadata, or host permissions. RX followed by a failed TX identifies the reply transport failure. TX Success confirms transport delivery, not a completed Hermes run. For API failures behind NetBird, HTTP 200 with HTML indicates a dashboard or proxy page instead of the expected JSON API response. Copy the report after reproducing the failure.
 
 ## Watch speaker test
 
@@ -79,7 +79,7 @@ From v0.1.10, **Quiet Time always blocks audio**, independently of the system sp
 
 ## Bike detection test (experimental)
 
-On the watch, select **Test bike detection** at the end of the main menu. The screen shows a live cycling percentage and heart-rate reading age. Allow about 4 seconds for the first motion window and 12–20 seconds for sustained evidence. **Select** resets the test; **Back** returns to the menu and releases its sensor subscriptions.
+On the watch, open **Settings › Bike detection test**. The screen shows a live cycling percentage and heart-rate reading age. Allow about 4 seconds for the first motion window and 12–20 seconds for sustained evidence. **Select** resets the test; **Back** returns to Settings and releases its sensor subscriptions. To save battery, the test pauses itself after 10 minutes and releases the sensors; **Select** resumes it.
 
 The score emphasizes sustained rapid wrist vibration and reduces slower arm movement and isolated bumps. The watch's own vibration motor is ignored. Fresh elevated heart rate adds a small boost only when there is already motion evidence; stale readings lose weight and are ignored after ten minutes. The test requests heart-rate readings every 15 seconds while visible and restores normal sampling when you leave. The watch may deliver readings less often or provide none; motion detection still works.
 
@@ -128,7 +128,7 @@ Open **Handwritten note** in the watch menu, whether connected or offline. Draw 
 
 Open **Local notes** on Android to view the handwriting, including a larger zoom. This works without Hermes credentials. **Allow note sync notifications** enables an alert that opens the received note. Handwriting is stored as strokes, without recognition or automatic submission to Hermes.
 
-This first version supports **one pending handwritten note**. All watch persistence stays within a 4 KiB budget: the drawing gets up to 2,048 bytes, leaving room for the existing pending transcript, settings, and record overhead. Length depends on stroke complexity; the watch shows remaining bytes. Save before leaving the app: unfinished drawings exist only in memory.
+This first version supports **one pending handwritten note**. All watch persistence stays within a 4 KiB budget: the drawing gets up to 2,048 bytes, leaving room for the existing pending transcript, settings, and record overhead. Length depends on stroke complexity; the watch shows the remaining space as a percentage. Save before leaving the app: unfinished drawings exist only in memory.
 
 The saved copy survives app restarts. The watch tries direct delivery immediately and after reconnection while the app is open. A Data Logging copy also allows background delivery through a compatible Pebble host. If background delivery is delayed, reopen Hermes on the watch. The watch frees the pending slot only after a direct phone receipt confirms durable storage; reopen the watch app if a note has reached the phone but its watch slot is still occupied. See [the storage and transfer format](protocol/README.md#handwritten-notes).
 
@@ -157,6 +157,6 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 
 ## Watch navigation
 
-Up/Down scroll text and move through menus; holding a button repeats. In the watch main menu, open **Settings** and select **Touch navigation: On/Off** to toggle touchscreen navigation. The preference survives restarts and buttons remain available in both modes. Touch navigation defaults to On and requires compatible watch firmware with system touch navigation enabled. Build the watch with SDK 4.33.1 or newer to include the touch API.
+Up/Down page through text and move through menus; holding a button repeats. A blue tab at the right edge marks screens where **Select** opens actions, and the header dot shows whether the phone link is verified. **Settings** in the main menu holds **Touch navigation**, **Reconnect phone**, and the **Bike detection test**. Select **Touch navigation** to toggle touchscreen navigation. The preference survives restarts and buttons remain available in both modes. Touch navigation defaults to On and requires compatible watch firmware with system touch navigation enabled. Build the watch with SDK 4.33.1 or newer to include the touch API.
 
 Android's **Open watch app & test link** waits after requesting launch and retries `FailedDifferentAppOpen` up to eight times. A successful launch request alone does not mean the watch is ready to receive a probe. Persistent failures after these retries are reported separately from a successful round trip.

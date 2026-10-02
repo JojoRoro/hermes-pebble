@@ -23,12 +23,24 @@ static AudioReply s_audio_reply;
 static AppTimer *s_audio_timer;
 static uint32_t s_audio_tick_ms;
 
+// Each speaker write covers up to 128 ms of 8 kHz audio, so 50 ms keeps it fed.
+// While only waiting for blocks, a 1 s tick is enough for the idle/Quiet Time checks.
+#define AUDIO_PLAY_TICK_MS 50u
+#define AUDIO_REPLY_TICK_MS 100u
+#define AUDIO_IDLE_TICK_MS 1000u
+
 static void audio_tick(void *context);
 static void audio_schedule(void) {
-  if (s_audio_timer == NULL && (s_audio.phase == 1u || s_audio.phase == 2u || s_audio_reply.pending)) {
-    s_audio_tick_ms = s_audio.phase == 2u ? 20u : 100u;
-    s_audio_timer = app_timer_register(s_audio_tick_ms, audio_tick, NULL);
+  uint32_t interval;
+  if (s_audio.phase != 1u && s_audio.phase != 2u && !s_audio_reply.pending) return;
+  interval = s_audio.phase == 2u ? AUDIO_PLAY_TICK_MS :
+      s_audio_reply.pending ? AUDIO_REPLY_TICK_MS : AUDIO_IDLE_TICK_MS;
+  if (s_audio_timer != NULL) {
+    if (interval >= s_audio_tick_ms) return;
+    app_timer_cancel(s_audio_timer); // Playback or a receipt cannot wait for a slow idle tick.
   }
+  s_audio_tick_ms = interval;
+  s_audio_timer = app_timer_register(s_audio_tick_ms, audio_tick, NULL);
 }
 
 static uint32_t audio_checksum(const uint8_t *bytes, uint32_t length) {

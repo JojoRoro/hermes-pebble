@@ -1,6 +1,6 @@
 # Experimental cycling score
 
-The watch's **Test bike detection** menu opens an independent screen with a large 0–99% estimate, motion summary, and heart-rate observation age. It shows `--%` until a complete motion window is available. Select resets evidence. Leaving or covering the screen unsubscribes from accelerometer and health events, cancels its timer, and restores automatic heart-rate sampling. Returning starts fresh. The test runs locally, retains only aggregate features in RAM, and does not enable automatic audio or background cycling detection.
+**Settings › Bike detection test** on the watch opens an independent screen with a large 0–99% estimate, motion summary, and heart-rate observation age. It shows `--%` until a complete motion window is available. Select resets evidence. Leaving or covering the screen unsubscribes from accelerometer and health events, cancels its timer, and restores automatic heart-rate sampling. Returning starts fresh. After 10 minutes the test pauses itself, releases the accelerometer, heart-rate request, and timer, and shows `--%`; Select resumes it. The test runs locally, retains only aggregate features in RAM, and does not enable automatic audio or background cycling detection.
 
 ## Motion model
 

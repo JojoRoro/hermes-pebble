@@ -60,6 +60,16 @@ int main(void) {
   assert(!view.health_ok && !view.hr_available && !view.hr_requested);
   bike_stop(NULL);
   assert(timers == 0 && health_stops == 2 && accel_starts == accel_stops);
+  // An unattended test pauses itself, releasing sensors and its timer; SELECT resumes.
+  subscribe_ok = true;
+  bike_start(NULL);
+  test_now += BIKE_IDLE_TIMEOUT_SECONDS;
+  timers--; bike_tick(NULL);
+  assert(view.paused && !view.active && timers == 0 && requested_period == 0 && accel_starts == accel_stops);
+  bike_reset_click(NULL, NULL);
+  assert(!view.paused && view.active && timers == 1 && requested_period == 15);
+  bike_stop(NULL);
+  assert(timers == 0 && accel_starts == accel_stops);
   s_bike = NULL;
   puts("Bike sensor lifecycle, denied/unavailable HR, fresh-event gating, stale motion, and sampling reset passed");
   return 0;
