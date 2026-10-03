@@ -84,3 +84,6 @@ Run the optional local suite for speech PCM conversion and capture-bound transfe
 For saved answers, run `tests/watch_conversation_smoke.py --emulator emery --recent-voice-only --pbw <built.pbw>`. It verifies playback from an older conversation, repeat playback with a fresh transfer ID, queued playback while text is loading, silent refresh, and Back cancellation. Kotlin checks also verify that transport retries do not replay audio while a new explicit request does.
 
 The `--voice-only` smoke also requests speech with Up after a text-only send, holds Up across answer delivery to ensure it does not replay repeatedly, and cancels the resulting audio. Host watch checks cover Up eligibility and one-shot reply-arrival vibration, including Quiet Time and leaving the status screen.
+
+
+The v0.1.16 audio checks additionally verify 16/22.05/24/44.1/48 kHz source duration and pitch, two-packet audio blocks fitting the inbox, and playback status occurring only after upload. The emulator smoke covers reordered and duplicate 768-byte chunks and rejects completion faster than the clip's nominal duration (with a 250 ms scheduling tolerance).

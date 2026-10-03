@@ -10,7 +10,7 @@ This document is the source of truth for the watch/phone wire format. The matchi
 | Pebble AppMessage input buffer | 1,024 bytes |
 | Pebble AppMessage output buffer | 1,024 bytes |
 | Maximum chunks in one transfer | 6 |
-| Maximum payload bytes per chunk | 192 |
+| Maximum payload bytes per chunk | 192; audio blocks allow 768 since v0.1.16 |
 | Maximum logical transfer bytes | 1,024; a full transfer uses six chunks and caps its final chunk at 64 bytes |
 | Maximum dictation/note bytes | 1,024 UTF-8 bytes, excluding the terminating NUL |
 | Maximum recent items returned to watch | 3 |
@@ -19,7 +19,7 @@ This document is the source of truth for the watch/phone wire format. The matchi
 | Application durable-receipt timeout | 30 seconds |
 | Bounded transport retry delays | 1, 2, 4, 8 seconds |
 
-A maximum-size message uses all 1,024 logical transfer bytes and therefore six chunks. The fixed tuples add at most 77 bytes when the key/type header and values are counted; a six-chunk dictionary remains below 1,101 bytes before platform tuple overhead and is not emitted as one dictionary. Each emitted dictionary contains one 192-byte payload chunk and a conservative full tuple set of approximately 274 bytes, well below the watch's 1,024-byte output limit. Android also rejects a decoded chunk larger than 192 bytes.
+A maximum-size ordinary message uses six chunks. Each dictionary contains one chunk, numeric metadata, a one-byte tuple count, and seven header bytes per tuple. Since v0.1.16, audio blocks allow 768 payload bytes: even with all 17 numeric values widened to uint32, the full 18-tuple dictionary is 963 bytes, below the 1,024-byte inbox. Other kinds retain the 192-byte payload limit.
 
 Text chunking operates on UTF-8 bytes. Handwriting and audio use separate binary blocks described below. A text sender chooses boundaries that do not split a code point. Receivers concatenate bytes, validate bounds and the complete UTF-8 sequence, then decode. A character count is never used as a transfer limit.
 
@@ -249,7 +249,7 @@ Data Logging delivery is host-dependent and its transport acknowledgment is not 
 
 Added in 0.1.9; install matching APK/PBW versions. Kinds 10 and 110–113 use a separate transient audio session; they do not change conversation state or persist data. `CaptureId` is the phone-generated nonzero session ID, `TotalBytes` is 1–16,000, `ConversationGeneration` is the unsigned FNV-1a checksum of the complete PCM clip, and `Flags=1` selects mono signed 8-bit PCM at 8 kHz with no header. The checksum starts at `0x811c9dc5`, XORs each unsigned byte, then multiplies by `0x01000193` modulo 2³².
 
-Android first performs a correlated probe of an already-open watch app without launching it. `AUDIO_BEGIN` reserves a temporary watch heap buffer. Android waits for `AUDIO_STATUS`, then sends successive `AUDIO_BLOCK` messages of at most 1,024 bytes, each split into up to six 192-byte AppMessage chunks. PCM uses byte boundaries and bypasses UTF-8 validation. `PageOffset` is the block's start byte; a receipt reports the cumulative received byte count. Matching repeated blocks are accepted; holes, conflicting bytes, and inconsistent metadata are rejected.
+Android first performs a correlated probe of an already-open watch app without launching it. `AUDIO_BEGIN` reserves a temporary watch heap buffer. Android waits for `AUDIO_STATUS`, then sends successive `AUDIO_BLOCK` messages of at most 1,024 bytes, each split into two AppMessage chunks of at most 768 bytes since v0.1.16 (previously six at 192 bytes). Install the matching watch app before using the larger chunks. The watch packs received chunks into a single bounded 1,024-byte buffer and preserves chunk order and duplicate validation. PCM uses byte boundaries and bypasses UTF-8 validation. `PageOffset` is the block's start byte; a receipt reports the cumulative received byte count. Matching repeated blocks are accepted; holes, conflicting bytes, and inconsistent metadata are rejected.
 
 `AUDIO_PLAY` requires an empty payload, offset zero, complete data, and a matching checksum. It starts speaker playback; only the speaker finish callback can produce COMPLETE. A duplicate play for the same terminal session returns its recorded status without replaying. `AUDIO_CANCEL` discards/stops only the matching session and needs no acknowledgment. Back, dictation, and app shutdown cancel playback. Receive inactivity expires at 30 seconds and playback at 10 seconds; Android bounds its full exchange to 90 seconds.
 

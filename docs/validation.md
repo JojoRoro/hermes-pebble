@@ -193,3 +193,10 @@ Source review removed the abandoned duplicate UI/runtime and corrected unresolve
 - Confirm no external Matrix delivery claim is derived solely from HTTP acceptance, a run completion, a Pebble transport ACK, or a notification.
 
 Local builds and emulator checks passed. User reports confirm the existing physical watch link and manual Hermes result retrieval; the new automatic flow and fresh store installation still need hardware acceptance.
+
+
+## Voice playback correction (v0.1.16)
+
+Validated on 3 October 2026 with SDK 4.33.1. The full offline C/Kotlin/Python suite passed, including source-rate/pitch fixtures, audio packet bounds, and upload/playback ordering. The final watch build passed at 65,335 bytes of static RAM footprint, with 65,737 bytes available for heap before runtime allocations. The emulator audio smoke accepted reordered/duplicate 768-byte chunks and completed the 1.725-second bundled clip in 1.752 seconds with the dummy backend. The conversation voice smoke passed opt-in, text-only send then Up playback, held-button protection, replay, and Back cancellation. The PBW metadata finalizer passed.
+
+The user reports normal physical playback of the bundled test clip and accelerated voice replies. The final change explicitly normalizes Android TTS speed/pitch and retains the existing watch speaker format. Tests verify conversion and transfer behavior; audible reply intelligibility on the user's speech engine and Bluetooth transfer timing still require physical acceptance.

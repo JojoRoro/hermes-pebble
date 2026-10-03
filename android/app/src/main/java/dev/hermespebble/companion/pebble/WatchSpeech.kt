@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
@@ -36,6 +37,8 @@ class WatchSpeech(private val context: Context) {
                         .sortedBy { it.name }.firstOrNull()
                     ?: error("Install an offline speech voice on your phone.")
                 check(tts.setVoice(voice) == TextToSpeech.SUCCESS) { "Phone speech voice is unavailable." }
+                check(tts.setSpeechRate(1.0f) == TextToSpeech.SUCCESS &&
+                    tts.setPitch(1.0f) == TextToSpeech.SUCCESS) { "Could not set normal speech speed." }
                 val complete = CompletableDeferred<ByteArray>()
                 val bytes = ByteArrayOutputStream()
                 val id = UUID.randomUUID().toString()
@@ -59,6 +62,7 @@ class WatchSpeech(private val context: Context) {
                     override fun onDone(utteranceId: String?) {
                         if (utteranceId != id || complete.isCompleted) return
                         synchronized(bytes) {
+                            DiagnosticLog.record("Voice", "TTS PCM: $rate Hz, $channels channels, encoding $encoding, ${bytes.size()} bytes")
                             try { complete.complete(VoicePcm.convert(bytes.toByteArray(), rate, channels, encoding)) }
                             catch (error: Exception) { complete.completeExceptionally(error) }
                         }

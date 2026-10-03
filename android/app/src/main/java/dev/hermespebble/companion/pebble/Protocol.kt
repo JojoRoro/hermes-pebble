@@ -10,6 +10,7 @@ object WireProtocol {
     const val VERSION = 1
     const val MAX_CHUNKS = 6
     const val MAX_CHUNK_PAYLOAD_BYTES = 192
+    const val MAX_AUDIO_CHUNK_PAYLOAD_BYTES = 768
     const val MAX_TRANSFER_BYTES = 1024
     const val MAX_WATCH_TEXT_BYTES = 1024
     const val MAX_RECENT_ITEMS = 3
@@ -203,8 +204,10 @@ class IncomingTransferAssembler(private val clock: () -> Long = System::currentT
         }
         val payload = data.bytes(WireProtocol.KEY_PAYLOAD)
             ?: return DecodedChunkResult.Error(WireError.MALFORMED, "Payload is missing or has the wrong type")
-        if (payload.size > WireProtocol.MAX_CHUNK_PAYLOAD_BYTES) {
-            return DecodedChunkResult.Error(WireError.TRANSFER_BOUND, "A payload chunk exceeds 192 bytes")
+        val chunkLimit = if (kind == WireMessageKind.AUDIO_BLOCK) WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES
+            else WireProtocol.MAX_CHUNK_PAYLOAD_BYTES
+        if (payload.size > chunkLimit) {
+            return DecodedChunkResult.Error(WireError.TRANSFER_BOUND, "A payload chunk exceeds $chunkLimit bytes")
         }
         val parsed = parseMetadata(data, kind, transfer)
             ?: return DecodedChunkResult.Error(WireError.MALFORMED, "A required metadata field is invalid")
@@ -334,9 +337,11 @@ object OutgoingProtocolCodec {
         require(pageOffset in 0..UInt.MAX_VALUE.toLong())
         require(totalBytes in 0..UInt.MAX_VALUE.toLong())
         require(generation in 0..UInt.MAX_VALUE.toLong())
+        val chunkLimit = if (kind == WireMessageKind.AUDIO_BLOCK) WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES
+            else WireProtocol.MAX_CHUNK_PAYLOAD_BYTES
         val boundaries = if (kind == WireMessageKind.AUDIO_BLOCK || kind == WireMessageKind.INK_BLOCK) {
-            if (payload.isEmpty()) listOf(0..0) else payload.indices.step(WireProtocol.MAX_CHUNK_PAYLOAD_BYTES)
-                .map { it until minOf(it + WireProtocol.MAX_CHUNK_PAYLOAD_BYTES, payload.size) }
+            if (payload.isEmpty()) listOf(0..0) else payload.indices.step(chunkLimit)
+                .map { it until minOf(it + chunkLimit, payload.size) }
         } else utf8ChunkBoundaries(payload)
         if (boundaries.size > WireProtocol.MAX_CHUNKS) {
             throw IllegalArgumentException("Transfer needs too many chunks")

@@ -150,8 +150,9 @@ typedef struct {
   uint8_t kind;
   uint8_t chunk_count;
   uint8_t received_mask;
-  uint8_t chunk_lengths[HERMES_MAX_CHUNKS];
-  uint8_t chunks[HERMES_MAX_CHUNKS][HERMES_CHUNK_PAYLOAD_SIZE];
+  uint16_t chunk_lengths[HERMES_MAX_CHUNKS];
+  uint16_t chunk_offsets[HERMES_MAX_CHUNKS];
+  uint8_t chunks[HERMES_MAX_TRANSFER_BYTES];
   uint16_t total_length;
   uint32_t transfer_id;
   uint32_t capture_id;
@@ -395,7 +396,7 @@ static void resume_pending_capture(void);
 
 static bool read_u8(DictionaryIterator *iter, uint8_t key, uint8_t *value, bool required);
 static bool read_u32(DictionaryIterator *iter, uint8_t key, uint32_t *value, bool required);
-static bool read_bytes(DictionaryIterator *iter, uint8_t key, uint8_t *value, uint16_t capacity, uint16_t *length, bool required);
+static bool read_bytes(DictionaryIterator *iter, uint8_t key, const uint8_t **value, uint16_t capacity, uint16_t *length, bool required);
 static bool common_fields_equal(const InboundTransfer *message, uint8_t protocol_version, uint8_t kind, uint32_t transfer_id, uint32_t capture_id, uint8_t chunk_count);
 
 static uint32_t next_transfer_id(void);
@@ -3032,18 +3033,17 @@ static bool read_u32(DictionaryIterator *iter, uint8_t key, uint32_t *value, boo
   return false;
 }
 
-static bool read_bytes(DictionaryIterator *iter, uint8_t key, uint8_t *value, uint16_t capacity, uint16_t *length, bool required) {
+static bool read_bytes(DictionaryIterator *iter, uint8_t key, const uint8_t **value, uint16_t capacity, uint16_t *length, bool required) {
   Tuple *tuple = dict_find(iter, key);
   *length = 0u;
+  *value = (const uint8_t *)"";
   if (tuple == NULL) {
     return !required;
   }
   if (tuple->type != TUPLE_BYTE_ARRAY || tuple->length > capacity) {
     return false;
   }
-  if (tuple->length > 0u) {
-    memcpy(value, tuple->value->data, tuple->length);
-  }
+  *value = tuple->value->data;
   *length = (uint16_t)tuple->length;
   return true;
 }
@@ -3088,7 +3088,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   uint8_t item_kind;
   uint8_t page_count;
   uint8_t flags;
-  uint8_t payload[HERMES_CHUNK_PAYLOAD_SIZE];
+  const uint8_t *payload; // Borrow the tuple until it is copied into the bounded assembler.
   uint16_t payload_length;
   bool first_chunk;
   bool duplicate;
@@ -3106,7 +3106,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   flags = 0u;
   (void)context;
   if (!read_u8(iter, HERMES_KEY_PROTOCOL_VERSION, &protocol_version, true) || !read_u8(iter, HERMES_KEY_MESSAGE_KIND, &kind, true) || !read_u32(iter, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || !read_u32(iter, HERMES_KEY_CAPTURE_ID, &capture_id, false) || !read_u8(iter, HERMES_KEY_CHUNK_INDEX, &chunk_index, true) || !read_u8(iter, HERMES_KEY_CHUNK_COUNT, &chunk_count, true)) {
-    inbound_error(HERMES_ERROR_MALFORMED, "The phone sent a message with missing or invalid required fields.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Missing or invalid required phone fields.");
     return;
   }
   if (protocol_version != HERMES_PROTOCOL_VERSION) {
@@ -3118,20 +3118,20 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     return;
   }
   if (transfer_id == 0u || chunk_count == 0u || chunk_count > HERMES_MAX_CHUNKS || chunk_index >= chunk_count) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone sent an invalid transfer identifier or chunk range.");
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid phone transfer ID or chunk range.");
     return;
   }
-  if (!read_u32(iter, HERMES_KEY_CORRELATION_ID, &correlation_id, false) || !read_u32(iter, HERMES_KEY_ITEM_ID, &item_id, false) || !read_u8(iter, HERMES_KEY_STATUS, &status, false) || !read_u8(iter, HERMES_KEY_ERROR_CODE, &error_code, false) || !read_u8(iter, HERMES_KEY_ITEM_STATE, &item_state, false) || !read_u8(iter, HERMES_KEY_ITEM_KIND, &item_kind, false) || !read_u32(iter, HERMES_KEY_PAGE_OFFSET, &page_offset, false) || !read_u8(iter, HERMES_KEY_PAGE_COUNT, &page_count, false) || !read_u32(iter, HERMES_KEY_TOTAL_BYTES, &total_bytes, false) || !read_u32(iter, HERMES_KEY_CONVERSATION_GENERATION, &generation, false) || !read_u8(iter, HERMES_KEY_FLAGS, &flags, false) || !read_bytes(iter, HERMES_KEY_PAYLOAD, payload, sizeof(payload), &payload_length, false)) {
-    inbound_error(HERMES_ERROR_MALFORMED, "The phone sent a field with the wrong type or an oversized payload chunk.");
+  if (!read_u32(iter, HERMES_KEY_CORRELATION_ID, &correlation_id, false) || !read_u32(iter, HERMES_KEY_ITEM_ID, &item_id, false) || !read_u8(iter, HERMES_KEY_STATUS, &status, false) || !read_u8(iter, HERMES_KEY_ERROR_CODE, &error_code, false) || !read_u8(iter, HERMES_KEY_ITEM_STATE, &item_state, false) || !read_u8(iter, HERMES_KEY_ITEM_KIND, &item_kind, false) || !read_u32(iter, HERMES_KEY_PAGE_OFFSET, &page_offset, false) || !read_u8(iter, HERMES_KEY_PAGE_COUNT, &page_count, false) || !read_u32(iter, HERMES_KEY_TOTAL_BYTES, &total_bytes, false) || !read_u32(iter, HERMES_KEY_CONVERSATION_GENERATION, &generation, false) || !read_u8(iter, HERMES_KEY_FLAGS, &flags, false) || !read_bytes(iter, HERMES_KEY_PAYLOAD, &payload, HERMES_AUDIO_CHUNK_PAYLOAD_SIZE, &payload_length, false)) {
+    inbound_error(HERMES_ERROR_MALFORMED, "Invalid phone field type or chunk size.");
     return;
   }
-  if (payload_length > HERMES_CHUNK_PAYLOAD_SIZE) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone sent a chunk outside the 192-byte limit.");
+  if (payload_length > (kind == HERMES_KIND_AUDIO_BLOCK ? HERMES_AUDIO_CHUNK_PAYLOAD_SIZE : HERMES_CHUNK_PAYLOAD_SIZE)) {
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone sent a chunk outside its payload limit.");
     return;
   }
   if (!s_inbound.active && s_inbound.transfer_id == transfer_id) {
     if (s_inbound.chunk_count == chunk_count && s_inbound.chunk_lengths[chunk_index] == payload_length &&
-        memcmp(s_inbound.chunks[chunk_index], payload, payload_length) == 0) return;
+        memcmp(s_inbound.chunks + s_inbound.chunk_offsets[chunk_index], payload, payload_length) == 0) return;
     inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Completed transfer was repeated with different bytes.");
     return;
   }
@@ -3167,18 +3167,19 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   }
   duplicate = (s_inbound.received_mask & (uint8_t)(1u << chunk_index)) != 0u;
   if (duplicate) {
-    if (s_inbound.chunk_lengths[chunk_index] != payload_length || memcmp(s_inbound.chunks[chunk_index], payload, payload_length) != 0) {
+    if (s_inbound.chunk_lengths[chunk_index] != payload_length || memcmp(s_inbound.chunks + s_inbound.chunk_offsets[chunk_index], payload, payload_length) != 0) {
       inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "A duplicate chunk did not match the original bytes.");
       return;
     }
     return;
   }
   if ((uint16_t)s_inbound.total_length + payload_length > HERMES_MAX_TRANSFER_BYTES) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone transfer exceeded the 1024-byte logical limit.");
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Phone transfer exceeds 1024 bytes.");
     return;
   }
-  memcpy(s_inbound.chunks[chunk_index], payload, payload_length);
-  s_inbound.chunk_lengths[chunk_index] = (uint8_t)payload_length;
+  s_inbound.chunk_offsets[chunk_index] = s_inbound.total_length;
+  memcpy(s_inbound.chunks + s_inbound.chunk_offsets[chunk_index], payload, payload_length);
+  s_inbound.chunk_lengths[chunk_index] = payload_length;
   s_inbound_deadline_ms = deadline_after(HERMES_CHUNK_TIMEOUT_SECONDS);
   s_inbound.total_length = (uint16_t)(s_inbound.total_length + payload_length);
   s_inbound.received_mask = (uint8_t)(s_inbound.received_mask | (uint8_t)(1u << chunk_index));
@@ -3195,15 +3196,15 @@ static void process_inbound_transfer(void) {
   // local payload plus a full InboundTransfer copy overflows the watch stack.
   for (i = 0u; i < s_inbound.chunk_count; i++) {
     if (offset > HERMES_MAX_TRANSFER_BYTES || s_inbound.chunk_lengths[i] > HERMES_MAX_TRANSFER_BYTES - offset) {
-      inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The reassembled phone transfer exceeded its bound.");
+      inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Reassembled phone transfer is too large.");
       return;
     }
-    memcpy(s_inbound.payload + offset, s_inbound.chunks[i], s_inbound.chunk_lengths[i]);
+    memcpy(s_inbound.payload + offset, s_inbound.chunks + s_inbound.chunk_offsets[i], s_inbound.chunk_lengths[i]);
     offset = (uint16_t)(offset + s_inbound.chunk_lengths[i]);
   }
   if (offset != s_inbound.total_length ||
       (s_inbound.kind != HERMES_KIND_AUDIO_BLOCK && !utf8_valid(s_inbound.payload, offset))) {
-    inbound_error(HERMES_ERROR_MALFORMED, "The phone transfer was not valid UTF-8 text.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Phone payload is not valid UTF-8.");
     return;
   }
   s_inbound.payload_length = offset;

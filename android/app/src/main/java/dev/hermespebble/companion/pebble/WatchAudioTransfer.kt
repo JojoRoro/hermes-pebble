@@ -27,7 +27,8 @@ class WatchAudioTransfer(
         if (waiter.watch == watch && waiter.session == message.captureId) waiter.reply.complete(message)
     }
 
-    suspend fun play(watch: String, pcm: ByteArray, replyCaptureId: Long = 0, progress: (String) -> Unit): String = mutex.withLock {
+    suspend fun play(watch: String, pcm: ByteArray, replyCaptureId: Long = 0,
+        onPlayback: suspend () -> Unit = {}, progress: (String) -> Unit): String = mutex.withLock {
         require(pcm.isNotEmpty() && pcm.size <= MAX_BYTES) { "The audio clip exceeds the watch audio limit." }
         val session = nextId()
         val checksum = checksum(pcm)
@@ -46,6 +47,7 @@ class WatchAudioTransfer(
                     progress("Sending sound: ${end * 100 / pcm.size}%")
                 }
                 progress("Waiting for watch playback…")
+                onPlayback()
                 exchange(watch, request(WireMessageKind.AUDIO_PLAY), COMPLETE, pcm.size)
                 finished = true
                 "Watch reported playback complete."

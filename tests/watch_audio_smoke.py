@@ -38,8 +38,13 @@ def receive(kind, correlation=None, timeout=20):
 def send(kind, payload=b'', offset=0, correlation=0):
     global transfer
     transfer += 1
-    chunks = [payload[i:i + 192] for i in range(0, len(payload), 192)] or [b'']
-    for index, chunk in enumerate(chunks):
+    chunk_size = 768 if kind == 111 else 192
+    chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)] or [b'']
+    indexed = list(enumerate(chunks))
+    if kind == 111:
+        indexed.reverse() # The compact assembler must preserve logical chunk order.
+        indexed.insert(1, indexed[0]) # A retry must not consume space twice.
+    for index, chunk in indexed:
         fields = {i: Uint32(0) for i in range(18)}
         fields.update({0: Uint32(1), 1: Uint32(kind), 2: Uint32(transfer), 3: Uint32(777),
             4: Uint32(index), 5: Uint32(len(chunks)), 6: ByteArray(chunk), 12: Uint32(offset),
@@ -65,13 +70,16 @@ try:
         request = send(111, payload, offset)
         reply = receive(10, request)
         assert reply[7] == 2 and reply[12] == offset + len(payload), reply
+    playback_started = time.monotonic()
     request = send(112)
     result = receive(10, request)
     assert result[7] == 3, result
     assert result[12] == len(clip) and result[15] == checksum
+    elapsed = time.monotonic() - playback_started
+    assert elapsed >= len(clip) / 8000 - .25, f'Playback completed too early: {elapsed:.3f}s'
     request = send(112)  # Same session must acknowledge without replaying.
     assert receive(10, request)[7] == 3
     assert not faults, faults
-    print(f'Audio transfer and playback callback verified: {len(clip)} bytes, checksum {checksum:08x}.')
+    print(f'Audio transfer and playback callback verified: {len(clip)} bytes, checksum {checksum:08x}, playback {elapsed:.3f}s.')
 finally:
     service.shutdown()
