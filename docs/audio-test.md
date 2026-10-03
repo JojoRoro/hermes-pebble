@@ -38,3 +38,11 @@ Run `tests/watch_conversation_smoke.py --emulator emery --voice-only` for the re
 Open **Recent → an answer → Select → Play voice reply** to speak an existing completed reply, including replies from an older conversation. Each explicit selection creates a new playback request, so replay is supported. Ordinary opening, pagination, and **Refresh answer** remain silent. The action waits for any text page already in flight. Notes and unfinished replies do not offer playback. Existing offline voice requirements, 400-character limit, transfer pauses, and Back/mute/Quiet Time behavior apply.
 
 `tests/watch_conversation_smoke.py --emulator emery --recent-voice-only` covers old-conversation playback, repeat selection, selection while another text page is loading, silent refresh, and Back. The Kotlin audio checks distinguish duplicate transport delivery from a fresh user request for the same capture.
+
+### Up shortcut and arrival vibration (v0.1.15)
+
+A fresh **Up** press at the true top of a completed answer invokes the same explicit playback action. This includes replies originally sent without voice and replies opened from Recent. Scrolling up, auto-repeating a held button, and loading an earlier long-answer window do not request speech. The action menu remains available too.
+
+For the most recently submitted watch request, one short vibration now fires on receipt of completed status, without waiting for the answer page to load. If a completed result page arrives first, it can trigger the same notification. Leaving the status screen does not cancel the notification while Hermes stays open. Duplicate completion, refresh, and playback do not buzz again; Quiet Time consumes the notification silently.
+
+The host watch tests cover shortcut eligibility, repeating presses, long-answer boundaries, duplicate completion, leaving the status screen, and Quiet Time. The voice emulator test sends text-only, presses Up to request speech, holds Up across result delivery to check against repeated playback, and checks Back cancellation.

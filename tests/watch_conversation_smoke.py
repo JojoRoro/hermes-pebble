@@ -197,7 +197,29 @@ if args.voice_only:
     assert receive(kind=10)[7] == 8, 'An old capture must not speak during a new request'
     assert not faults, faults
     capture('text-after-voice')
-    print('Voice opt-in, result flag, accepted audio, Back cancellation between clips, and text-only send passed.', flush=True)
+    # Add speech after an ordinary text-only send using a fresh Up at the top.
+    click(QemuButton.Button.Up)
+    up_fetch = receive(kind=6)
+    assert up_fetch[3] == regular[3] and up_fetch[12] == 0 and up_fetch[16] & 16
+    deliver_page(up_fetch, 'This is a text reply.')
+    send(114, regular[3], payload=b'Voice reply finished')
+    # A held Up requests once, even if the result returns while the button is held.
+    send_data_to_qemu(connection.transport, QemuButton(state=QemuButton.Button.Up))
+    try:
+        held_fetch = receive(kind=6)
+        assert held_fetch[16] & 16 and held_fetch[2] != up_fetch[2]
+        deliver_page(held_fetch, 'This is a text reply.')
+        time.sleep(1.2)
+    finally:
+        send_data_to_qemu(connection.transport, QemuButton(state=0))
+    assert messages.empty(), 'Held Up must not request repeated playback'
+    send(110, capture_id=803, flags=1, total=2, item_id=regular[3])
+    assert receive(kind=10)[7] == 1
+    capture('voice-after-up')
+    click(QemuButton.Button.Back)
+    send(110, capture_id=804, flags=1, total=2, item_id=regular[3])
+    assert receive(kind=10)[7] == 8
+    print('Voice opt-in, text-only send followed by Up playback, held-button protection, replay, and Back cancellation passed.', flush=True)
     service.shutdown()
     raise SystemExit(0)
 if not args.long_scroll_only and not args.recent_voice_only:

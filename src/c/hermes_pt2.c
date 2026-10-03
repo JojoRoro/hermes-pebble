@@ -207,12 +207,13 @@ static bool s_blocks_centered;
 static uint8_t s_result_answer_block;
 static int16_t s_result_text_height;
 static bool s_result_height_valid;
-static bool s_result_announce;
+static uint32_t s_reply_notify_capture_id;
+static uint32_t s_reply_notified_capture_id;
 // Voice consent lasts only for this open watch session and this capture.
 static uint32_t s_voice_capture_id;
 static bool s_voice_requested;
 static bool s_voice_play_pending;
-static char s_voice_status[128];
+static char s_voice_status[64]; // One-line footer; full errors stay in phone Diagnostics.
 static bool s_app_message_open;
 static bool s_handshake_ready;
 static bool s_exiting;
@@ -316,6 +317,8 @@ static void ui_show_actions(void);
 static void ui_destroy_content(void);
 static void ui_show_settings(void);
 static bool should_auto_fetch_result(void);
+static bool voice_reply_available(void);
+static bool voice_shortcut_available(bool repeating);
 static void cancel_auto_result(void);
 static void touch_navigation_apply(void);
 static void touch_navigation_load(void);
@@ -1110,7 +1113,8 @@ static void ui_show_result(void) {
     ui_block(UI_BLOCK_CAPTION, "No answer text yet. SELECT to refresh.", GColorDarkGray, 0u);
   }
   s_result_answer_block = s_block_count - 1u;
-  ui_present(HERMES_SCREEN_RESULT, "Answer", false, true, s_result_retry ? "DOWN: retry loading" : (s_voice_status[0] ? s_voice_status : NULL));
+  ui_present(HERMES_SCREEN_RESULT, "Answer", false, true, s_result_retry ? "DOWN: retry loading" : (s_voice_status[0] ? s_voice_status :
+      voice_reply_available() ? "UP at top: play voice" : NULL));
   ui_scroll(s_result_scroll_to_end ? MAX_TEXT_HEIGHT : offset);
   if (s_result_more && !s_result_window_full && !s_result_retry && !s_result_loading &&
       s_result_next_offset != s_result_window_end) s_result_prefetch = true;
@@ -1236,8 +1240,7 @@ static void ui_show_actions(void) {
       labels[count] = "Reply to Hermes";
       actions[count++] = HERMES_ACTION_REPLY;
     }
-    if (s_visible_capture_id != 0u && s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
-        s_visible_status == HERMES_STATUS_COMPLETED && s_visible_output[0] != '\0') {
+    if (voice_reply_available()) {
       labels[count] = "Play voice reply";
       actions[count++] = HERMES_ACTION_PLAY_VOICE;
     }
@@ -1399,9 +1402,24 @@ static void ui_select_click(ClickRecognizerRef recognizer, void *context) {
   }
 }
 
+static bool voice_reply_available(void) {
+  return s_visible_capture_id != 0u && s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
+      s_visible_status == HERMES_STATUS_COMPLETED && s_visible_output[0] != '\0';
+}
+
+static bool voice_shortcut_available(bool repeating) {
+  // Holding Up to scroll into the top must not start speech. A new press does.
+  return !repeating && s_screen == HERMES_SCREEN_RESULT && s_scroll_offset == 0u &&
+      s_result_window_offset == 0u && s_result_previous_windows == NULL &&
+      !s_voice_play_pending && voice_reply_available();
+}
+
 static void ui_up_click(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
   (void)context;
+  if (voice_shortcut_available(click_recognizer_is_repeating(recognizer))) {
+    ui_action(HERMES_ACTION_PLAY_VOICE);
+    return;
+  }
   if (s_screen == HERMES_SCREEN_RESULT && s_scroll_offset == 0u && !s_result_loading &&
       result_move_window(false)) return;
   s_result_scroll_to_end = false;
@@ -1504,7 +1522,6 @@ static void cancel_auto_result(void) {
   s_result_loading = false;
   s_result_prefetch = false;
   s_result_retry = false;
-  s_result_announce = false;
   if (s_outbound.active && s_outbound.kind == HERMES_KIND_FETCH_RESULT) {
     s_outbound.active = false;
     s_outbound.phase = HERMES_OUT_IDLE;
@@ -1584,8 +1601,7 @@ static void ui_action(uint8_t action) {
       start_dictation(HERMES_CAPTURE_REQUEST);
       break;
     case HERMES_ACTION_PLAY_VOICE:
-      if (s_visible_capture_id != 0u && s_visible_item_kind == HERMES_ITEM_KIND_REQUEST &&
-          s_visible_status == HERMES_STATUS_COMPLETED && s_visible_output[0] != '\0') {
+      if (voice_reply_available()) {
         s_voice_capture_id = s_visible_capture_id;
         s_voice_play_pending = true;
         s_voice_requested = true; // Only the queued fetch below may request speech.
@@ -2314,7 +2330,6 @@ static void timer_tick(void *context) {
     if (should_auto_fetch_result() && capture == s_visible_capture_id) {
       s_auto_result_requested = true;
       start_fetch_result(capture, 0u);
-      s_result_announce = s_outbound.active;
     }
   }
   // Wait for any text page/receipt already in flight before requesting replay.
@@ -2734,6 +2749,7 @@ static void prepare_capture(uint8_t operation) {
   s_discard_capture_id = capture_id;
   cancel_auto_result();
   s_follow_capture_id = operation == HERMES_PENDING_REQUEST ? capture_id : 0u;
+  if (operation == HERMES_PENDING_REQUEST) s_reply_notify_capture_id = capture_id;
   s_visible_generation = s_generation;
   s_visible_capture_id = capture_id;
   s_visible_item_id = 0u;
@@ -2775,6 +2791,7 @@ static void resume_pending_capture(void) {
   }
   cancel_auto_result();
   s_follow_capture_id = s_pending.operation == HERMES_PENDING_REQUEST ? s_pending.capture_id : 0u;
+  if (s_pending.operation == HERMES_PENDING_REQUEST) s_reply_notify_capture_id = s_pending.capture_id;
   s_visible_generation = s_pending.generation;
   s_visible_capture_id = s_pending.capture_id;
   s_visible_item_kind = s_pending.operation == HERMES_PENDING_NOTE ? HERMES_ITEM_KIND_NOTE : HERMES_ITEM_KIND_REQUEST;
@@ -3196,7 +3213,7 @@ static void process_inbound_transfer(void) {
 
 static bool inbound_correlation_matches(const InboundTransfer *message) {
   if (message->kind == HERMES_KIND_STATUS_UPDATE) {
-    if (message->capture_id != 0u && message->capture_id != s_visible_capture_id && message->capture_id != (s_pending.operation != HERMES_PENDING_NONE ? s_pending.capture_id : 0u)) {
+    if (message->capture_id != 0u && message->capture_id != s_visible_capture_id && message->capture_id != s_reply_notify_capture_id && message->capture_id != (s_pending.operation != HERMES_PENDING_NONE ? s_pending.capture_id : 0u)) {
       return false;
     }
     if (message->correlation_id != 0u && s_outbound.active && message->correlation_id != s_outbound.transfer_id) {
@@ -3381,7 +3398,17 @@ static void process_durable_receipt(const InboundTransfer *message) {
   ui_rebuild();
 }
 
+static void notify_reply_arrival(uint32_t capture_id, uint8_t status) {
+  if (capture_id == 0u || capture_id != s_reply_notify_capture_id || status != HERMES_STATUS_COMPLETED) return;
+  s_reply_notify_capture_id = 0u; // Consume even in Quiet Time; duplicates never buzz later.
+  if (capture_id == s_reply_notified_capture_id) return;
+  s_reply_notified_capture_id = capture_id;
+  if (!quiet_time_is_active()) vibes_short_pulse();
+}
+
 static void process_status_update(const InboundTransfer *message) {
+  // Completion can arrive while browsing elsewhere or before the result fetch.
+  notify_reply_arrival(message->capture_id, message->status);
   if (message->capture_id == 0u) return;
   if (message->capture_id != s_visible_capture_id &&
       (s_pending.operation == HERMES_PENDING_NONE || message->capture_id != s_pending.capture_id)) return;
@@ -3469,11 +3496,7 @@ static void process_result_page(const InboundTransfer *message) {
     s_result_window_full = true;
   }
   outbound_finish();
-  if (s_result_announce && message->page_offset == 0u) {
-    // One short buzz when an awaited answer arrives; Quiet Time stays silent.
-    s_result_announce = false;
-    if (!quiet_time_is_active()) vibes_short_pulse();
-  }
+  notify_reply_arrival(message->capture_id, message->status);
   if (message->status != HERMES_STATUS_NONE) {
     s_visible_status = message->status;
   }

@@ -8,6 +8,10 @@ static uint8_t stored[32][256];
 static size_t sizes[32];
 static bool fail_writes;
 static bool touch_enabled;
+static bool quiet;
+static unsigned reply_pulses;
+bool quiet_time_is_active(void) { return quiet; }
+void vibes_short_pulse(void) { reply_pulses++; }
 void app_touch_navigation_enable(bool enabled) { touch_enabled = enabled; }
 
 bool persist_exists(const uint32_t key) { return key < 32 && sizes[key] != 0; }
@@ -32,6 +36,53 @@ status_t persist_delete(const uint32_t key) {
 int main(void) {
   s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
   assert(s_visible_output != NULL);
+  // Up is an explicit playback request only at the true beginning of an answer.
+  s_screen = HERMES_SCREEN_RESULT;
+  s_visible_capture_id = 42;
+  s_visible_item_kind = HERMES_ITEM_KIND_REQUEST;
+  s_visible_status = HERMES_STATUS_COMPLETED;
+  strcpy(s_visible_output, "Saved text-only reply");
+  assert(voice_shortcut_available(false));
+  assert(!voice_shortcut_available(true));
+  s_scroll_offset = 1;
+  assert(!voice_shortcut_available(false));
+  s_scroll_offset = 0;
+  s_result_window_offset = 8192;
+  assert(!voice_shortcut_available(false));
+  s_result_window_offset = 0;
+  s_visible_item_kind = HERMES_ITEM_KIND_NOTE;
+  assert(!voice_shortcut_available(false));
+  s_visible_item_kind = HERMES_ITEM_KIND_REQUEST;
+  s_visible_status = HERMES_STATUS_WORKING;
+  assert(!voice_shortcut_available(false));
+  s_visible_status = HERMES_STATUS_COMPLETED;
+  s_voice_play_pending = true;
+  assert(!voice_shortcut_available(false));
+  s_voice_play_pending = false;
+  s_screen = HERMES_SCREEN_STATUS;
+  assert(!voice_shortcut_available(false));
+  // One short pulse on completion, including after leaving the status screen.
+  s_reply_notify_capture_id = 42;
+  cancel_auto_result();
+  s_visible_capture_id = 99; // Reading a different answer still permits completion delivery.
+  InboundTransfer completion = { .kind = HERMES_KIND_STATUS_UPDATE, .capture_id = 42 };
+  assert(inbound_correlation_matches(&completion));
+  completion.capture_id = 43;
+  assert(!inbound_correlation_matches(&completion));
+  notify_reply_arrival(43, HERMES_STATUS_COMPLETED);
+  notify_reply_arrival(42, HERMES_STATUS_WORKING);
+  assert(reply_pulses == 0 && s_reply_notify_capture_id == 42);
+  notify_reply_arrival(42, HERMES_STATUS_COMPLETED);
+  notify_reply_arrival(42, HERMES_STATUS_COMPLETED);
+  s_reply_notify_capture_id = 42; // Resuming a pending receipt must not buzz twice.
+  notify_reply_arrival(42, HERMES_STATUS_COMPLETED);
+  assert(reply_pulses == 1 && s_reply_notify_capture_id == 0);
+  quiet = true;
+  s_reply_notify_capture_id = 44;
+  notify_reply_arrival(44, HERMES_STATUS_COMPLETED);
+  quiet = false;
+  notify_reply_arrival(44, HERMES_STATUS_COMPLETED);
+  assert(reply_pulses == 1 && s_reply_notify_capture_id == 0);
   uint32_t value = 999;
   assert(!storage_read_u32(20, &value));
   assert(value == 999);
