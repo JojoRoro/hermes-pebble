@@ -360,6 +360,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy { container.settingsRepository.setResultNotificationsEnabled(enabled) }
     }
 
+    fun setBriefWatchRepliesEnabled(enabled: Boolean) {
+        launchBusy { container.settingsRepository.setBriefWatchRepliesEnabled(enabled) }
+    }
+
     fun clearMessage() {
         control.value = control.value.copy(message = null)
     }

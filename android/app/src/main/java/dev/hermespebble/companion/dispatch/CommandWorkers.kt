@@ -9,6 +9,7 @@ import dev.hermespebble.companion.data.local.CommandValidationException
 import dev.hermespebble.companion.data.local.ConcurrentCommandMutationException
 import dev.hermespebble.companion.data.local.FrozenPayloadConflictException
 import dev.hermespebble.companion.data.local.ImmutableCommandConflictException
+import dev.hermespebble.companion.network.BRIEF_WATCH_REPLY_INSTRUCTIONS
 import dev.hermespebble.companion.network.HermesApiException
 import dev.hermespebble.companion.network.HermesErrorCategory
 import dev.hermespebble.companion.network.HermesRunSubmission
@@ -111,7 +112,11 @@ class CommandSubmissionWorker(
                 val history = if (capabilities.needsExplicitRunHistory) {
                     dependencies.commandRepository.replyHistory(command).takeIf { it.isNotEmpty() }
                 } else null
-                HermesRunSubmission(command.input, confirmedSession.sessionId, history)
+                val instructions = BRIEF_WATCH_REPLY_INSTRUCTIONS.takeIf {
+                    command.kind == CommandKind.WATCH_REQUEST &&
+                        dependencies.settingsRepository.current().briefWatchRepliesEnabled
+                }
+                HermesRunSubmission(command.input, confirmedSession.sessionId, history, instructions)
             }
             val frozen = dependencies.commandRepository.ensureFrozenPayload(
                 commandId = commandId,

@@ -494,6 +494,16 @@ private fun DiagnosticsScreen(
             Text("Show completed Hermes results", modifier = Modifier.padding(start = 8.dp))
         }
         Text("Notifications are not required to send. Lock-screen content is private.")
+        HorizontalDivider()
+        Text("Watch replies", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = state.settings?.briefWatchRepliesEnabled == true,
+                onCheckedChange = viewModel::setBriefWatchRepliesEnabled,
+            )
+            Text("Ask for brief plain-text replies", modifier = Modifier.padding(start = 8.dp))
+        }
+        Text("Messages from the watch ask Hermes for short sentences without Markdown, lists, or tables. This reads better on the watch and sounds better with voice playback.")
         Spacer(Modifier.height(12.dp))
     }
 }

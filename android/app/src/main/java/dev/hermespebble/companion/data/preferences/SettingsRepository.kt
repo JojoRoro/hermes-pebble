@@ -226,6 +226,15 @@ class SettingsRepository internal constructor(
         }
     }
 
+    suspend fun setBriefWatchRepliesEnabled(enabled: Boolean) {
+        updateMutex.withLock {
+            ensureInitialized()
+            dataStore.edit { preferences ->
+                preferences[BRIEF_WATCH_REPLIES_ENABLED] = enabled
+            }
+        }
+    }
+
     suspend fun recordCapabilities(
         profileId: String,
         capabilities: HermesCapabilities,
@@ -278,6 +287,7 @@ class SettingsRepository internal constructor(
             capabilities = storedCapabilities?.capabilities,
             capabilitiesCheckedAtMillis = storedCapabilities?.checkedAtMillis,
             resultNotificationsEnabled = preferences[RESULT_NOTIFICATIONS_ENABLED] ?: false,
+            briefWatchRepliesEnabled = preferences[BRIEF_WATCH_REPLIES_ENABLED] ?: false,
         )
     }
 
@@ -293,6 +303,7 @@ class SettingsRepository internal constructor(
         val CAPABILITIES = stringPreferencesKey("capabilities")
         val CAPABILITIES_CHECKED_AT = longPreferencesKey("capabilities_checked_at")
         val RESULT_NOTIFICATIONS_ENABLED = booleanPreferencesKey("result_notifications_enabled")
+        val BRIEF_WATCH_REPLIES_ENABLED = booleanPreferencesKey("brief_watch_replies_enabled")
     }
 }
 
@@ -308,6 +319,7 @@ data class HermesSettings(
     val capabilities: HermesCapabilities?,
     val capabilitiesCheckedAtMillis: Long?,
     val resultNotificationsEnabled: Boolean = false,
+    val briefWatchRepliesEnabled: Boolean = false,
 ) {
     val hasHermesKey: Boolean
         get() = hermesKeyReference.isNotEmpty()

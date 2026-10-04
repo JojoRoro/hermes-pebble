@@ -175,7 +175,15 @@ data class HermesRunSubmission(
     val input: String,
     @SerialName("session_id") val sessionId: String,
     @SerialName("conversation_history") val conversationHistory: List<RunHistoryMessage>? = null,
+    // Hermes applies this as an ephemeral system prompt for the run only.
+    val instructions: String? = null,
 )
+
+/** Shapes replies for text-to-speech and the small watch screen. */
+const val BRIEF_WATCH_REPLY_INSTRUCTIONS =
+    "This message was sent from a Pebble smartwatch. Reply briefly in short, simple sentences. " +
+        "Use plain text only: no Markdown, no lists, no tables, no headings, no code blocks, and no emoji. " +
+        "The reply may be read aloud by text-to-speech, so write it the way you would say it."
 
 @Serializable
 data class RunHistoryMessage(val role: String, val content: String)
