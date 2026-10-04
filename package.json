@@ -1,7 +1,7 @@
 {
   "name": "hermes-pebble",
   "author": "hermes-pebble",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},

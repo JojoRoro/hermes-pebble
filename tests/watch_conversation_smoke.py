@@ -34,12 +34,13 @@ service = AppMessageService(connection)
 app_id = UUID('7d07aa22-7d13-48c1-a400-2602a5ae4647')
 service.register_handler('appmessage', lambda tx, app, data: messages.put(data) if app == app_id else None)
 
-def receive(correlation=None, kind=1, timeout=20):
+def receive(correlation=None, kind=1, timeout=20, exclude_transfer=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         data = messages.get(timeout=max(.1, deadline-time.monotonic()))
         print('Watch RX kind', data.get(1), 'transfer', data.get(2), 'correlation', data.get(17), flush=True)
-        if data.get(1) == kind and (correlation is None or data.get(17) == correlation): return data
+        if (data.get(1) == kind and data.get(2) != exclude_transfer and
+                (correlation is None or data.get(17) == correlation)): return data
     raise AssertionError(f'No watch message with kind {kind} and correlation {correlation}')
 
 def capture(name):
@@ -295,7 +296,10 @@ if args.recent_voice_only:
     click(QemuButton.Button.Select)
     click(QemuButton.Button.Select)
     deliver_page(pending_page, text, generation=6)
-    replay = receive(kind=6)
+    # A retry of the page we just answered can already be queued in transport.
+    # Replay must be a fresh request; keep waiting without mistaking that retry
+    # for the queued voice action.
+    replay = receive(kind=6, exclude_transfer=pending_page[2])
     assert replay[3] == 4242 and replay[12] == 0 and replay[16] & 16
     assert replay[2] != first_play[2], 'Explicit replay needs a fresh request identity'
     deliver_page(replay, text, generation=6)

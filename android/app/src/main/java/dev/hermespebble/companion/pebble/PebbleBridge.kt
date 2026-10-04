@@ -338,15 +338,12 @@ class PebbleBridge(
                     voiceMutex.withLock {
                         status("Preparing voice on phone")
                         val pcm = WatchSpeech(applicationContext).synthesize(text)
-                        DiagnosticLog.record("Voice", "Normal-speed speech: ${pcm.size} bytes at 8000 Hz; ${pcm.size / 8} ms")
-                        val count = (pcm.size + WatchAudioTransfer.MAX_BYTES - 1) / WatchAudioTransfer.MAX_BYTES
-                        for ((index, offset) in pcm.indices.step(WatchAudioTransfer.MAX_BYTES).withIndex()) {
-                            check(watch in activeWatchState.value) { "Watch app closed. Voice stopped." }
-                            status("Loading voice ${index + 1}/$count")
-                            audioTransfer.play(watch, pcm.copyOfRange(offset, minOf(offset + WatchAudioTransfer.MAX_BYTES, pcm.size)),
-                                replyCaptureId = captureId,
-                                onPlayback = { status("Playing ${index + 1}/$count - BACK stops") }) { }
-                        }
+                        DiagnosticLog.record("Voice", "Speech at 1.5x: ${pcm.size} bytes at 8000 Hz; ${pcm.size / 8} ms")
+                        check(watch in activeWatchState.value) { "Watch app closed. Voice stopped." }
+                        status("Loading voice: 0%")
+                        audioTransfer.play(watch, pcm, replyCaptureId = captureId, format = WatchAudioTransfer.REPLY_FORMAT,
+                            onUpload = { status("Loading voice: $it%") },
+                            onPlayback = { status("Playing voice - BACK stops") }) { }
                         status("Voice reply finished")
                     }
                 }

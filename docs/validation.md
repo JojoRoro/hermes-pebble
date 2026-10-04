@@ -200,3 +200,11 @@ Local builds and emulator checks passed. User reports confirm the existing physi
 Validated on 3 October 2026 with SDK 4.33.1. The full offline C/Kotlin/Python suite passed, including source-rate/pitch fixtures, audio packet bounds, and upload/playback ordering. The final watch build passed at 65,335 bytes of static RAM footprint, with 65,737 bytes available for heap before runtime allocations. The emulator audio smoke accepted reordered/duplicate 768-byte chunks and completed the 1.725-second bundled clip in 1.752 seconds with the dummy backend. The conversation voice smoke passed opt-in, text-only send then Up playback, held-button protection, replay, and Back cancellation. The PBW metadata finalizer passed.
 
 The user reports normal physical playback of the bundled test clip and accelerated voice replies. The final change explicitly normalizes Android TTS speed/pitch and retains the existing watch speaker format. Tests verify conversion and transfer behavior; audible reply intelligibility on the user's speech engine and Bluetooth transfer timing still require physical acceptance.
+
+## Continuous voice replies (v0.1.17)
+
+Validated on 4 October 2026 with SDK 4.33.1. The full offline C/Kotlin/Python suite passed, including a 480,000-byte reply, one speaker session, partial speaker writes, cache I/O failures, restart cleanup, cancellation, packet bounds, progress and duration-aware timeouts. The watch build passed at 64,615 bytes of static footprint. PBW metadata finalization passed.
+
+The emulator completed a 193,200-byte cached reply in one speaker session (23.024 seconds wall-clock versus 24.15 seconds nominal PCM duration, within the smoke test's coarse timing tolerance). The unchanged diagnostic fixture completed in 1.705 seconds versus 1.725 nominal. Saved-reply playback, replay queued during text loading, silent refresh and Back cancellation passed. The conversation harness now distinguishes a queued text-page retry from the fresh replay request. Dummy-backend emulator timing does not establish physical sound quality or Bluetooth throughput.
+
+Replies use Android TTS at 1.5× speed with normal pitch and fully preload before playback. Initial loading remains; inter-clip Bluetooth loading is removed. Physical testing of intelligibility and loading time with the matching APK and PBW remains necessary.

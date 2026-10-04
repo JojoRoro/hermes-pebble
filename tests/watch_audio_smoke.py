@@ -11,12 +11,15 @@ from libpebble2.protocol.logs import AppLogMessage, AppLogShippingControl
 
 parser = argparse.ArgumentParser(parents=PebbleCommand._shared_parser())
 parser.add_argument('--pbw', default='build/hermes-pebble.pbw')
+parser.add_argument('--full-reply', action='store_true', help='Cache a 24-second reply and play it in one session')
 args = parser.parse_args()
 connection = PebbleCommand()._connect(args)
 faults = []
+speaker_finishes = []
 def log(packet):
     if 'App fault!' in str(packet.message): faults.append(str(packet.message))
     if 'Audio ' in str(packet.message): print(packet.message)
+    if 'Audio speaker finish reason=' in str(packet.message): speaker_finishes.append(str(packet.message))
 connection.register_endpoint(AppLogMessage, log)
 connection.send_packet(AppLogShippingControl(enable=True))
 messages = queue.Queue()
@@ -25,6 +28,9 @@ app_id = UUID('7d07aa22-7d13-48c1-a400-2602a5ae4647')
 service.register_handler('appmessage', lambda tx, app, data: messages.put(data) if app == app_id else None)
 transfer = 9000
 clip = Path('android/app/src/main/assets/watch_test.s8').read_bytes()
+if args.full_reply:
+    clip *= 14
+audio_format = 2 if args.full_reply else 1
 checksum = 0x811c9dc5
 for byte in clip: checksum = ((checksum ^ byte) * 0x01000193) & 0xffffffff
 
@@ -49,7 +55,7 @@ def send(kind, payload=b'', offset=0, correlation=0):
         fields.update({0: Uint32(1), 1: Uint32(kind), 2: Uint32(transfer), 3: Uint32(777),
             4: Uint32(index), 5: Uint32(len(chunks)), 6: ByteArray(chunk), 12: Uint32(offset),
             14: Uint32(len(clip)), 15: Uint32(checksum if kind != 101 else 0),
-            16: Uint32(1 if kind != 101 else 0), 17: Uint32(correlation)})
+            16: Uint32(audio_format if kind != 101 else 0), 17: Uint32(correlation)})
         service.send_message(app_id, fields)
         time.sleep(.10)
     return transfer
@@ -65,21 +71,29 @@ try:
     # Full wire path must accept non-UTF-8 PCM and reject an incomplete play.
     request = send(112)
     assert receive(10, request)[7] == 6
-    for offset in range(0, len(clip), 1024):
-        payload = clip[offset:offset + 1024]
+    upload_started = time.monotonic()
+    block_size = 768 if args.full_reply else 1024
+    for offset in range(0, len(clip), block_size):
+        payload = clip[offset:offset + block_size]
         request = send(111, payload, offset)
         reply = receive(10, request)
         assert reply[7] == 2 and reply[12] == offset + len(payload), reply
+    upload_elapsed = time.monotonic() - upload_started
     playback_started = time.monotonic()
     request = send(112)
-    result = receive(10, request)
+    result = receive(10, request, timeout=len(clip) / 8000 + 15)
     assert result[7] == 3, result
     assert result[12] == len(clip) and result[15] == checksum
     elapsed = time.monotonic() - playback_started
-    assert elapsed >= len(clip) / 8000 - .25, f'Playback completed too early: {elapsed:.3f}s'
+    # Emulator wall-clock duration is a coarse integration check.
+    # Exact sample count is checked by the host pump test; this catches gross
+    # speed errors and upload-sized gaps, not small backend clock differences.
+    expected = len(clip) / 8000
+    assert expected * .9 - .25 <= elapsed <= expected * 1.1 + 1, f'Unexpected playback duration: {elapsed:.3f}s'
     request = send(112)  # Same session must acknowledge without replaying.
     assert receive(10, request)[7] == 3
+    assert len(speaker_finishes) == 1, speaker_finishes
     assert not faults, faults
-    print(f'Audio transfer and playback callback verified: {len(clip)} bytes, checksum {checksum:08x}, playback {elapsed:.3f}s.')
+    print(f'Audio transfer and single playback verified: {len(clip)} bytes, checksum {checksum:08x}, upload {upload_elapsed:.3f}s, playback {elapsed:.3f}s.')
 finally:
     service.shutdown()

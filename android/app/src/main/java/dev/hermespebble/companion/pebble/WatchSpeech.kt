@@ -37,8 +37,8 @@ class WatchSpeech(private val context: Context) {
                         .sortedBy { it.name }.firstOrNull()
                     ?: error("Install an offline speech voice on your phone.")
                 check(tts.setVoice(voice) == TextToSpeech.SUCCESS) { "Phone speech voice is unavailable." }
-                check(tts.setSpeechRate(1.0f) == TextToSpeech.SUCCESS &&
-                    tts.setPitch(1.0f) == TextToSpeech.SUCCESS) { "Could not set normal speech speed." }
+                check(tts.setSpeechRate(1.5f) == TextToSpeech.SUCCESS &&
+                    tts.setPitch(1.0f) == TextToSpeech.SUCCESS) { "Could not set speech speed." }
                 val complete = CompletableDeferred<ByteArray>()
                 val bytes = ByteArrayOutputStream()
                 val id = UUID.randomUUID().toString()

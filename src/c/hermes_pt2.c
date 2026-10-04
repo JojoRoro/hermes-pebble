@@ -270,8 +270,6 @@ static char *s_visible_output;
 static char s_result_page[UI_RESULT_BUFFER_SIZE + 1u];
 static char s_body_text[UI_BODY_BUFFER_SIZE];
 static char s_error_text[UI_ERROR_BUFFER_SIZE];
-static char s_recent_raw[UI_RESULT_BUFFER_SIZE + 1u];
-static char s_result_raw[UI_RESULT_BUFFER_SIZE + 1u];
 static RecentItem s_recent_items[HERMES_MAX_RECENT_ITEMS];
 static uint8_t s_action_options[8];
 static uint8_t s_action_count;
@@ -3441,15 +3439,13 @@ static void process_recent_page(const InboundTransfer *message) {
     ui_show_error(message->error_code, error_text(message->error_code));
     return;
   }
-  if (length > sizeof(s_recent_raw) - 1u) {
+  if (length > UI_RESULT_BUFFER_SIZE) {
     outbound_finish();
     ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The recent page was larger than the watch limit.");
     return;
   }
-  memcpy(s_recent_raw, message->payload, length);
-  s_recent_raw[length] = '\0';
   outbound_finish();
-  if (!parse_recent_payload(s_recent_raw, (uint16_t)length)) {
+  if (!parse_recent_payload((const char *)message->payload, (uint16_t)length)) {
     ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone recent page was not valid JSON.");
     return;
   }
@@ -3464,7 +3460,7 @@ static void process_result_page(const InboundTransfer *message) {
     outbound_failed(message->error_code, error_text(message->error_code));
     return;
   }
-  if (length > sizeof(s_result_raw) - 1u) {
+  if (length > UI_RESULT_BUFFER_SIZE) {
     outbound_finish();
     ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The result page was larger than the watch limit.");
     return;
@@ -3474,12 +3470,10 @@ static void process_result_page(const InboundTransfer *message) {
     ui_show_error(HERMES_ERROR_NOT_FOUND, "The result page did not match the requested capture.");
     return;
   }
-  memcpy(s_result_raw, message->payload, length);
-  s_result_raw[length] = '\0';
   s_visible_generation = message->generation;
   s_result_more = (message->flags & HERMES_FLAG_MORE) != 0u;
   size_t used = strlen(s_visible_output);
-  if (!parse_result_payload(s_result_raw, (uint16_t)length) ||
+  if (!parse_result_payload((const char *)message->payload, (uint16_t)length) ||
       s_visible_capture_id != message->capture_id ||
       !result_append_page(message->page_offset, message->total_bytes, s_result_more != 0u)) {
     outbound_failed(HERMES_ERROR_INVALID_RESPONSE, "The phone result text was inconsistent. Refresh the answer.");
@@ -4018,6 +4012,8 @@ int main(void) {
   });
   s_screen = HERMES_SCREEN_MENU;
   storage_init();
+  audio_cache_recover(); // Interrupted audio is discarded, never resumed.
+  audio_schedule();
   ink_load();
   touch_navigation_load();
   connection_service_subscribe((ConnectionHandlers){ .pebble_app_connection_handler = ink_connection });
