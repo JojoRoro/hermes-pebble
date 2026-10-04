@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -82,10 +83,38 @@ def main():
                 f'-Xplugin={plugin}', '-d', output,
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
                 SOURCES / 'network/RunConversationContext.kt',
-                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', SOURCES / 'pebble/VoicePcm.kt', SOURCES / 'pebble/VoiceReplyRequests.kt', args.pebble_model.resolve(),
+                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', SOURCES / 'pebble/VoicePcm.kt', SOURCES / 'pebble/VoiceAdpcm.kt', SOURCES / 'pebble/VoiceReplyRequests.kt', args.pebble_model.resolve(),
                 'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt', 'tests/AudioCheck.kt')
             for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt', 'pebble.AudioCheckKt']:
-                run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}')
+                run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}', *([temp / 'speech'] if entry.endswith('AudioCheckKt') else []))
+            if args.sdk_headers:
+                pcm = (temp / 'speech.s8').read_bytes()
+                run(temp / 'audio-check', temp / 'speech.adpcm', temp / 'decoded.s8', len(pcm))
+                decoded = (temp / 'decoded.s8').read_bytes()
+                assert len(decoded) == len(pcm)
+                signed = lambda value: value if value < 128 else value - 256
+                error = sum((signed(a) - signed(b)) ** 2 for a, b in zip(pcm, decoded))
+                signal = sum(signed(a) ** 2 for a in pcm)
+                assert error < signal / 100, 'ADPCM speech distortion exceeds 1% signal energy'
+                # Keep the fixture with other ignored build artifacts for emulator playback.
+                (ROOT / 'build').mkdir(exist_ok=True)
+                (ROOT / 'build/audio-stream.adpcm').write_bytes((temp / 'speech.adpcm').read_bytes())
+                (ROOT / 'build/audio-stream-decoded.s8').write_bytes(decoded)
+                print('Kotlin encoder / C decoder speech quality and exact sample count passed', flush=True)
+                if shutil.which('ffmpeg'):
+                    encoded = (temp / 'speech.adpcm').read_bytes()
+                    encoded += bytes((-len(encoded)) % 768)
+                    chunk = lambda tag, data: tag + struct.pack('<I', len(data)) + data
+                    wave = b'WAVE' + chunk(b'fmt ', struct.pack('<HHIIHHHH', 17, 1, 8000, 4018, 768, 4, 2, 1529))
+                    wave += chunk(b'fact', struct.pack('<I', len(pcm))) + chunk(b'data', encoded)
+                    (temp / 'reference.wav').write_bytes(b'RIFF' + struct.pack('<I', len(wave)) + wave)
+                    run('ffmpeg', '-v', 'error', '-i', temp / 'reference.wav', '-f', 's8', temp / 'reference.s8')
+                    reference = (temp / 'reference.s8').read_bytes()[:len(pcm)]
+                    assert len(reference) == len(decoded)
+                    # IMA implementations differ slightly in integer rounding.
+                    assert max(abs(signed(a) - signed(b)) for a, b in zip(decoded, reference)) <= 1
+                    print('Independent FFmpeg decode matches within one signed 8-bit quantization step', flush=True)
+
             fixture = [temp / 'ink-fixture.bin'] if args.sdk_headers else []
             run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.InkCheckKt', *fixture)
 

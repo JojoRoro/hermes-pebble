@@ -1,6 +1,11 @@
 package dev.hermespebble.companion.pebble
 
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -11,11 +16,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** A bounded, prebuffered audio transfer. Transport ACKs alone never mean playback succeeded. */
+/** A bounded audio stream with watch-driven backpressure. Transport ACKs alone never mean playback succeeded. */
 class WatchAudioTransfer(
     private val send: suspend (String, WireMessage) -> Boolean,
     private val nextId: () -> Long,
     private val replyTimeoutMillis: Long = 20_000L,
+    private val blockIntervalMillis: Long = 75L,
 ) {
     private data class Pending(val watch: String, val session: Long, val reply: CompletableDeferred<WireMessage>)
     private val pending = ConcurrentHashMap<Long, Pending>()
@@ -30,38 +36,62 @@ class WatchAudioTransfer(
     suspend fun play(watch: String, pcm: ByteArray, replyCaptureId: Long = 0,
         format: Int = FORMAT, onUpload: suspend (Int) -> Unit = {},
         onPlayback: suspend () -> Unit = {}, progress: (String) -> Unit): String = mutex.withLock {
-        require(format == FORMAT || format == REPLY_FORMAT) { "Unsupported watch audio format." }
-        require(pcm.isNotEmpty() && pcm.size <= if (format == REPLY_FORMAT) MAX_REPLY_BYTES else MAX_BYTES) {
+        require(format == FORMAT || format == STREAM_FORMAT) { "Unsupported watch audio format." }
+        require(pcm.isNotEmpty() && pcm.size <= if (format == STREAM_FORMAT) MAX_REPLY_BYTES else MAX_BYTES) {
             "The audio clip exceeds the watch audio limit."
         }
         val session = nextId()
-        val checksum = checksum(pcm)
+        val blocks = if (format == STREAM_FORMAT) VoiceAdpcm.encode(pcm) else
+            pcm.asList().chunked(WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES).map { it.toByteArray() }
+        val checksum = checksum(blocks)
+        val samplesPerBlock = if (format == STREAM_FORMAT) VoiceAdpcm.SAMPLES_PER_BLOCK else WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES
         var finished = false
         fun request(kind: WireMessageKind, offset: Int = 0, payload: ByteArray = ByteArray(0)) = WireMessage(
             kind = kind, transferId = nextId(), captureId = session, generation = checksum,
             totalBytes = pcm.size.toLong(), pageOffset = offset.toLong(), flags = format, payload = payload, itemId = replyCaptureId,
         )
         try {
-            withTimeout(if (format == REPLY_FORMAT) 9 * 60_000L else 90_000L) {
+            withTimeout(if (format == STREAM_FORMAT) 9 * 60_000L else 90_000L) {
                 progress("Checking the watch speaker…")
                 exchange(watch, request(WireMessageKind.AUDIO_BEGIN), READY, 0)
-                var lastPercent = -5
-                // One dictionary per block avoids a second Bluetooth round trip.
-                for (offset in pcm.indices.step(WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES)) {
-                    val end = minOf(offset + WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES, pcm.size)
-                    exchange(watch, request(WireMessageKind.AUDIO_BLOCK, offset, pcm.copyOfRange(offset, end)), BUFFERED, end)
-                    val percent = end * 100 / pcm.size
-                    if (percent >= lastPercent + 5 || end == pcm.size) {
-                        progress("Sending sound: $percent%")
-                        onUpload(percent)
-                        lastPercent = percent
+                coroutineScope {
+                    var playback: Deferred<Boolean>? = null
+                    var lastPercent = -5
+                    val startupSamples = if (format == STREAM_FORMAT) minOf(PREBUFFER_SAMPLES, pcm.size) else pcm.size
+                    blocks.forEachIndexed { index, block ->
+                        val blockStarted = System.nanoTime()
+                        val offset = index * samplesPerBlock
+                        val end = minOf(offset + samplesPerBlock, pcm.size)
+                        while (!exchange(watch, request(WireMessageKind.AUDIO_BLOCK, offset, block), BUFFERED, end,
+                                retryOffset = if (format == STREAM_FORMAT) offset else null)) {
+                            delay(100L) // Receiver kept its existing data; retry with a fresh transfer ID.
+                        }
+                        if (playback == null) {
+                            val percent = minOf(100, end * 100 / startupSamples)
+                            if (percent >= lastPercent + 10 || percent == 100) {
+                                progress("Buffering voice: $percent%")
+                                onUpload(percent)
+                                lastPercent = percent
+                            }
+                            if (end >= startupSamples) {
+                                onPlayback()
+                                // Register/send PLAY before uploading the remainder. Its completion
+                                // waiter runs concurrently; block receipts provide backpressure.
+                                playback = async(start = CoroutineStart.UNDISPATCHED) {
+                                    val timeout = if (format == STREAM_FORMAT) 9 * 60_000L else replyTimeoutMillis
+                                    exchange(watch, request(WireMessageKind.AUDIO_PLAY), COMPLETE, pcm.size, timeout)
+                                }
+                            }
+                        }
+                        if (format == STREAM_FORMAT && index < blocks.lastIndex) {
+                            // Leave the firmware time for speaker/UI events during a fast
+                            // upload. Slow transports already provide this spacing.
+                            val elapsed = (System.nanoTime() - blockStarted) / 1_000_000L
+                            delay((blockIntervalMillis - elapsed).coerceAtLeast(0L))
+                        }
                     }
+                    playback!!.await()
                 }
-                progress("Waiting for watch playback…")
-                onPlayback()
-                val playbackTimeout = if (format == REPLY_FORMAT) maxOf(replyTimeoutMillis, pcm.size / 8L + 10_000L)
-                    else replyTimeoutMillis
-                exchange(watch, request(WireMessageKind.AUDIO_PLAY), COMPLETE, pcm.size, playbackTimeout)
                 finished = true
                 "Watch reported playback complete."
             }
@@ -80,12 +110,17 @@ class WatchAudioTransfer(
     }
 
     private suspend fun exchange(watch: String, request: WireMessage, expected: Int, received: Int,
-        timeoutMillis: Long = replyTimeoutMillis) {
+        timeoutMillis: Long = replyTimeoutMillis, retryOffset: Int? = null): Boolean {
         val waiter = Pending(watch, request.captureId, CompletableDeferred())
         pending[request.transferId] = waiter
         try {
             check(send(watch, request)) { "Could not deliver audio. Open Hermes on the watch and check its connection in the Pebble phone app." }
             val reply = withTimeout(timeoutMillis) { waiter.reply.await() }
+            if (reply.status == BUFFER_FULL && retryOffset != null) {
+                check(reply.pageOffset == retryOffset.toLong() && reply.totalBytes == request.totalBytes &&
+                    reply.generation == request.generation) { "The watch buffer receipt did not match the stream." }
+                return false
+            }
             check(reply.status == expected) {
                 when (reply.status) {
                     QUIET_TIME -> "Quiet Time is on. Turn it off on the watch, then try again."
@@ -99,6 +134,7 @@ class WatchAudioTransfer(
             }
             check(reply.pageOffset == received.toLong() && reply.totalBytes == request.totalBytes &&
                 reply.generation == request.generation) { "The watch audio receipt did not match the transferred clip." }
+            return true
         } finally {
             pending.remove(request.transferId)
             waiter.reply.cancel()
@@ -109,7 +145,8 @@ class WatchAudioTransfer(
         const val MAX_BYTES = 16_000
         const val MAX_REPLY_BYTES = 8_000 * VoicePcm.MAX_SECONDS
         const val FORMAT = 1 // 8 kHz, mono, signed 8-bit PCM; no WAV header.
-        const val REPLY_FORMAT = 2 // Same PCM, fully cached before continuous playback.
+        const val STREAM_FORMAT = 3 // Packetized IMA ADPCM decoded into a bounded RAM ring.
+        const val PREBUFFER_SAMPLES = 12_288
         const val READY = 1
         const val BUFFERED = 2
         const val COMPLETE = 3
@@ -119,10 +156,12 @@ class WatchAudioTransfer(
         const val CANCELLED = 8
         const val QUIET_TIME = 9
         const val STORAGE = 10
+        const val BUFFER_FULL = 11
 
-        fun checksum(bytes: ByteArray): Long {
+        fun checksum(bytes: ByteArray): Long = checksum(listOf(bytes))
+        fun checksum(blocks: List<ByteArray>): Long {
             var hash = 0x811c9dc5u
-            bytes.forEach { hash = (hash xor it.toUByte().toUInt()) * 0x01000193u }
+            blocks.forEach { bytes -> bytes.forEach { hash = (hash xor it.toUByte().toUInt()) * 0x01000193u } }
             return hash.toLong()
         }
     }

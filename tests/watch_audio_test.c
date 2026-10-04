@@ -1,5 +1,10 @@
 // Exercise the production receiver and nonblocking PCM pump against a bounded speaker.
 #include <pebble.h>
+#undef fopen
+#undef fclose
+#undef fread
+#undef fgetc
+#undef fputc
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -95,23 +100,46 @@ static void load(uint32_t session) {
   }
 }
 
-static uint8_t full_reply[HERMES_AUDIO_REPLY_MAX_BYTES];
-static void full_message(uint8_t kind, uint32_t session, uint32_t total,
-                         uint32_t offset, const uint8_t *bytes, uint16_t length) {
-  audio_handle(kind, session, ++request_id, total, audio_checksum(full_reply, total),
-               HERMES_AUDIO_REPLY_FORMAT, offset, bytes, length);
+static uint8_t packet[768];
+static uint32_t stream_total, stream_hash;
+static void stream_message(uint8_t kind, uint32_t session, uint32_t offset) {
+  uint32_t samples = stream_total - offset;
+  if (samples > AUDIO_STREAM_SAMPLES) samples = AUDIO_STREAM_SAMPLES;
+  audio_handle(kind, session, ++request_id, stream_total, stream_hash,
+    HERMES_AUDIO_STREAM_FORMAT, offset, kind == HERMES_KIND_AUDIO_BLOCK ? packet : NULL,
+    kind == HERMES_KIND_AUDIO_BLOCK ? 4u + samples / 2u : 0u);
 }
-static void load_reply(uint32_t session, uint32_t length) {
-  full_message(HERMES_KIND_AUDIO_BEGIN, session, length, 0, NULL, 0);
-  assert(receipt.status == HERMES_AUDIO_READY);
-  for (uint32_t offset = 0; offset < length; offset += 768) {
-    uint16_t count = length - offset > 768 ? 768 : length - offset;
-    full_message(HERMES_KIND_AUDIO_BLOCK, session, length, offset, full_reply + offset, count);
-    assert(receipt.status == HERMES_AUDIO_BUFFERED && receipt.received == offset + count);
+static void stream_setup(uint32_t total) {
+  stream_total = total;
+  stream_hash = 0x811c9dc5u;
+  memset(packet, 0, sizeof(packet));
+  for (uint32_t offset = 0; offset < total; offset += AUDIO_STREAM_SAMPLES) {
+    uint32_t samples = total - offset;
+    if (samples > AUDIO_STREAM_SAMPLES) samples = AUDIO_STREAM_SAMPLES;
+    for (uint32_t i = 0; i < 4u + samples / 2u; i++) stream_hash = (stream_hash ^ packet[i]) * 0x01000193u;
   }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  if (argc == 4) {
+    // Decode actual Kotlin packets through the production C decoder for a
+    // cross-language comparison with an independent media decoder.
+    FILE *input = fopen(argv[1], "rb"), *decoded = fopen(argv[2], "wb");
+    assert(input && decoded);
+    uint32_t total = (uint32_t)strtoul(argv[3], NULL, 10);
+    uint8_t ring[AUDIO_RING_SIZE];
+    for (uint32_t offset = 0; offset < total; offset += AUDIO_STREAM_SAMPLES) {
+      uint32_t count = total - offset;
+      if (count > AUDIO_STREAM_SAMPLES) count = AUDIO_STREAM_SAMPLES;
+      uint32_t size = 4u + count / 2u;
+      assert(fread(packet, 1, size, input) == size);
+      audio_adpcm_decode(packet, count, ring, offset);
+      for (uint32_t i = 0; i < count; i++) fputc(ring[(offset + i) % AUDIO_RING_SIZE], decoded);
+    }
+    assert(fgetc(input) == EOF);
+    fclose(input); fclose(decoded); return 0;
+  }
+
   for (uint32_t i = 0; i < sizeof(fixture); i++) fixture[i] = (uint8_t)(i * 71);
   hash = audio_checksum(fixture, sizeof(fixture));
   // Quiet Time blocks reception even if the system speaker mute preference is OFF.
@@ -212,93 +240,108 @@ int main(void) {
   assert(receipt.status == HERMES_AUDIO_QUIET_TIME && stops == previous_stops + 1);
   audio_shutdown();
 
-  for (uint32_t i = 0; i < sizeof(full_reply); i++) full_reply[i] = (uint8_t)(i * 43);
-  storage_capacity = 4096;
-  full_message(HERMES_KIND_AUDIO_BEGIN, 30, sizeof(full_reply), 0, NULL, 0);
-  assert(receipt.status == HERMES_AUDIO_STORAGE && s_audio.bytes == NULL);
-  storage_capacity = 1024 * 1024;
-  fail_storage_write = true;
-  full_message(HERMES_KIND_AUDIO_BEGIN, 30, sizeof(full_reply), 0, NULL, 0);
-  assert(receipt.status == HERMES_AUDIO_STORAGE && s_audio.bytes == NULL);
-  fail_storage_write = false;
+  // Full-length reply starts early, wraps a bounded ring repeatedly, and never
+  // touches flash even if storage is unavailable. A faster sender is throttled.
+  fail_storage_write = fail_storage_read = true;
+  uint32_t full_opens = opens, full_closes = closes;
+  stream_setup(HERMES_AUDIO_REPLY_MAX_BYTES - 1u); // odd final block
+  stream_message(HERMES_KIND_AUDIO_BEGIN, 31, 0);
+  assert(receipt.status == HERMES_AUDIO_READY);
+  write_limit = 733;
+  bool started = false, throttled = false;
+  for (uint32_t offset = 0; offset < stream_total; offset += AUDIO_STREAM_SAMPLES) {
+    stream_message(HERMES_KIND_AUDIO_BLOCK, 31, offset);
+    for (int ticks = 0; receipt.status == HERMES_AUDIO_BUFFER_FULL && ticks < 100; ticks++) {
+      throttled = true;
+      assert(s_audio.received == offset);
+      audio_tick(NULL);
+      stream_message(HERMES_KIND_AUDIO_BLOCK, 31, offset);
+    }
+    assert(receipt.status == HERMES_AUDIO_BUFFERED);
+    uint32_t received = s_audio.received;
+    stream_message(HERMES_KIND_AUDIO_BLOCK, 31, offset); // retry cannot decode twice
+    assert(s_audio.received == received);
+    if (!started && received >= AUDIO_PREBUFFER) {
+      assert(received < stream_total / 10u);
+      stream_message(HERMES_KIND_AUDIO_PLAY, 31, 0);
+      started = true;
+    }
+    assert(s_audio.received - s_audio.written <= AUDIO_RING_SIZE);
 
-  // One full minute is uploaded before a single speaker session starts.
-  load_reply(31, sizeof(full_reply));
-  assert(s_audio.received_checksum == audio_checksum(full_reply, sizeof(full_reply)));
-  uint32_t full_opens = opens;
-  uint32_t full_closes = closes;
-  full_message(HERMES_KIND_AUDIO_BLOCK, 31, sizeof(full_reply), 0, full_reply, 768);
-  assert(receipt.status == HERMES_AUDIO_BUFFERED && receipt.received == sizeof(full_reply));
-  full_message(HERMES_KIND_AUDIO_BLOCK, 31, sizeof(full_reply), 1, full_reply, 768);
-  assert(receipt.status == HERMES_AUDIO_INVALID);
-  full_reply[0] ^= 1;
-  full_message(HERMES_KIND_AUDIO_PLAY, 31, sizeof(full_reply), 0, NULL, 0);
-  assert(receipt.status == HERMES_AUDIO_INVALID && opens == full_opens);
-  full_reply[0] ^= 1;
-  write_limit = 733; // Partial writes must resume within the cached read buffer.
-  full_message(HERMES_KIND_AUDIO_PLAY, 31, sizeof(full_reply), 0, NULL, 0);
-  for (int tick = 0; tick < 1300 && !s_audio.draining; tick++) audio_tick(NULL);
-  assert(s_audio.draining && s_audio.phase == 2 && s_audio.bytes != NULL);
+    for (int ticks = 0; s_audio_reply.pending && ticks < 100; ticks++) audio_tick(NULL);
+    assert(!s_audio_reply.pending && receipt.status == HERMES_AUDIO_BUFFERED);
+  }
+  for (int ticks = 0; !s_audio.draining && ticks < 200; ticks++) audio_tick(NULL);
+  assert(throttled && s_audio.draining && output_length == stream_total);
+  for (uint32_t i = 0; i < output_length; i++) assert(output[i] == 0);
   assert(opens == full_opens + 1 && closes == full_closes + 1);
-  assert(output_length == sizeof(full_reply) && memcmp(output, full_reply, sizeof(full_reply)) == 0);
-  assert(s_audio.idle_ms > 10000); // No old two-second-clip timeout.
-  device_status = SpeakerStatusIdle;
-  finished(SpeakerFinishReasonDone, NULL);
-  assert(receipt.status == HERMES_AUDIO_COMPLETE && s_audio.bytes == NULL);
-  full_message(HERMES_KIND_AUDIO_PLAY, 31, sizeof(full_reply), 0, NULL, 0);
-  assert(opens == full_opens + 1 && receipt.status == HERMES_AUDIO_COMPLETE);
-  fail_storage_delete = true;
-  audio_tick(NULL);
-  assert(s_audio_cache_pages != 0 && persist_exists(AUDIO_CACHE_META));
-  fail_storage_delete = false;
-  for (int tick = 0; tick < 200 && s_audio_cache_pages != 0; tick++) audio_tick(NULL);
-  assert(s_audio_cache_pages == 0 && !persist_exists(AUDIO_CACHE_META));
-  for (uint32_t i = 0; i <= AUDIO_CACHE_MAX_PAGES; i++) assert(cache_sizes[i] == 0);
-
-  // Odd final page/buffer lengths, read failures and Quiet Time never report success.
-  load_reply(32, 24013);
-  full_message(HERMES_KIND_AUDIO_PLAY, 32, 24013, 0, NULL, 0);
-  for (int tick = 0; tick < 100 && !s_audio.draining; tick++) audio_tick(NULL);
-  assert(s_audio.draining && output_length == 24013 && memcmp(output, full_reply, 24013) == 0);
   device_status = SpeakerStatusIdle; finished(SpeakerFinishReasonDone, NULL);
-  load_reply(33, 24013); // Replaces the cache while cleanup is pending.
-  fail_storage_read = true;
-  full_message(HERMES_KIND_AUDIO_PLAY, 33, 24013, 0, NULL, 0);
+  assert(receipt.status == HERMES_AUDIO_COMPLETE && s_audio.bytes == NULL);
+  stream_message(HERMES_KIND_AUDIO_PLAY, 31, 0);
+  assert(opens == full_opens + 1 && receipt.status == HERMES_AUDIO_COMPLETE);
+
+  // Slow sender: preserve the stream and wait for a useful buffer to accumulate.
+  stream_setup(32000);
+  stream_message(HERMES_KIND_AUDIO_BEGIN, 32, 0);
+  uint32_t offset = 0;
+  while (offset < AUDIO_PREBUFFER) {
+    stream_message(HERMES_KIND_AUDIO_BLOCK, 32, offset); offset += AUDIO_STREAM_SAMPLES;
+  }
+  stream_message(HERMES_KIND_AUDIO_PLAY, 32, 0);
+  for (int ticks = 0; ticks < 40; ticks++) audio_tick(NULL);
+  assert(s_audio.rebuffering && !s_audio.draining && s_audio.phase == 2);
+  uint32_t written = s_audio.written;
+  stream_message(HERMES_KIND_AUDIO_BLOCK, 32, offset); offset += AUDIO_STREAM_SAMPLES;
   audio_tick(NULL);
-  assert(s_audio.terminal_status == HERMES_AUDIO_STORAGE && s_audio.bytes == NULL);
-  fail_storage_read = false;
-  load_reply(34, 24013);
-  full_message(HERMES_KIND_AUDIO_PLAY, 34, 24013, 0, NULL, 0);
-  quiet = true; audio_tick(NULL); quiet = false;
-  assert(s_audio.terminal_status == HERMES_AUDIO_QUIET_TIME && s_audio.bytes == NULL);
+  assert(s_audio.written == written); // Don't stutter on every tiny new block.
+  while (offset < stream_total) {
+    stream_message(HERMES_KIND_AUDIO_BLOCK, 32, offset); offset += AUDIO_STREAM_SAMPLES;
+    audio_tick(NULL);
+  }
+  for (int ticks = 0; ticks < 100 && !s_audio.draining; ticks++) audio_tick(NULL);
+  assert(s_audio.draining && output_length == stream_total);
+  device_status = SpeakerStatusIdle; finished(SpeakerFinishReasonDone, NULL);
 
-  full_message(HERMES_KIND_AUDIO_BEGIN, 35, 24013, 0, NULL, 0);
-  fail_storage_write = true;
-  full_message(HERMES_KIND_AUDIO_BLOCK, 35, 24013, 0, full_reply, 768);
-  assert(receipt.status == HERMES_AUDIO_STORAGE && s_audio.received == 0);
-  fail_storage_write = false;
-  load_reply(36, 24013);
-  full_message(HERMES_KIND_AUDIO_CANCEL, 36, 24013, 0, NULL, 0);
-  assert(s_audio.terminal_status == HERMES_AUDIO_CANCELLED && s_audio.bytes == NULL);
+  // Back/Quiet Time and a stalled sender stop and release the entire RAM ring.
+  for (uint32_t session = 33; session < 36; session++) {
+    stream_setup(32000); stream_message(HERMES_KIND_AUDIO_BEGIN, session, 0);
+    for (offset = 0; offset < AUDIO_PREBUFFER; offset += AUDIO_STREAM_SAMPLES)
+      stream_message(HERMES_KIND_AUDIO_BLOCK, session, offset);
+    stream_message(HERMES_KIND_AUDIO_PLAY, session, 0);
+    if (session == 33) stream_message(HERMES_KIND_AUDIO_CANCEL, session, 0);
+    if (session == 34) { quiet = true; audio_tick(NULL); quiet = false; }
+    if (session == 35) for (int ticks = 0; ticks < 700; ticks++) audio_tick(NULL);
+    assert(s_audio.phase == 3 && s_audio.bytes == NULL);
+    assert(s_audio.terminal_status == (session == 33 ? HERMES_AUDIO_CANCELLED :
+      session == 34 ? HERMES_AUDIO_QUIET_TIME : HERMES_AUDIO_FAILED));
+  }
+  // Reject malformed codec headers, gaps, changed retries, and checksum failure.
+  stream_setup(32000); stream_message(HERMES_KIND_AUDIO_BEGIN, 36, 0);
+  packet[2] = 89; stream_message(HERMES_KIND_AUDIO_BLOCK, 36, 0);
+  assert(receipt.status == HERMES_AUDIO_INVALID && s_audio.received == 0);
+  packet[2] = 0; stream_message(HERMES_KIND_AUDIO_BLOCK, 36, AUDIO_STREAM_SAMPLES);
+  assert(receipt.status == HERMES_AUDIO_INVALID && s_audio.received == 0);
+  stream_message(HERMES_KIND_AUDIO_BLOCK, 36, 0);
+  packet[4] = 1; stream_message(HERMES_KIND_AUDIO_BLOCK, 36, 0);
+  assert(receipt.status == HERMES_AUDIO_INVALID && s_audio.received == AUDIO_STREAM_SAMPLES);
+  stream_message(HERMES_KIND_AUDIO_CANCEL, 36, 0);
+  stream_setup(2); stream_hash ^= 1;
+  stream_message(HERMES_KIND_AUDIO_BEGIN, 37, 0);
+  stream_message(HERMES_KIND_AUDIO_BLOCK, 37, 0);
+  assert(receipt.status == HERMES_AUDIO_INVALID && s_audio.bytes == NULL);
 
-  // Crash/relaunch: metadata is cleanup-only, never authorizes playback.
-  load_reply(37, 24013);
-  audio_shutdown();
-  memset(&s_audio, 0, sizeof(s_audio));
-  s_audio_cache_pages = 0;
+  // Migration removes at most one old flash page per idle tick, never replays it.
+  fail_storage_write = fail_storage_read = false;
+  uint32_t old_pages = 3;
+  persist_write_data(AUDIO_CACHE_META, &old_pages, sizeof(old_pages));
+  persist_write_data(AUDIO_CACHE_BASE + 2, packet, 20);
   audio_cache_recover();
-  full_opens = opens;
-  assert(s_audio_cache_pages != 0);
-  full_message(HERMES_KIND_AUDIO_PLAY, 37, 24013, 0, NULL, 0);
-  assert(receipt.status == HERMES_AUDIO_INVALID && opens == full_opens);
-  for (int tick = 0; tick < 200 && s_audio_cache_pages != 0; tick++) audio_tick(NULL);
+  fail_storage_delete = true; audio_tick(NULL);
+  assert(s_audio_cache_pages == 3);
+  fail_storage_delete = false; audio_tick(NULL);
+  assert(s_audio_cache_pages == 2);
+  audio_tick(NULL); audio_tick(NULL);
   assert(!persist_exists(AUDIO_CACHE_META));
-  uint8_t bad_marker = 255;
-  persist_write_data(AUDIO_CACHE_META, &bad_marker, 1);
-  audio_cache_recover();
-  assert(s_audio_cache_pages == AUDIO_CACHE_MAX_PAGES);
-  for (int tick = 0; tick < 200 && s_audio_cache_pages != 0; tick++) audio_tick(NULL);
-  assert(!persist_exists(AUDIO_CACHE_META));
-  puts("Full-reply cache, uninterrupted speaker session, partial writes, cleanup and restart checks passed");
+  puts("Streaming start, backpressure, wraparound, underrun recovery, cancellation and migration checks passed");
   return 0;
 }

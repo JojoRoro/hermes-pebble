@@ -29,7 +29,7 @@ The dictation review offers **Send + voice reply**, alongside the existing text-
 
 The conversion supports the 8-bit unsigned, 16-bit signed, and float PCM delivered by Android's [UtteranceProgressListener](https://developer.android.com/reference/android/speech/tts/UtteranceProgressListener). Mono/stereo output is averaged down to 8 kHz signed 8-bit PCM. A temporary synthesis file is deleted when synthesis finishes or is cancelled. The installed offline voice uses the configured TTS language; missing voice data is reported rather than silently switching to a network voice.
 
-Through v0.1.16 playback reused the 16,000-byte receiver, with pauses while each section uploaded. Version 0.1.17 replaces this with full-reply buffering below. Every section carries the original request capture in ItemId. The watch rejects sections after Back, new dictation, or relaunch, even if synthesis was still running when the user cancelled. The phone deduplicates opted-in result fetches by watch, capture, and transfer ID and never starts speech for notes, unfinished requests, or normal text-only fetches. Voice errors do not change command state or remove the text answer. Diagnostics contains the full status/error; the answer footer shows a short status.
+Through v0.1.16 playback reused the 16,000-byte receiver, with pauses while each section uploaded. Version 0.1.17 replaced this with full-reply buffering; v0.1.18 replaces that with streaming below. Every section carries the original request capture in ItemId. The watch rejects sections after Back, new dictation, or relaunch, even if synthesis was still running when the user cancelled. The phone deduplicates opted-in result fetches by watch, capture, and transfer ID and never starts speech for notes, unfinished requests, or normal text-only fetches. Voice errors do not change command state or remove the text answer. Diagnostics contains the full status/error; the answer footer shows a short status.
 
 Run `tests/watch_conversation_smoke.py --emulator emery --voice-only` for the review option, first-page voice flag, capture-bound audio acceptance, cancellation between sections, and subsequent text-only send. `AudioCheck.kt` also checks PCM conversion, stereo downmixing, rate conversion, invalid audio, Unicode text bounds, and preservation of the originating capture on all clip operations. Physical Android TTS synthesis and audible playback still require a phone/watch acceptance test.
 
@@ -56,7 +56,7 @@ Audio packets now carry up to 768 bytes within the existing 1,024-byte inbox. Ea
 The host tests check duration and pitch at common Android source rates, packet size/bounds, and the order of upload/playback progress. The emulator audio smoke also sends reordered/duplicate large chunks and checks that playback does not complete before the expected clip duration. Audible voice-reply intelligibility and Bluetooth transfer timing require physical acceptance.
 
 
-### Continuous replies at 1.5× speed (v0.1.17)
+### Historical full preload at 1.5× speed (v0.1.17)
 
 Voice replies now load completely before playback, with a single percentage indicator, then play through one continuous speaker session. This trades the repeated loading gaps for one initial wait. Android asks the speech engine for 1.5× speed with normal pitch, shortening the spoken audio and the amount transferred. The PCM format is unchanged.
 
@@ -64,4 +64,12 @@ To fit a complete reply without exhausting RAM, the watch spools up to 60 second
 
 Each audio block now fits a single 768-byte packet, and the watch replies immediately when its outbox is free. This removes the extra packet per full block and the artificial receipt delay. Physical loading time still depends on the phone/watch link.
 
-Run `tests/watch_audio_smoke.py --emulator emery --full-reply` for a 24.15-second cached reply in one speaker session. Host checks also cover a full minute, odd final lengths, partial speaker writes, duplicate blocks, storage errors, cancellation, Quiet Time, restart cleanup, and upload/playback timeout bounds. The emulator uses a dummy audio backend; audible quality and loading speed still need the physical phone/watch.
+The v0.1.17 revision of `tests/watch_audio_smoke.py --emulator emery --full-reply` tested a 24.15-second cached reply in one speaker session. That release's host checks covered a full minute, odd final lengths, partial speaker writes, duplicate blocks, storage errors, cancellation, Quiet Time, restart cleanup, and upload/playback timeout bounds. Current streaming checks are described in `tests/README.md`. The emulator uses a dummy audio backend; audible quality and loading speed still need the physical phone/watch.
+
+### Buffered streaming (v0.1.18)
+
+The full-reply flash cache in v0.1.17 caused long startup waits and user-reported watch slowdown. Replies now use a fixed 24,576-byte RAM ring and no audio flash writes. After roughly 1.7 seconds of audio is buffered, playback starts and the phone continues sending ahead while the watch plays. This describes audio duration, not a promised wall-clock loading time. Android TTS remains at 1.5× with normal pitch.
+
+Independent IMA ADPCM packets carry up to 1,529 samples in 768 bytes, approximately halving audio payload traffic compared with the previous PCM transfer. This is lossy speech compression; decoded playback still uses the same 8 kHz speaker format. The implementation follows the [IMA reference algorithm](https://www.cs.columbia.edu/~hgs/audio/dvi/IMA_ADPCM.pdf). The watch immediately reports a full ring and the phone retries that block after 100 ms, so unplayed audio cannot be overwritten. A fast sender spaces new blocks at least 75 ms apart to leave time for watch events. If the connection falls behind, playback waits for another useful buffer instead of starting each tiny packet separately. Slow links can still cause pauses.
+
+Back, Quiet Time and shutdown stop playback and release the ring. Leftover v0.1.17 flash pages are only removed while audio is inactive, one page per 250 ms event, and never replayed. Install both v0.1.18 APK and PBW; the retired full-cache format is rejected. The diagnostic test sound remains unchanged.

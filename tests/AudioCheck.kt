@@ -4,7 +4,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
-fun main() = runBlocking {
+fun main(args: Array<String>) = runBlocking {
     val requests = VoiceReplyRequests()
     val voiceFetch = WireMessage(kind = WireMessageKind.FETCH_RESULT, transferId = 1,
         captureId = 42, flags = WireProtocol.FLAG_VOICE_REPLY, payload = ByteArray(0))
@@ -130,34 +130,47 @@ fun main() = runBlocking {
     check(quietError?.message?.contains("Quiet Time is on") == true)
     check(quietBlocks == 0 && quietCancel)
     val whole = ByteArray(WatchAudioTransfer.MAX_REPLY_BYTES) { (it * 43).toByte() }
+    val encoded = VoiceAdpcm.encode(whole)
+    var fullPlay: WireMessage? = null
     var fullReceiver: WatchAudioTransfer? = null
     var fullReceived = 0
+    var fullRetry: WireMessage? = null
     var begins = 0
     var plays = 0
     val uploads = mutableListOf<Int>()
     val full = WatchAudioTransfer(send = { watch, request ->
-        check(request.flags == WatchAudioTransfer.REPLY_FORMAT && request.itemId == 42L)
+        check(request.flags == WatchAudioTransfer.STREAM_FORMAT && request.itemId == 42L)
         check(request.totalBytes == whole.size.toLong())
         val status = when (request.kind) {
             WireMessageKind.AUDIO_BEGIN -> { begins++; WatchAudioTransfer.READY }
             WireMessageKind.AUDIO_BLOCK -> {
                 check(request.pageOffset == fullReceived.toLong())
                 check(request.payload.size <= WireProtocol.MAX_AUDIO_CHUNK_PAYLOAD_BYTES)
-                check(request.payload.contentEquals(whole.copyOfRange(fullReceived, fullReceived + request.payload.size)))
+                check(request.payload.contentEquals(encoded[fullReceived / VoiceAdpcm.SAMPLES_PER_BLOCK]))
                 check(OutgoingProtocolCodec.encode(request.kind, request.transferId, payload = request.payload).size == 1)
-                fullReceived += request.payload.size
-                WatchAudioTransfer.BUFFERED
-            }
-            WireMessageKind.AUDIO_PLAY -> {
-                check(fullReceived == whole.size && uploads.last() == 100)
-                plays++
-                // Long playback gets its own timeout rather than the short block timeout.
-                async {
+                if (fullPlay != null && fullRetry == null) {
+                    fullRetry = request
+                    WatchAudioTransfer.BUFFER_FULL
+                } else {
+                    if (fullRetry?.pageOffset == request.pageOffset) {
+                        check(fullRetry!!.transferId != request.transferId)
+                        check(fullRetry!!.payload.contentEquals(request.payload))
+                    }
+                fullReceived = minOf(whole.size, fullReceived + VoiceAdpcm.SAMPLES_PER_BLOCK)
+                if (fullReceived == whole.size) async {
                     delay(40)
-                    fullReceiver!!.onStatus(watch, request.copy(kind = WireMessageKind.AUDIO_STATUS,
-                        correlationId = request.transferId, status = WatchAudioTransfer.COMPLETE,
+                    fullReceiver!!.onStatus(watch, fullPlay!!.copy(kind = WireMessageKind.AUDIO_STATUS,
+                        correlationId = fullPlay!!.transferId, status = WatchAudioTransfer.COMPLETE,
                         pageOffset = fullReceived.toLong()))
                 }
+                WatchAudioTransfer.BUFFERED
+                }
+            }
+            WireMessageKind.AUDIO_PLAY -> {
+                check(fullReceived in WatchAudioTransfer.PREBUFFER_SAMPLES until whole.size / 10)
+                check(uploads.last() == 100)
+                fullPlay = request
+                plays++
                 0
             }
             else -> error("Unexpected full-reply operation")
@@ -165,14 +178,47 @@ fun main() = runBlocking {
         if (status != 0) fullReceiver!!.onStatus(watch, request.copy(kind = WireMessageKind.AUDIO_STATUS,
             correlationId = request.transferId, status = status, pageOffset = fullReceived.toLong(), payload = ByteArray(0)))
         true
-    }, nextId = { ++id }, replyTimeoutMillis = 10)
+    }, nextId = { ++id }, replyTimeoutMillis = 10, blockIntervalMillis = 0)
     fullReceiver = full
-    check(full.play("watch", whole, replyCaptureId = 42, format = WatchAudioTransfer.REPLY_FORMAT,
-        onUpload = { uploads += it }, onPlayback = { check(fullReceived == whole.size) }) {}.contains("playback complete"))
-    check(begins == 1 && plays == 1 && fullReceived == whole.size)
+    check(full.play("watch", whole, replyCaptureId = 42, format = WatchAudioTransfer.STREAM_FORMAT,
+        onUpload = { uploads += it }, onPlayback = { check(fullReceived < whole.size / 10) }) {}.contains("playback complete"))
+    check(encoded.sumOf { it.size } < whole.size * 0.51)
+    check(fullRetry != null && begins == 1 && plays == 1 && fullReceived == whole.size)
     check(uploads.size <= 22 && uploads.zipWithNext().all { (a, b) -> b > a })
-    check(runCatching { full.play("watch", whole + byteArrayOf(0), format = WatchAudioTransfer.REPLY_FORMAT) {} }.isFailure)
+    check(runCatching { full.play("watch", whole + byteArrayOf(0), format = WatchAudioTransfer.STREAM_FORMAT) {} }.isFailure)
     check(runCatching { full.play("watch", whole) {} }.isFailure) // Legacy diagnostic format keeps its bound.
+    // A block error after early PLAY must cancel its concurrent completion waiter
+    // and send CANCEL, rather than leaking playback or hanging for nine minutes.
+    var failedReceiver: WatchAudioTransfer? = null
+    var failedReceived = 0
+    var failedPlaying = false
+    var failedCancelled = false
+    val failedStream = WatchAudioTransfer(send = { watch, request ->
+        val status = when (request.kind) {
+            WireMessageKind.AUDIO_BEGIN -> WatchAudioTransfer.READY
+            WireMessageKind.AUDIO_PLAY -> { failedPlaying = true; 0 }
+            WireMessageKind.AUDIO_CANCEL -> { failedCancelled = true; 0 }
+            WireMessageKind.AUDIO_BLOCK -> if (failedPlaying) WatchAudioTransfer.QUIET_TIME else {
+                failedReceived += VoiceAdpcm.SAMPLES_PER_BLOCK
+                WatchAudioTransfer.BUFFERED
+            }
+            else -> error("Unexpected streaming operation")
+        }
+        if (status != 0) failedReceiver!!.onStatus(watch, request.copy(kind = WireMessageKind.AUDIO_STATUS,
+            correlationId = request.transferId, status = status, pageOffset = failedReceived.toLong()))
+        true
+    }, nextId = { ++id }, blockIntervalMillis = 0)
+    failedReceiver = failedStream
+    val streamError = runCatching { failedStream.play("watch", whole, format = WatchAudioTransfer.STREAM_FORMAT) {} }.exceptionOrNull()
+    check(streamError?.message?.contains("Quiet Time") == true && failedPlaying && failedCancelled)
     check(WatchAudioTransfer.checksum("hello".toByteArray()) == 0x4f9f2cabL)
-    println("Audio binary transfer, full-reply upload, single playback, progress and timeout checks passed")
+    if (args.isNotEmpty()) {
+        val clip = java.io.File("android/app/src/main/assets/watch_test.s8").readBytes()
+        val speech = ByteArray(clip.size * 14) { clip[it % clip.size] }
+        java.io.File(args[0] + ".s8").writeBytes(speech)
+        java.io.File(args[0] + ".adpcm").outputStream().use { output ->
+            VoiceAdpcm.encode(speech).forEach { output.write(it) }
+        }
+    }
+    println("Audio binary transfer, compressed streaming, early playback, progress and timeout checks passed")
 }

@@ -11,14 +11,14 @@ from libpebble2.protocol.logs import AppLogMessage, AppLogShippingControl
 
 parser = argparse.ArgumentParser(parents=PebbleCommand._shared_parser())
 parser.add_argument('--pbw', default='build/hermes-pebble.pbw')
-parser.add_argument('--full-reply', action='store_true', help='Cache a 24-second reply and play it in one session')
+parser.add_argument('--full-reply', action='store_true', help='Stream a 24-second compressed reply while playback is active')
 args = parser.parse_args()
 connection = PebbleCommand()._connect(args)
 faults = []
 speaker_finishes = []
 def log(packet):
     if 'App fault!' in str(packet.message): faults.append(str(packet.message))
-    if 'Audio ' in str(packet.message): print(packet.message)
+    if 'Audio ' in str(packet.message): print(packet.message, flush=True)
     if 'Audio speaker finish reason=' in str(packet.message): speaker_finishes.append(str(packet.message))
 connection.register_endpoint(AppLogMessage, log)
 connection.send_packet(AppLogShippingControl(enable=True))
@@ -26,13 +26,17 @@ messages = queue.Queue()
 service = AppMessageService(connection)
 app_id = UUID('7d07aa22-7d13-48c1-a400-2602a5ae4647')
 service.register_handler('appmessage', lambda tx, app, data: messages.put(data) if app == app_id else None)
+transport_receipts = queue.Queue()
+service.register_handler('ack', lambda tx, app: transport_receipts.put((tx, True)))
+service.register_handler('nack', lambda tx, app: transport_receipts.put((tx, False)))
 transfer = 9000
 clip = Path('android/app/src/main/assets/watch_test.s8').read_bytes()
 if args.full_reply:
     clip *= 14
-audio_format = 2 if args.full_reply else 1
+audio_format = 3 if args.full_reply else 1
+encoded = Path("build/audio-stream.adpcm").read_bytes() if args.full_reply else clip
 checksum = 0x811c9dc5
-for byte in clip: checksum = ((checksum ^ byte) * 0x01000193) & 0xffffffff
+for byte in encoded: checksum = ((checksum ^ byte) * 0x01000193) & 0xffffffff
 
 def receive(kind, correlation=None, timeout=20):
     deadline = time.monotonic() + timeout
@@ -49,15 +53,26 @@ def send(kind, payload=b'', offset=0, correlation=0):
     indexed = list(enumerate(chunks))
     if kind == 111:
         indexed.reverse() # The compact assembler must preserve logical chunk order.
-        indexed.insert(1, indexed[0]) # A retry must not consume space twice.
+        if not args.full_reply:
+            indexed.insert(1, indexed[0]) # A retry must not consume space twice.
     for index, chunk in indexed:
         fields = {i: Uint32(0) for i in range(18)}
         fields.update({0: Uint32(1), 1: Uint32(kind), 2: Uint32(transfer), 3: Uint32(777),
             4: Uint32(index), 5: Uint32(len(chunks)), 6: ByteArray(chunk), 12: Uint32(offset),
             14: Uint32(len(clip)), 15: Uint32(checksum if kind != 101 else 0),
             16: Uint32(audio_format if kind != 101 else 0), 17: Uint32(correlation)})
-        service.send_message(app_id, fields)
-        time.sleep(.10)
+        tx = service.send_message(app_id, fields)
+        if args.full_reply:
+            # Match Android's sendDataToPebble behavior: never flood dictionaries
+            # before the watch transport acknowledges the preceding one.
+            while True:
+                ack_tx, accepted = transport_receipts.get(timeout=10)
+                if ack_tx == tx:
+                    assert accepted, 'Watch transport rejected a dictionary'
+                    break
+            time.sleep(.075)
+        else:
+            time.sleep(.10)
     return transfer
 
 try:
@@ -72,15 +87,35 @@ try:
     request = send(112)
     assert receive(10, request)[7] == 6
     upload_started = time.monotonic()
-    block_size = 768 if args.full_reply else 1024
+    block_size = 1529 if args.full_reply else 1024
+    playback_started = None
+    play_request = None
+    encoded_offset = 0
     for offset in range(0, len(clip), block_size):
-        payload = clip[offset:offset + block_size]
-        request = send(111, payload, offset)
-        reply = receive(10, request)
-        assert reply[7] == 2 and reply[12] == offset + len(payload), reply
+        samples = min(block_size, len(clip) - offset)
+        if args.full_reply:
+            length = 4 + samples // 2
+            payload = encoded[encoded_offset:encoded_offset + length]
+            encoded_offset += length
+        else:
+            payload = clip[offset:offset + samples]
+        while True:
+            request = send(111, payload, offset)
+            reply = receive(10, request)
+            if reply[7] != 11: break
+            assert reply[12] == offset
+            time.sleep(.10)
+        assert reply[7] == 2 and reply[12] == offset + samples, reply
+        if args.full_reply and play_request is None and offset + samples >= 12288:
+            playback_started = time.monotonic()
+            print(f"Starting playback after {offset + samples}/{len(clip)} samples, {playback_started - upload_started:.3f}s initial buffering.", flush=True)
+            play_request = send(112)
+            assert offset + samples < len(clip) / 10
     upload_elapsed = time.monotonic() - upload_started
-    playback_started = time.monotonic()
-    request = send(112)
+    if play_request is None:
+        playback_started = time.monotonic()
+        play_request = send(112)
+    request = play_request
     result = receive(10, request, timeout=len(clip) / 8000 + 15)
     assert result[7] == 3, result
     assert result[12] == len(clip) and result[15] == checksum

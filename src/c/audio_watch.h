@@ -1,9 +1,10 @@
 #ifndef HERMES_AUDIO_WATCH_H
 #define HERMES_AUDIO_WATCH_H
 
-// Included after transport declarations. Full replies use a temporary flash
-// spool; only a small read buffer is needed while feeding the speaker.
+// Included after transport declarations. Reply packets refill a bounded RAM ring
+// while one speaker stream consumes it. Flash is only used for old-cache cleanup.
 #include "audio_cache.h"
+#include "audio_adpcm.h"
 static bool audio_send_status(uint32_t session, uint32_t total, uint32_t checksum,
                               uint32_t received, uint8_t status);
 static bool audio_dictation_active(void);
@@ -11,9 +12,10 @@ static bool audio_dictation_active(void);
 typedef struct {
   uint8_t *bytes;
   uint32_t session, total, checksum, received, written, play_request, idle_ms;
-  uint32_t received_checksum, buffer_start, buffer_length;
+  uint32_t received_checksum, last_offset, last_hash;
+  uint16_t last_length;
   uint8_t phase, terminal_status, format;
-  bool draining;
+  bool draining, rebuffering;
 } WatchAudio;
 typedef struct {
   uint32_t session, request, total, checksum, received, age_ms;
@@ -36,7 +38,8 @@ static void audio_schedule(void) {
   uint32_t interval;
   if (s_audio.phase != 1u && s_audio.phase != 2u && !s_audio_reply.pending && s_audio_cache_pages == 0u) return;
   interval = s_audio.phase == 2u ? AUDIO_PLAY_TICK_MS :
-      (s_audio_reply.pending || (s_audio.phase != 1u && s_audio_cache_pages != 0u)) ? AUDIO_REPLY_TICK_MS : AUDIO_IDLE_TICK_MS;
+      s_audio_reply.pending ? AUDIO_REPLY_TICK_MS :
+      (s_audio.phase != 1u && s_audio_cache_pages != 0u) ? 250u : AUDIO_IDLE_TICK_MS;
   if (s_audio_timer != NULL) {
     if (interval >= s_audio_tick_ms) return;
     app_timer_cancel(s_audio_timer); // Playback or a receipt cannot wait for a slow idle tick.
@@ -100,31 +103,33 @@ static void audio_tick(void *context) {
   if (s_audio.phase == 2u) {
     if (speaker_is_muted()) {
       audio_terminal(HERMES_AUDIO_MUTED);
-    } else if (s_audio.idle_ms >= s_audio.total / 8u + 10000u) {
+    } else if (s_audio.idle_ms >= (s_audio.format == HERMES_AUDIO_STREAM_FORMAT ? 30000u : s_audio.total / 8u + 10000u)) {
       audio_terminal(HERMES_AUDIO_FAILED);
+    } else if (!s_audio.draining && s_audio.written == s_audio.total && !s_audio_reply.pending) {
+      s_audio.draining = true;
+      speaker_stream_close();
     } else if (!s_audio.draining) {
       uint32_t count = s_audio.total - s_audio.written;
       if (count > 1024u) count = 1024u;
       const uint8_t *data = s_audio.bytes;
-      if (s_audio.format == HERMES_AUDIO_REPLY_FORMAT) {
-        if (s_audio.written == s_audio.buffer_start + s_audio.buffer_length) {
-          if (!audio_cache_read(s_audio.written, s_audio.bytes, count)) {
-            audio_terminal(HERMES_AUDIO_STORAGE);
-            goto replies;
-          }
-          s_audio.buffer_start = s_audio.written;
-          s_audio.buffer_length = count;
-        }
-        uint32_t offset = s_audio.written - s_audio.buffer_start;
-        data = s_audio.bytes + offset;
-        count = s_audio.buffer_length - offset;
+      if (s_audio.format == HERMES_AUDIO_STREAM_FORMAT) {
+        uint32_t available = s_audio.received - s_audio.written;
+        if (available == 0u) s_audio.rebuffering = true;
+        if (s_audio.rebuffering && available < AUDIO_PREBUFFER && s_audio.received != s_audio.total) goto replies;
+        s_audio.rebuffering = false;
+        if (count > available) count = available;
+        uint32_t position = s_audio.written % AUDIO_RING_SIZE;
+        if (count > AUDIO_RING_SIZE - position) count = AUDIO_RING_SIZE - position;
+        data += position;
+        if (count == 0u) goto replies;
       } else data += s_audio.written;
       uint32_t written = speaker_stream_write(data, count);
       if (written > count) {
         audio_terminal(HERMES_AUDIO_FAILED);
       } else {
+        if (written != 0u && s_audio.format == HERMES_AUDIO_STREAM_FORMAT) s_audio.idle_ms = 0u;
         s_audio.written += written; // Includes zero/partial writes when the speaker buffer is full.
-        if (s_audio.written == s_audio.total) {
+        if (s_audio.written == s_audio.total && !s_audio_reply.pending) {
           s_audio.draining = true;
           speaker_stream_close();
         }
@@ -161,9 +166,9 @@ static void audio_handle(uint8_t kind, uint32_t session, uint32_t request, uint3
     status = HERMES_AUDIO_QUIET_TIME;
     goto reply;
   }
-  bool cached = format == HERMES_AUDIO_REPLY_FORMAT;
-  if (session == 0u || total == 0u || total > (cached ? HERMES_AUDIO_REPLY_MAX_BYTES : HERMES_AUDIO_MAX_BYTES) ||
-      (!cached && format != HERMES_AUDIO_FORMAT)) goto reply;
+  bool streaming = format == HERMES_AUDIO_STREAM_FORMAT;
+  if (session == 0u || total == 0u || total > (streaming ? HERMES_AUDIO_REPLY_MAX_BYTES : HERMES_AUDIO_MAX_BYTES) ||
+      (!streaming && format != HERMES_AUDIO_FORMAT)) goto reply;
   if (kind == HERMES_KIND_AUDIO_BEGIN) {
     if (length != 0u || offset != 0u) goto reply;
     if (s_audio.phase == 2u || audio_dictation_active() || speaker_get_status() != SpeakerStatusIdle) {
@@ -177,15 +182,9 @@ static void audio_handle(uint8_t kind, uint32_t session, uint32_t request, uint3
     } else {
       free(s_audio.bytes);
       memset(&s_audio, 0, sizeof(s_audio));
-      s_audio.bytes = malloc(cached ? 1024u : total);
+      s_audio.bytes = malloc(streaming ? AUDIO_RING_SIZE : total);
       if (s_audio.bytes == NULL) {
         status = HERMES_AUDIO_FAILED;
-        goto reply;
-      }
-      if (cached && !audio_cache_prepare(total)) {
-        free(s_audio.bytes);
-        s_audio.bytes = NULL;
-        status = HERMES_AUDIO_STORAGE;
         goto reply;
       }
       s_audio.session = session;
@@ -201,26 +200,40 @@ static void audio_handle(uint8_t kind, uint32_t session, uint32_t request, uint3
   if (session != s_audio.session || total != s_audio.total || checksum != s_audio.checksum || format != s_audio.format) goto reply;
   received = s_audio.received;
   if (kind == HERMES_KIND_AUDIO_BLOCK) {
-    if (s_audio.phase != 1u || length == 0u || length > 1024u || bytes == NULL || offset > total || length > total - offset) goto reply;
-    if (cached && (offset % AUDIO_CACHE_PAGE != 0u || (offset + length != total && length % AUDIO_CACHE_PAGE != 0u))) goto reply;
-    if (offset == s_audio.received) {
-      if (cached) {
-        if (!audio_cache_write(offset, bytes, length)) {
-          audio_terminal(HERMES_AUDIO_STORAGE);
-          status = HERMES_AUDIO_STORAGE;
+    if ((s_audio.phase != 1u && !(streaming && s_audio.phase == 2u)) || length == 0u ||
+        length > 1024u || bytes == NULL || offset >= total) goto reply;
+    if (streaming) {
+      uint32_t samples = total - offset;
+      if (samples > AUDIO_STREAM_SAMPLES) samples = AUDIO_STREAM_SAMPLES;
+      if (offset % AUDIO_STREAM_SAMPLES != 0u || length != 4u + samples / 2u || bytes[2] > 88u || bytes[3] != 0u) goto reply;
+      uint32_t hash = audio_checksum(bytes, length);
+      if (offset == s_audio.received) {
+        if (samples > AUDIO_RING_SIZE - (s_audio.received - s_audio.written)) {
+          status = HERMES_AUDIO_BUFFER_FULL;
           goto reply;
         }
-        for (uint16_t i = 0; i < length; i++) s_audio.received_checksum = (s_audio.received_checksum ^ bytes[i]) * 0x01000193u;
-      } else memcpy(s_audio.bytes + offset, bytes, length);
-      s_audio.received += length;
+        uint32_t rolling = s_audio.received_checksum;
+        for (uint16_t i = 0; i < length; i++) rolling = (rolling ^ bytes[i]) * 0x01000193u;
+        if (offset + samples == total && rolling != checksum) {
+          audio_terminal(HERMES_AUDIO_INVALID);
+          status = HERMES_AUDIO_INVALID;
+          goto reply;
+        }
+        audio_adpcm_decode(bytes, samples, s_audio.bytes, offset);
+        s_audio.received_checksum = rolling;
+        s_audio.last_offset = offset;
+        s_audio.last_length = length;
+        s_audio.last_hash = hash;
+        s_audio.received += samples;
+      } else if (s_audio.received == 0u || offset != s_audio.last_offset ||
+                 length != s_audio.last_length || hash != s_audio.last_hash) goto reply;
     } else {
-      if (offset > s_audio.received || length > s_audio.received - offset) goto reply;
-      if (cached && !audio_cache_read(offset, s_audio.bytes, length)) {
-        audio_terminal(HERMES_AUDIO_STORAGE);
-        status = HERMES_AUDIO_STORAGE;
-        goto reply;
-      }
-      if (memcmp(s_audio.bytes + (cached ? 0u : offset), bytes, length) != 0) goto reply;
+      if (length > total - offset) goto reply;
+      if (offset == s_audio.received) {
+        memcpy(s_audio.bytes + offset, bytes, length);
+        s_audio.received += length;
+      } else if (offset > s_audio.received || length > s_audio.received - offset ||
+                 memcmp(s_audio.bytes + offset, bytes, length) != 0) goto reply;
     }
     s_audio.idle_ms = 0u;
     received = s_audio.received;
@@ -232,8 +245,9 @@ static void audio_handle(uint8_t kind, uint32_t session, uint32_t request, uint3
     } else if (s_audio.phase == 2u) {
       if (request == s_audio.play_request) return;
       status = HERMES_AUDIO_BUSY;
-    } else if (s_audio.phase == 1u && received == total &&
-               (cached ? s_audio.received_checksum : audio_checksum(s_audio.bytes, total)) == checksum) {
+    } else if (s_audio.phase == 1u &&
+               (streaming ? (received >= AUDIO_PREBUFFER || received == total) :
+                (received == total && audio_checksum(s_audio.bytes, total) == checksum))) {
       if (speaker_is_muted()) {
         status = HERMES_AUDIO_MUTED;
       } else if (audio_dictation_active() || speaker_get_status() != SpeakerStatusIdle) {

@@ -340,9 +340,9 @@ class PebbleBridge(
                         val pcm = WatchSpeech(applicationContext).synthesize(text)
                         DiagnosticLog.record("Voice", "Speech at 1.5x: ${pcm.size} bytes at 8000 Hz; ${pcm.size / 8} ms")
                         check(watch in activeWatchState.value) { "Watch app closed. Voice stopped." }
-                        status("Loading voice: 0%")
-                        audioTransfer.play(watch, pcm, replyCaptureId = captureId, format = WatchAudioTransfer.REPLY_FORMAT,
-                            onUpload = { status("Loading voice: $it%") },
+                        status("Buffering voice: 0%")
+                        audioTransfer.play(watch, pcm, replyCaptureId = captureId, format = WatchAudioTransfer.STREAM_FORMAT,
+                            onUpload = { status("Buffering voice: $it%") },
                             onPlayback = { status("Playing voice - BACK stops") }) { }
                         status("Voice reply finished")
                     }
