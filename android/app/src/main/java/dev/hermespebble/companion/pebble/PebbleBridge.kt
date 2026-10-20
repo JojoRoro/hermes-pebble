@@ -147,6 +147,23 @@ class PebbleBridge(
         )
     }
 
+    /**
+     * Asks every open watch app to handshake again so it adopts a conversation the phone
+     * started on its own. This is the link-check probe; the watch answers once its current
+     * transfer has finished.
+     */
+    suspend fun requestHandshakes() {
+        val watches = activeWatchState.value.map(::WatchIdentifier)
+        if (watches.isEmpty()) return
+        val probe = OutgoingProtocolCodec.encode(WireMessageKind.HANDSHAKE_ACK, transferId(),
+            generation = settingsRepository.current().conversationGeneration).single()
+        val sent = sendMutex.withLock {
+            callHost("Conversation sync") { sender.sendDataToPebble(WireProtocol.APP_UUID, probe, watches) }
+        }
+        val delivered = sent?.values?.count { it is TransmissionResult.Success } ?: 0
+        DiagnosticLog.record("Pebble", "Conversation sync probe delivered to $delivered/${watches.size} watch(es)")
+    }
+
     suspend fun sendDurableReceipt(watch: String, request: WireMessage, receipt: DurableCommandReceipt) {
         val status = if (receipt.kind == CommandKind.WATCH_NOTE) {
             WireStatus.NOTE_SAVED.value

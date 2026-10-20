@@ -8,6 +8,7 @@ import dev.hermespebble.companion.data.local.ConversationRepository
 import dev.hermespebble.companion.data.local.DurableCommandReceipt
 import dev.hermespebble.companion.data.local.HermesDatabase
 import dev.hermespebble.companion.data.preferences.SettingsRepository
+import dev.hermespebble.companion.diagnostics.DiagnosticLog
 import dev.hermespebble.companion.dispatch.CommandBridge
 import dev.hermespebble.companion.dispatch.CommandDispatcher
 import dev.hermespebble.companion.dispatch.ResultNotifier
@@ -129,6 +130,13 @@ class AppContainer(context: Context) {
                 }
             }
         }
+        applicationScope.launch {
+            // Rotates while the watch app stays open, so its next message is already in the new conversation.
+            while (true) {
+                startNewConversationIfIdle()
+                delay(IDLE_CHECK_INTERVAL_MILLIS)
+            }
+        }
     }
 
     suspend fun acceptWatchCommand(
@@ -139,21 +147,29 @@ class AppContainer(context: Context) {
         conversationGeneration: Long,
     ): DurableCommandReceipt {
         require(kind == CommandKind.WATCH_REQUEST || kind == CommandKind.WATCH_NOTE)
+        val rotated = kind == CommandKind.WATCH_REQUEST && startNewConversationIfIdle()
         val settings = settingsRepository.current()
         require(conversationGeneration in 0..settings.conversationGeneration) { "Unknown conversation generation" }
+        // The watch still named the conversation that just went idle; its message opens the new one.
+        val generation = if (rotated && conversationGeneration == settings.conversationGeneration - 1L) {
+            settings.conversationGeneration
+        } else {
+            conversationGeneration
+        }
         val receipt = commandRepository.acceptWatchCommand(
             watchIdentifier = watchIdentifier,
             captureId = captureId,
             input = input,
             kind = kind,
             targetProfileId = settings.profileId,
-            conversationGeneration = conversationGeneration,
+            conversationGeneration = generation,
         )
         if (kind == CommandKind.WATCH_REQUEST) dispatcher.enqueue(receipt.commandId)
         return receipt
     }
 
     suspend fun submitPhoneRequest(input: String): DurableCommandReceipt {
+        startNewConversationIfIdle()
         val settings = settingsRepository.current()
         val receipt = commandRepository.acceptPhoneRequest(
             input = input,
@@ -164,10 +180,41 @@ class AppContainer(context: Context) {
         return receipt
     }
 
-    suspend fun startNewConversation(): Long = settingsRepository.newConversation()
+    suspend fun startNewConversation(): Long =
+        settingsRepository.newConversation().also { pebbleBridge.launch { pebbleBridge.requestHandshakes() } }
+
+    /**
+     * Starts a new conversation after the configured period without requests.
+     *
+     * Runs periodically, when the watch app connects and before each request. The watch
+     * adopts the generation from a handshake reply; [syncWatches] asks open watch apps to
+     * handshake again. A failure keeps the current conversation. Returns whether it rotated.
+     */
+    suspend fun startNewConversationIfIdle(syncWatches: Boolean = true): Boolean {
+        try {
+            val settings = settingsRepository.current()
+            val hours = settings.autoNewConversationHours
+            if (hours <= 0) return false
+            val current = settings.conversationGeneration
+            if (!commandRepository.conversationIdle(settings.profileId, current, hours * HOUR_MILLIS)) return false
+            // Passing the observed generation keeps a concurrent rotation from advancing twice.
+            val generation = settingsRepository.newConversation(expectedGeneration = current)
+            if (generation != current + 1L) return false
+            DiagnosticLog.record("Conversation", "Started conversation $generation after $hours h without requests")
+            if (syncWatches) pebbleBridge.launch { pebbleBridge.requestHandshakes() }
+            return true
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            DiagnosticLog.record("Conversation", "Idle check failed: ${error.javaClass.simpleName}")
+            return false
+        }
+    }
 
     private companion object {
         const val MAX_STARTUP_RECOVERY_ATTEMPTS = 3
+        const val HOUR_MILLIS = 60L * 60L * 1000L
+        const val IDLE_CHECK_INTERVAL_MILLIS = 60_000L
         const val STARTUP_RECOVERY_RETRY_DELAY_MILLIS = 1_000L
     }
 }

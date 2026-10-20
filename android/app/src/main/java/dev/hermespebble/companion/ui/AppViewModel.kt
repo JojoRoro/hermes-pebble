@@ -364,6 +364,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy { container.settingsRepository.setBriefWatchRepliesEnabled(enabled) }
     }
 
+    fun setAutoNewConversationHours(hours: Int) {
+        launchBusy { container.settingsRepository.setAutoNewConversationHours(hours) }
+    }
+
     fun clearMessage() {
         control.value = control.value.copy(message = null)
     }

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -235,6 +236,16 @@ class SettingsRepository internal constructor(
         }
     }
 
+    suspend fun setAutoNewConversationHours(hours: Int) {
+        require(hours in AUTO_NEW_CONVERSATION_HOUR_CHOICES) { "Unsupported idle period" }
+        updateMutex.withLock {
+            ensureInitialized()
+            dataStore.edit { preferences ->
+                preferences[AUTO_NEW_CONVERSATION_HOURS] = hours
+            }
+        }
+    }
+
     suspend fun recordCapabilities(
         profileId: String,
         capabilities: HermesCapabilities,
@@ -288,6 +299,7 @@ class SettingsRepository internal constructor(
             capabilitiesCheckedAtMillis = storedCapabilities?.checkedAtMillis,
             resultNotificationsEnabled = preferences[RESULT_NOTIFICATIONS_ENABLED] ?: false,
             briefWatchRepliesEnabled = preferences[BRIEF_WATCH_REPLIES_ENABLED] ?: false,
+            autoNewConversationHours = preferences[AUTO_NEW_CONVERSATION_HOURS] ?: DEFAULT_AUTO_NEW_CONVERSATION_HOURS,
         )
     }
 
@@ -304,8 +316,13 @@ class SettingsRepository internal constructor(
         val CAPABILITIES_CHECKED_AT = longPreferencesKey("capabilities_checked_at")
         val RESULT_NOTIFICATIONS_ENABLED = booleanPreferencesKey("result_notifications_enabled")
         val BRIEF_WATCH_REPLIES_ENABLED = booleanPreferencesKey("brief_watch_replies_enabled")
+        val AUTO_NEW_CONVERSATION_HOURS = intPreferencesKey("auto_new_conversation_hours")
     }
 }
+
+/** Idle periods offered for starting a new conversation automatically; 0 turns it off. */
+val AUTO_NEW_CONVERSATION_HOUR_CHOICES = listOf(0, 1, 2, 4, 8, 24)
+const val DEFAULT_AUTO_NEW_CONVERSATION_HOURS = 4
 
 data class HermesSettings(
     val serverUrl: String,
@@ -320,6 +337,7 @@ data class HermesSettings(
     val capabilitiesCheckedAtMillis: Long?,
     val resultNotificationsEnabled: Boolean = false,
     val briefWatchRepliesEnabled: Boolean = false,
+    val autoNewConversationHours: Int = DEFAULT_AUTO_NEW_CONVERSATION_HOURS,
 ) {
     val hasHermesKey: Boolean
         get() = hermesKeyReference.isNotEmpty()

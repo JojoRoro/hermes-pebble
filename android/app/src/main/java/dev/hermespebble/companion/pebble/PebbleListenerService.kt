@@ -142,7 +142,10 @@ class PebbleListenerService : BasePebbleListenerService() {
                     ReceiveResult.Ack
                 }
                 WireMessageKind.HANDSHAKE -> {
-                    bridge.launch { bridge.onHandshake(watch, message) }
+                    bridge.launch {
+                        container.startNewConversationIfIdle(syncWatches = false)
+                        bridge.onHandshake(watch, message)
+                    }
                     ReceiveResult.Ack
                 }
                 WireMessageKind.DISCARD_CAPTURE -> {

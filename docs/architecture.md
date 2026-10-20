@@ -68,7 +68,7 @@ The API root preserves an optional path prefix. The v1 contract uses:
 - `POST /v1/runs/{run_id}/stop` for an explicit stop request.
 - `GET /api/sessions/{session_id}/messages` for bounded history reconciliation.
 
-The accepted run response is not a finished answer. The run ID is persisted before monitoring begins. Server statuses are mapped explicitly, including queued, started, running, approval-waiting, terminal, and unknown states. A queued follow-up retains its original conversation. A New conversation action creates a new dedicated session generation.
+The accepted run response is not a finished answer. The run ID is persisted before monitoring begins. Server statuses are mapped explicitly, including queued, started, running, approval-waiting, terminal, and unknown states. A queued follow-up retains its original conversation. A New conversation action creates a new dedicated session generation. The phone also advances the generation after the configured idle period (default 4 hours, measured from the latest request or answer) once no request is unfinished. It checks every minute, on each watch handshake and before each request; a watch request still naming the idle generation is stored in the new one. Open watch apps receive the link-check probe, handshake again and adopt the generation from the reply, so no watch protocol change is needed.
 
 If a create response is lost, an automatic retry is allowed only when capabilities advertise supported and durable idempotency and the conservative retention window is still valid. Otherwise the state is `Outcome unknown — review before retrying`; the app never generates a fresh key for an ambiguous submission automatically. A terminal run is never automatically re-executed.
 

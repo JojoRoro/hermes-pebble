@@ -190,6 +190,13 @@ class CommandRepository internal constructor(
         )
     }
 
+    /** True when the conversation has finished requests only and the latest ended at least [idleMillis] ago. */
+    suspend fun conversationIdle(profileId: String, conversationGeneration: Long, idleMillis: Long): Boolean =
+        database.withTransaction {
+            commandDao.unfinishedRequestCount(profileId, conversationGeneration) == 0 &&
+                idleSince(commandDao.lastRequestActivity(profileId, conversationGeneration), clock(), idleMillis)
+        }
+
     suspend fun getOrCreateSession(
         profileId: String,
         conversationGeneration: Long,
@@ -982,3 +989,7 @@ class CommandNotFoundException(commandId: Long) : Exception("Command $commandId 
 class ConcurrentCommandMutationException : Exception("Command ownership changed")
 class FrozenPayloadConflictException : Exception("Frozen submission payload conflict")
 class ImmutableCommandConflictException : Exception("Immutable command state conflict")
+
+/** An empty conversation is never idle: it is already new. */
+internal fun idleSince(lastActivityAt: Long?, now: Long, idleMillis: Long): Boolean =
+    idleMillis > 0 && lastActivityAt != null && now - lastActivityAt >= idleMillis

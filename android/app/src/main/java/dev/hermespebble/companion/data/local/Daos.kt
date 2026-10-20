@@ -34,6 +34,30 @@ interface CommandDao {
     @Query("SELECT * FROM commands WHERE id = :commandId")
     fun observe(commandId: Long): Flow<CommandEntity?>
 
+    @Query(
+        """
+        SELECT MAX(COALESCE(completedAt, createdAt)) FROM commands
+        WHERE targetProfileId = :profileId
+          AND conversationGeneration = :conversationGeneration
+          AND kind IN ('WATCH_REQUEST', 'PHONE_REQUEST')
+        """,
+    )
+    suspend fun lastRequestActivity(profileId: String, conversationGeneration: Long): Long?
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM commands
+        WHERE targetProfileId = :profileId
+          AND conversationGeneration = :conversationGeneration
+          AND kind IN ('WATCH_REQUEST', 'PHONE_REQUEST')
+          AND state IN (
+            'QUEUED', 'SUBMITTING', 'ACCEPTED', 'RUNNING',
+            'NEEDS_APPROVAL', 'STOPPING', 'PAUSED', 'OUTCOME_UNKNOWN'
+          )
+        """,
+    )
+    suspend fun unfinishedRequestCount(profileId: String, conversationGeneration: Long): Int
+
     @Query("SELECT * FROM commands WHERE watchIdentifier = :watchIdentifier AND captureId = :captureId")
     suspend fun getByCapture(watchIdentifier: String, captureId: Long): CommandEntity?
 

@@ -56,6 +56,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.hermespebble.companion.data.local.CommandItem
 import dev.hermespebble.companion.data.local.CommandKind
 import dev.hermespebble.companion.data.local.CommandState
+import dev.hermespebble.companion.data.preferences.AUTO_NEW_CONVERSATION_HOUR_CHOICES
+import dev.hermespebble.companion.data.preferences.DEFAULT_AUTO_NEW_CONVERSATION_HOURS
 import dev.hermespebble.companion.data.preferences.HermesSettings
 
 @Composable
@@ -504,6 +506,30 @@ private fun DiagnosticsScreen(
             Text("Ask for brief plain-text replies", modifier = Modifier.padding(start = 8.dp))
         }
         Text("Messages from the watch ask Hermes for short sentences without Markdown, lists, or tables. This reads better on the watch and sounds better with voice playback.")
+        HorizontalDivider()
+        Text("New conversation after inactivity", style = MaterialTheme.typography.titleMedium)
+        val idleHours = state.settings?.autoNewConversationHours ?: DEFAULT_AUTO_NEW_CONVERSATION_HOURS
+        AUTO_NEW_CONVERSATION_HOUR_CHOICES.forEach { hours ->
+            Row(
+                modifier = Modifier.fillMaxWidth().selectable(
+                    selected = idleHours == hours,
+                    onClick = { viewModel.setAutoNewConversationHours(hours) },
+                    enabled = !state.busy,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = idleHours == hours, onClick = null)
+                Text(
+                    when (hours) {
+                        0 -> "Never"
+                        1 -> "After 1 hour"
+                        else -> "After $hours hours"
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Text("When nothing was asked or answered for this long, the next message starts a new conversation on the phone and the watch. Replies within that time continue the current conversation.")
         Spacer(Modifier.height(12.dp))
     }
 }
