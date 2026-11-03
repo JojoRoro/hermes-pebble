@@ -1,5 +1,5 @@
 /* Minimal stand-in for the parts of <pebble.h> that memo_watch.h uses, so its state
- * machine runs on the host without the SDK. Declarations mirror SDK revision 111. */
+ * machine runs on the host without the SDK. Declarations mirror SDK 4.33.1. */
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,27 +52,9 @@ typedef enum { APP_MSG_OK = 0, APP_MSG_BUSY = 64 } AppMessageResult;
 #define APP_LOG_LEVEL_WARNING 50
 #define APP_LOG(level, fmt, ...) ((void)(level))
 
-typedef enum MicCaptureStartResult {
-  MicCaptureStartOk = 0,
-  MicCaptureStartErrBusy,
-  MicCaptureStartErrNotForeground,
-  MicCaptureStartErrInvalidArgs,
-  MicCaptureStartErrWatchface,
-  MicCaptureStartErrUnavailable,
-  MicCaptureStartErrPermissionDenied,
-  MicCaptureStartErrNoMemory,
-} MicCaptureStartResult;
-typedef enum MicCaptureStopReason {
-  MicCaptureStopReasonFocusLost = 0,
-  MicCaptureStopReasonInterrupted,
-  MicCaptureStopReasonPermissionRevoked,
-} MicCaptureStopReason;
-typedef void (*MicCaptureDataHandler)(const int16_t *samples, size_t sample_count, void *context);
-typedef void (*MicCaptureStoppedHandler)(MicCaptureStopReason reason, void *context);
-typedef struct MicCaptureHandlers { MicCaptureDataHandler data; MicCaptureStoppedHandler stopped; } MicCaptureHandlers;
-MicCaptureStartResult mic_capture_start(MicCaptureHandlers handlers, void *context);
-void mic_capture_stop(void);
-bool mic_capture_is_active(void);
+/* Like SDK 4.33.1: no microphone API; mic_shim.h reaches it through the firmware table. */
+typedef struct { uint8_t major, minor, patch; } WatchInfoVersion;
+WatchInfoVersion watch_info_get_firmware_version(void);
 
 void layer_mark_dirty(Layer *layer);
 Layer *layer_create(GRect frame);

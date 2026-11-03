@@ -84,14 +84,10 @@ jobs:
       - name: Install Pebble SDK
         run: |
           python3 -m venv "$RUNNER_TEMP/pebble-tools"
-          "$RUNNER_TEMP/pebble-tools/bin/pip" install pebble-tool==5.1.2
+          "$RUNNER_TEMP/pebble-tools/bin/pip" install pebble-tool==5.0.40
           echo "$RUNNER_TEMP/pebble-tools/bin" >> "$GITHUB_PATH"
-          # The voice memo needs the local microphone API (SDK revision 111, firmware 4.43+).
-          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk install latest
-          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk list
-          header=$(find "$HOME" -path '*/sdk-core/pebble/emery/include/pebble.h' -print -quit)
-          test -n "$header" || { echo "Pebble SDK emery headers not found" >&2; exit 1; }
-          grep -q 'mic_capture_start' "$header" || { echo "Installed Pebble SDK lacks mic_capture_start" >&2; exit 1; }
+          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk install 4.33.1
+          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk activate 4.33.1
       - name: Build and verify companion metadata
         run: |
           pebble build

@@ -37,9 +37,29 @@ static uint32_t speaker_stops;
 static void memo_quiet_speaker(void) { speaker_stops++; }
 
 // ---- Simulated platform -------------------------------------------------------------
-static MicCaptureHandlers mic;
+// The firmware side of mic_shim.h: a function table reached through the app header.
+static MemoFirmwareMicHandlers mic;
 static bool mic_active;
 static MicCaptureStartResult mic_result = MicCaptureStartOk;
+static void *firmware_table[683];
+const PebbleProcessInfo __pbl_app_info = {
+  .header = "PBLAPP", .sym_table_addr = offsetof(PebbleProcessInfo, loader_table), .loader_table = firmware_table,
+};
+#ifdef MEMO_TEST_OLD_FIRMWARE
+static WatchInfoVersion firmware = { 4, 42, 0 };
+#else
+static WatchInfoVersion firmware = { 4, 43, 0 };
+#endif
+WatchInfoVersion watch_info_get_firmware_version(void) { return firmware; }
+static uint32_t firmware_mic_start(MemoFirmwareMicHandlers handlers, void *context) {
+  (void)context;
+  assert(handlers.data && handlers.stopped && !mic_active);
+  if (mic_result != MicCaptureStartOk) return 0xa5a5a500u | mic_result; // Short enum: upper bits are junk.
+  mic = handlers;
+  mic_active = true;
+  return 0x12345600u;
+}
+static void firmware_mic_stop(void) { mic_active = false; }
 static size_t free_heap = 100000u;
 static bool connected = true, outbox_busy, in_flight;
 static uint32_t outbox_limit = 1024u, sends, vibes;
@@ -48,16 +68,6 @@ static AppTimerCallback timer_callback;
 static uint32_t timer_ms;
 static int timers_registered;
 
-MicCaptureStartResult mic_capture_start(MicCaptureHandlers handlers, void *context) {
-  (void)context;
-  assert(handlers.data && handlers.stopped && !mic_active);
-  if (mic_result != MicCaptureStartOk) return mic_result;
-  mic = handlers;
-  mic_active = true;
-  return MicCaptureStartOk;
-}
-void mic_capture_stop(void) { mic_active = false; }
-bool mic_capture_is_active(void) { return mic_active; }
 void layer_mark_dirty(Layer *layer) { (void)layer; }
 Layer *layer_create(GRect frame) { (void)frame; return (Layer *)malloc(1); }
 void layer_destroy(Layer *layer) { free(layer); }
@@ -175,6 +185,20 @@ static void record(uint32_t frames) {
 }
 
 int main(void) {
+  firmware_table[MEMO_MIC_SLOT_START] = (void *)firmware_mic_start;
+  firmware_table[MEMO_MIC_SLOT_STOP] = (void *)firmware_mic_stop;
+#ifdef MEMO_TEST_OLD_FIRMWARE
+  // Firmware 4.42's table ends before these slots: never touch them, explain instead.
+  memo_open();
+  memo_load(NULL);
+  draw();
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_IDLE && !mic_active && !s_memo.buffer && strstr(s_memo.status, "4.43"));
+  memo_shutdown();
+  printf("Voice memo on firmware 4.42: microphone slots untouched, update message shown\n");
+  return 0;
+#endif
+  assert(memo_mic_available());
   memo_open();
   memo_load(NULL);
   draw();
@@ -322,7 +346,7 @@ int main(void) {
   memo_select(NULL, NULL);
   speak(50u);
   mic_active = false;
-  mic.stopped(MicCaptureStopReasonInterrupted, NULL);
+  mic.stopped(0xffffff00u | MicCaptureStopReasonInterrupted, NULL);
   assert(s_memo.state == MEMO_READY && s_memo.buffer && strstr(s_memo.status, "interrupted"));
   memo_down(NULL, NULL);
   memo_down(NULL, NULL);
@@ -330,6 +354,7 @@ int main(void) {
   speak(50u);
   mic_active = false;
   mic.stopped(MicCaptureStopReasonPermissionRevoked, NULL);
+  mic.stopped(MicCaptureStopReasonFocusLost, NULL); // A late callback after the clip is gone is ignored.
   assert(s_memo.state == MEMO_IDLE && !s_memo.buffer);
   memo_select(NULL, NULL);
   speak(10u);

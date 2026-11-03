@@ -1,8 +1,9 @@
 #ifndef HERMES_MEMO_WATCH_H
 #define HERMES_MEMO_WATCH_H
 #include "memo_core.h"
+#include "mic_shim.h"
 
-/* Voice memo: record with the local microphone API (SDK revision 111, firmware 4.43+),
+/* Voice memo: record with the local microphone API (firmware 4.43+, see mic_shim.h),
  * keep the clip in RAM only, and stream it to the Android companion. Each block is
  * acknowledged by the phone only after it has been written to disk, so the next block
  * follows the AppMessage ACK directly; a final receipt confirms the checksum. */
@@ -108,7 +109,7 @@ static const char *memo_start_error(MicCaptureStartResult result) {
 
 static void memo_finish_recording(const char *note) {
   if (s_memo.state != MEMO_RECORDING) return;
-  mic_capture_stop();
+  memo_mic_stop();
   s_memo.length = memo_encoder_finish(&s_memo.encoder, (uint32_t)time(NULL));
   if (s_memo.encoder.samples < MEMO_RATE / 2u) {
     memo_release();
@@ -169,6 +170,11 @@ static void memo_start_recording(void) {
   if (s_memo.state == MEMO_RECORDING || s_memo.state == MEMO_SENDING || s_memo.state == MEMO_WAIT_RECEIPT) return;
   memo_cancel_timer();
   memo_release();
+  if (!memo_mic_available()) {
+    s_memo.state = MEMO_IDLE;
+    memo_set_status(memo_start_error(MicCaptureStartErrUnavailable));
+    return;
+  }
   memo_quiet_speaker(); // Also frees a reply's audio buffer before sizing the memo.
   uint32_t capacity = memo_capacity_for(heap_bytes_free());
   s_memo.buffer = capacity ? malloc(capacity) : NULL;
@@ -182,7 +188,7 @@ static void memo_start_recording(void) {
   s_memo.callbacks = 0u;
   s_memo.level = 0u;
   s_memo.state = MEMO_RECORDING;
-  MicCaptureStartResult result = mic_capture_start((MicCaptureHandlers){
+  MicCaptureStartResult result = memo_mic_start((MicCaptureHandlers){
     .data = memo_on_audio, .stopped = memo_on_stopped,
   }, NULL);
   if (result != MicCaptureStartOk) {
@@ -369,6 +375,7 @@ static void memo_draw(Layer *layer, GContext *ctx) {
         text = line;
         break;
       default: {
+        if (!memo_mic_available()) { text = "Voice memos need watch firmware 4.43 or newer."; break; }
         uint32_t capacity = memo_capacity_for(heap_bytes_free());
         snprintf(line, sizeof(line), "Up to %lu s with free memory. Audio stays in RAM until sent; leaving Hermes discards it.",
             (unsigned long)(capacity > MEMO_HEADER ? (capacity - MEMO_HEADER) / MEMO_BYTES_PER_SECOND : 0u));
@@ -514,7 +521,7 @@ static const char *memo_subtitle(void) {
 }
 
 static void memo_shutdown(void) {
-  if (s_memo.state == MEMO_RECORDING) mic_capture_stop();
+  if (s_memo.state == MEMO_RECORDING) memo_mic_stop();
   memo_cancel_timer();
   memo_release();
   s_memo.state = MEMO_IDLE;

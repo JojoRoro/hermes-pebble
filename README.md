@@ -152,7 +152,7 @@ Open **Voice memo** in the watch menu. **Select** starts recording and **Select*
 
 Requirements:
 
-- Pebble Time 2 firmware **4.43 or newer**. This release is built with the SDK that adds the local microphone API, and older firmware refuses to install it at all, not only the memo feature.
+- Pebble Time 2 firmware **4.43 or newer**. On older firmware the app still installs and works; Voice memo only shows that an update is needed.
 - The Core Devices Pebble app with its experimental permission system enabled. On Hermes Pebble's app page, allow **Microphone**. Automatic policy grants do not authorize capture, so allow it explicitly. The page also lists *Exchange messages with dev.hermespebble.companion*; keep that allowed or the Android companion stops receiving anything. Reopen Hermes on the watch after changing permissions.
 
 Limits in this first version:

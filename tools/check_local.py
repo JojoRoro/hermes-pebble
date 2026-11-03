@@ -57,6 +57,8 @@ def main():
         # The memo flow runs against a small SDK stand-in, so it needs no SDK download.
         run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Itests/memo_stub', 'tests/watch_memo_test.c', '-lm', '-o', temp / 'memo-check')
         run(temp / 'memo-check')
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Itests/memo_stub', '-DMEMO_TEST_OLD_FIRMWARE', 'tests/watch_memo_test.c', '-lm', '-o', temp / 'memo-old-check')
+        run(temp / 'memo-old-check')
         if args.sdk_headers:
             headers = temp / 'headers'
             shutil.copytree(args.sdk_headers, headers)

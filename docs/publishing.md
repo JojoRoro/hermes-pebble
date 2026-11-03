@@ -9,7 +9,7 @@ The public installation consists of the watch app, the standalone Android APK, a
 3. Check remote tags and create an unused annotated tag matching the version, such as `v0.1.5`. Push that tag; a normal branch push does not trigger the release workflow. Never move an existing release tag.
 4. Confirm **App Release** passes all three jobs and the GitHub release has both `hermes-pebble.apk` and `hermes-pebble-store.pbw`.
 
-The workflow builds Android with the permanent signing key and verifies its pinned certificate. It builds the watch with pebble-tool 5.1.2 and the latest Pebble SDK, failing if the SDK lacks the local microphone API (`mic_capture_start`). It then checks protocol identities and matching versions, then verifies the PBW's companion metadata. A failed watch build prevents publishing the APK alone. A manual workflow run provides both Actions artifacts without creating a release.
+The workflow builds Android with the permanent signing key and verifies its pinned certificate. It builds the watch with Pebble SDK 4.33.1, checks protocol identities and matching versions, then verifies the PBW's companion metadata. A failed watch build prevents publishing the APK alone. A manual workflow run provides both Actions artifacts without creating a release.
 
 Keep watch UUID `7d07aa22-7d13-48c1-a400-2602a5ae4647`, Android package `dev.hermespebble.companion`, and the Android signing key stable. Store listing updates and APK updates must keep their existing identities.
 

@@ -306,7 +306,7 @@ The speaker stays in one stream while packets refill the ring. Partial writes an
 No new audio data is persisted. Format 2 is rejected by v0.1.18; the old cache namespace is retained only for migration cleanup, one page per idle 250 ms timer event, paused while any audio session is active. Status 10 remains reserved for compatibility with v0.1.17. Startup UI percentage describes the small initial buffer; remaining packets do not overwrite the playing footer.
 ## Voice memos
 
-Added in 0.1.21; install matching APK/PBW versions. Requires watch firmware 4.43 or newer: the PBW is built with SDK revision 111 (`mic_capture_start`), and older firmware refuses to install an app built against a newer SDK minor version.
+Added in 0.1.21; install matching APK/PBW versions. Recording requires watch firmware 4.43 or newer. The public SDK (4.33.1) predates the local microphone API, so `src/c/mic_shim.h` calls `mic_capture_start`/`mic_capture_stop` through the firmware's exported-function table, at slots 681/682 (revision 111 ordering by `addedRevision`, then name), only after confirming firmware ≥ 4.43. That keeps the PBW at SDK 4.33.1's minor version, so older firmware still installs it.
 
 ### HVM1 file
 

@@ -15,7 +15,7 @@ python3 tools/check_local.py \
   --pebble-model /path/to/PebbleDictionaryItem.kt
 ```
 
-Use headers from an SDK that includes revision 111 (the local microphone API) and the `PebbleDictionaryItem.kt` file from PebbleKit Android 2's `common-api/src/main/kotlin/io/rebble/pebblekit2/common/model/`. The review used the repository's existing upstream source snapshot. The helper creates temporary resource/message headers and a host libc time shim; it leaves the SDK untouched.
+Use SDK 4.33.1 headers and the `PebbleDictionaryItem.kt` file from PebbleKit Android 2's `common-api/src/main/kotlin/io/rebble/pebblekit2/common/model/`. The review used the repository's existing upstream source snapshot. The helper creates temporary resource/message headers and a host libc time shim; it leaves the SDK untouched.
 
 The Kotlin library directory must contain these Maven artifacts (no repository secrets or Gradle execution needed):
 
@@ -73,7 +73,7 @@ Quiet Time cases run with speaker mute explicitly false: reject BEGIN, discard o
 
 ## Voice memo checks
 
-The default check runs `watch_memo_core_test.c` and `watch_memo_test.c` with host GCC; neither needs the SDK. The codec test checks CRC-32, the HVM1 header, hard capacity bounds, a 440 Hz round trip (about 30 dB SNR), and suppression of a 7 kHz tone by the 16→8 kHz filter. It also writes a fixture for Kotlin. The flow test includes the production `memo_watch.h` with `tests/memo_stub/pebble.h`, a minimal stand-in for the revision 111 API. It drives recording, ACK-paced blocks, receipts, a receipt that overtakes the final ACK, resend after a lost receipt, NACK backoff and block shrinking, a small outbox, yielding to the main transport, disconnection, memory bounds, permission refusal, interruption, revocation, too-short clips, and confirmed deletion.
+The default check runs `watch_memo_core_test.c` and `watch_memo_test.c` with host GCC; neither needs the SDK. The codec test checks CRC-32, the HVM1 header, hard capacity bounds, a 440 Hz round trip (about 30 dB SNR), and suppression of a 7 kHz tone by the 16→8 kHz filter. It also writes a fixture for Kotlin. The flow test includes the production `memo_watch.h` and `mic_shim.h` with `tests/memo_stub/`, a minimal stand-in for SDK 4.33.1 (which has no microphone API). A fake app header and firmware function table check that the shim calls slots 681/682 and masks the upper bits of byte-wide enum results and stop reasons. A second build with `-DMEMO_TEST_OLD_FIRMWARE` reports firmware 4.42 and checks that the slots are never read. The flow test drives recording, ACK-paced blocks, receipts, a receipt that overtakes the final ACK, resend after a lost receipt, NACK backoff and block shrinking, a small outbox, yielding to the main transport, disconnection, memory bounds, permission refusal, interruption, revocation, too-short clips, and confirmed deletion.
 
 `VoiceMemoCheck.kt` decodes the C fixture, round-trips ADPCM and WAV (normalization, DC removal, silence), rejects malformed headers and blocks, and decodes memo dictionaries larger than 192 bytes. It exercises `VoiceMemoRepository` on a temporary directory: in-order append, resends, gaps, conflicting bytes, restarts, idempotent completion, a second watch, corrupt checksums and headers, cleanup of abandoned partials, reopening, and deletion. Microphone capture, Bluetooth throughput, the Core app permission flow, and Android playback need the real watch and phone.
 
