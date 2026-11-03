@@ -34,6 +34,7 @@ status_t persist_delete(const uint32_t key) {
 }
 
 int main(void) {
+  assert(app_buffers_init()); // main() allocates these before anything else runs.
   s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
   assert(s_visible_output != NULL);
   // Up is an explicit playback request only at the true beginning of an answer.

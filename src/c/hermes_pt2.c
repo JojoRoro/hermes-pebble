@@ -264,26 +264,44 @@ static uint32_t s_discard_capture_id;
 static uint32_t s_discard_transfer_id;
 static uint32_t s_transfer_sequence;
 static uint8_t s_install_id[16];
-static char s_capture_text[HERMES_MAX_DICTATION_BYTES + 1u];
-static char s_visible_input[HERMES_MAX_DICTATION_BYTES + 1u];
 // Keep the full answer window in runtime RAM, below the SDK's static-image limit.
 static char *s_visible_output;
-static char s_result_page[UI_RESULT_BUFFER_SIZE + 1u];
-static char s_body_text[UI_BODY_BUFFER_SIZE];
+/* SDK 4.33.1 stores the app's .text + .data + .bss size in a 16-bit header field, so the
+ * image must stay under 64 KiB. The largest buffers therefore live in one allocation made
+ * first thing in main(); the macros keep every use (including sizeof) unchanged. */
+typedef struct {
+  char capture_text[HERMES_MAX_DICTATION_BYTES + 1u];
+  char visible_input[HERMES_MAX_DICTATION_BYTES + 1u];
+  char result_page[UI_RESULT_BUFFER_SIZE + 1u];
+  char body_text[UI_BODY_BUFFER_SIZE];
+  PendingCapture pending;
+  OutboundTransfer outbound;
+  InboundTransfer inbound;
+  uint8_t ink[INK_CAPACITY];
+} AppBuffers;
+static AppBuffers *s_buffers;
+#define s_capture_text (s_buffers->capture_text)
+#define s_visible_input (s_buffers->visible_input)
+#define s_result_page (s_buffers->result_page)
+#define s_body_text (s_buffers->body_text)
+#define s_pending (s_buffers->pending)
+#define s_outbound (s_buffers->outbound)
+#define s_inbound (s_buffers->inbound)
+#define s_ink (s_buffers->ink)
+static bool app_buffers_init(void) {
+  if (s_buffers == NULL) s_buffers = calloc(1u, sizeof(*s_buffers));
+  return s_buffers != NULL;
+}
 static char s_error_text[UI_ERROR_BUFFER_SIZE];
 static RecentItem s_recent_items[HERMES_MAX_RECENT_ITEMS];
 static uint8_t s_action_options[8];
 static uint8_t s_action_count;
-static PendingCapture s_pending;
-static OutboundTransfer s_outbound;
-static InboundTransfer s_inbound;
 static DictationSession *s_dictation_session;
 static AppTimer *s_timer;
 // Only action menus draw these; main, settings and recent rows draw from their own state.
 static char s_menu_labels[9][UI_MENU_LABEL_SIZE];
 static uint8_t s_menu_rows[9];
 static uint16_t s_menu_count;
-static uint8_t s_ink[INK_CAPACITY];
 static uint16_t s_ink_length = INK_HEADER;
 static uint32_t s_ink_capture;
 static uint32_t s_ink_checksum;
@@ -4025,11 +4043,13 @@ static void handle_launch_reason(AppLaunchReason reason) {
 int main(void) {
   AppMessageResult open_result;
   AppLaunchReason reason;
+  if (!app_buffers_init()) return 1;
   s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
-  if (s_visible_output == NULL) return 1;
+  if (s_visible_output == NULL) { free(s_buffers); return 1; }
   s_window = window_create();
   if (s_window == NULL) {
     free(s_visible_output);
+    free(s_buffers);
     return 1;
   }
   window_set_click_config_provider(s_window, ui_click_config);
@@ -4082,5 +4102,7 @@ int main(void) {
   s_visible_output = NULL;
   window_destroy(s_window);
   s_window = NULL;
+  free(s_buffers); // Last: unloading the window still reads these buffers.
+  s_buffers = NULL;
   return 0;
 }

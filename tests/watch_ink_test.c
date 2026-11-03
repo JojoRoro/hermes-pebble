@@ -41,6 +41,7 @@ static void touch(TouchEventType type, int x, int y) {
   TouchEvent event = {.type = type, .x = x + 28, .y = y + 35}; ink_touch(&event, NULL);
 }
 int main(int argc, char **argv) {
+  assert(app_buffers_init()); // main() allocates these before anything else runs.
   assert(ink_crc((const uint8_t *)"123456789", 9) == 0xcbf43926u);
   s_screen = HERMES_SCREEN_INK;
   touch(TouchEvent_Touchdown, 20, 20);
