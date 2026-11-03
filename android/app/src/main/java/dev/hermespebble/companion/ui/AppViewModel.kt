@@ -66,6 +66,53 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val selectedInkId = MutableStateFlow<Long?>(null)
     fun openInkNote(id: Long) { selectedInkId.value = id; setSection(AppSection.NOTES) }
 
+    val voiceMemos: StateFlow<List<dev.hermespebble.companion.data.local.VoiceMemo>> = container.voiceMemoRepository.memos
+    val playingMemoId = MutableStateFlow<String?>(null)
+    private var player: android.media.MediaPlayer? = null
+
+    fun toggleMemoPlayback(memo: dev.hermespebble.companion.data.local.VoiceMemo) {
+        val wasPlaying = playingMemoId.value == memo.id
+        stopMemoPlayback()
+        if (wasPlaying) return
+        try {
+            player = android.media.MediaPlayer().apply {
+                setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                setDataSource(memo.file.absolutePath)
+                setOnCompletionListener { stopMemoPlayback() }
+                setOnErrorListener { _, _, _ -> stopMemoPlayback(); setMessage("Could not play this memo.", isError = true); true }
+                prepare()
+                start()
+            }
+            playingMemoId.value = memo.id
+        } catch (error: Exception) {
+            stopMemoPlayback()
+            setMessage("Could not play this memo: ${error.javaClass.simpleName}", isError = true)
+        }
+    }
+
+    fun stopMemoPlayback() {
+        player?.let { runCatching { it.stop() }; it.release() }
+        player = null
+        playingMemoId.value = null
+    }
+
+    fun deleteMemo(memo: dev.hermespebble.companion.data.local.VoiceMemo) {
+        if (playingMemoId.value == memo.id) stopMemoPlayback()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            if (!container.voiceMemoRepository.delete(memo.id)) setMessage("Could not delete this memo.", isError = true)
+        }
+    }
+
+    override fun onCleared() {
+        stopMemoPlayback()
+        super.onCleared()
+    }
+
     private val selectedId = MutableStateFlow<Long?>(null)
     private val control = MutableStateFlow(ControlState())
     private val hostState = MutableStateFlow(HostSelectionState(loading = true))
@@ -185,6 +232,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showNotes() {
         selectedInkId.value = null
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { container.voiceMemoRepository.refresh() }
         setSection(AppSection.NOTES)
     }
 

@@ -2,6 +2,13 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.21 voice memos (3 November 2026)
+
+- Built on the voice-reply line (v0.1.19 plus the untagged v0.1.20 inactivity change). Memo receipts use kind 115 because 114 is `VOICE_STATUS`. While a memo records, reply playback is stopped and refused so the speaker is not recorded.
+- New watch **Voice memo** entry records with the local microphone API from firmware 4.43 (`mic_capture_*`, SDK revision 111), encodes 8 kHz IMA ADPCM in RAM, and streams it to Android. Android stores a WAV per memo with Play and Delete in Notes. The manifest is now `manifestVersion: 2` with `usesPermissions: ["WatchMicrophone"]`. The Core app derives the `PebbleKit2/dev.hermespebble.companion` permission from the existing companion declaration.
+- All offline Python and native checks pass, plus the full Kotlin host suite with the documented Maven artifacts and the new `VoiceMemoCheck.kt`. The memo flow test also passes under `-std=c99 -Wall -Wextra -Wshadow -Wconversion` and AddressSanitizer/UndefinedBehaviorSanitizer.
+- Not verified locally: this sandbox cannot reach the Pebble SDK or Google Maven hosts, so the PBW and APK builds run only in release CI. Generating SDK headers from PebbleOS sources was not attempted. Physical microphone capture, real memo lengths at the free heap, Bluetooth throughput, the permission flow, and playback still need device acceptance.
+
 ## 0.1.12 bike comparison and typing rejection (2 October 2026)
 
 - Bike Test shows NEW and OLD side by side from the same 50 Hz sensor stream. The legacy model and HR bonus are unchanged. The revised model ignores HR, requires continuous half-second vibration blocks and three strong four-second windows, reduces large wrist swings/impacts, and uses recent cumulative steps as a negative cue. It remains a heuristic, not a calibrated probability or an automatic feature trigger.

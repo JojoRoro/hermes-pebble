@@ -146,6 +146,24 @@ The saved copy survives app restarts. The watch tries direct delivery immediatel
 
 Touch capture requires compatible PT2 firmware exposing the SDK 4.33.1 touch API. The drawing area uses raw touch independently of the app's menu touch-navigation preference. Finger drawing quality and background reconnect behavior still need testing on physical devices.
 
+## Voice memo (experimental)
+
+Open **Voice memo** in the watch menu. **Select** starts recording and **Select** (or Back) stops it. Then **Select** sends it to the phone, or **Down** twice deletes it. The phone app lists received memos under **Notes › Voice memos** with **Play** and **Delete**.
+
+Requirements:
+
+- Pebble Time 2 firmware **4.43 or newer**. This release is built with the SDK that adds the local microphone API, and older firmware refuses to install it at all, not only the memo feature.
+- The Core Devices Pebble app with its experimental permission system enabled. On Hermes Pebble's app page, allow **Microphone**. Automatic policy grants do not authorize capture, so allow it explicitly. The page also lists *Exchange messages with dev.hermespebble.companion*; keep that allowed or the Android companion stops receiving anything. Reopen Hermes on the watch after changing permissions.
+
+Limits in this first version:
+
+- **Length:** the clip is held in watch RAM, so length depends on free memory, not a bit-rate cap. Expect roughly 10 seconds; the idle screen shows the current maximum and recording stops with a buzz when memory is full. It is capped at 30 seconds.
+- **Quality:** the microphone delivers 16 kHz 16-bit PCM (256 kbit/s). The watch filters it to 8 kHz and compresses it to 4-bit IMA ADPCM (32 kbit/s, 4 KB per second). That is telephone-band quality, fine for speech. The phone normalizes the volume.
+- **Transfer:** memos go over Bluetooth in 768-byte AppMessages, each acknowledged only after the phone has written it to disk. Expect a few seconds per memo; Hermes must stay open on the watch until **Saved on phone** appears.
+- **Not durable on the watch:** leaving Hermes or a watch restart discards an unsent memo. Nothing is sent to Hermes or transcribed; memos stay on the phone until you delete them.
+
+See [the memo format and transfer](protocol/README.md#voice-memos).
+
 ## Android and GrapheneOS behavior
 
 The companion does not require Google Play Services, microphone permission, contacts, notification-listener access, accessibility access, or direct Bluetooth permission. Result notifications are optional and can use private lock-screen content.
@@ -155,7 +173,7 @@ On GrapheneOS or another restricted Android phone, check the app's network permi
 ## v1 limitations
 
 - One dedicated Hermes conversation is used for the watch flow. New conversation starts a separate context; it does not select an arbitrary Matrix session.
-- The watch stores a bounded transcript and transfer state, not raw audio. Standard dictation must work through the phone.
+- The watch persists a bounded transcript and transfer state, not raw audio. Voice memos stay in watch RAM until sent. Standard dictation must work through the phone.
 - Hermes tool availability, authorization, approvals, and external-action delivery remain server-side responsibilities.
 - The companion is not a Matrix client, contact directory, room browser, Element X replacement, or full notification bridge.
 - There is no watch TTS, offline transcription, streaming-token UI, full watch inbox, or complete approval-management UI.

@@ -1,0 +1,118 @@
+// Host checks for the voice memo codec (no Pebble SDK needed).
+// Optional argument: path for an HVM1 fixture that VoiceMemoCheck.kt decodes.
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../src/c/memo_core.h"
+
+#define PI 3.14159265358979323846
+
+static uint32_t read_u32(const uint8_t *b, uint32_t o) {
+  return (uint32_t)b[o] | ((uint32_t)b[o + 1] << 8) | ((uint32_t)b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24);
+}
+
+/* Reference decoder, identical to VoiceMemoCodec.decode. */
+static void decode(const uint8_t *memo, uint32_t samples, int16_t *out) {
+  int32_t predictor = 0, index = 0;
+  for (uint32_t i = 0; i < samples; i++) {
+    uint8_t byte = memo[MEMO_HEADER + i / 2u];
+    uint8_t code = (i & 1u) ? byte >> 4 : byte & 0x0fu;
+    int32_t step = s_memo_steps[index], delta = step >> 3;
+    if (code & 4u) delta += step;
+    if (code & 2u) delta += step >> 1;
+    if (code & 1u) delta += step >> 2;
+    predictor += (code & 8u) ? -delta : delta;
+    if (predictor > 32767) predictor = 32767;
+    if (predictor < -32768) predictor = -32768;
+    index += s_memo_index_steps[code & 7u];
+    index = index < 0 ? 0 : index > 88 ? 88 : index;
+    out[i] = (int16_t)predictor;
+  }
+}
+
+static void feed_tone(MemoEncoder *encoder, double frequency, double amplitude, uint32_t count, uint32_t *phase) {
+  int16_t frame[320];
+  for (uint32_t done = 0; done < count; done += 320u) {
+    uint32_t n = count - done < 320u ? count - done : 320u;
+    for (uint32_t i = 0; i < n; i++, (*phase)++) frame[i] = (int16_t)lrint(amplitude * sin(2.0 * PI * frequency * *phase / 16000.0));
+    memo_encoder_push(encoder, frame, n);
+  }
+}
+
+static double tone_snr_db(const int16_t *pcm, uint32_t count, double frequency) {
+  // Least-squares fit of a sine at the known frequency, after the codec settles.
+  double ss = 0, cc = 0, sc = 0, ys = 0, yc = 0, yy = 0;
+  for (uint32_t i = 400; i < count; i++) {
+    double s = sin(2.0 * PI * frequency * i / 8000.0), c = cos(2.0 * PI * frequency * i / 8000.0), y = pcm[i];
+    ss += s * s; cc += c * c; sc += s * c; ys += y * s; yc += y * c; yy += y * y;
+  }
+  double det = ss * cc - sc * sc, a = (ys * cc - yc * sc) / det, b = (yc * ss - ys * sc) / det;
+  double signal = a * a * ss + 2 * a * b * sc + b * b * cc;
+  double noise = yy - signal;
+  return 10.0 * log10(signal / (noise > 1 ? noise : 1));
+}
+
+int main(int argc, char **argv) {
+  assert(memo_crc32((const uint8_t *)"123456789", 9u) == 0xcbf43926u);
+
+  static uint8_t buffer[MEMO_HEADER + 2u * MEMO_BYTES_PER_SECOND];
+  MemoEncoder encoder;
+  assert(!memo_encoder_begin(&encoder, buffer, MEMO_HEADER));
+  assert(memo_encoder_begin(&encoder, buffer, sizeof(buffer)));
+
+  // One second of a 440 Hz tone at 16 kHz becomes ~8,000 samples at 8 kHz.
+  uint32_t phase = 0;
+  feed_tone(&encoder, 440.0, 12000.0, 16000u, &phase);
+  assert(!encoder.full);
+  assert(encoder.samples >= 7990u && encoder.samples <= 8000u);
+  uint32_t length = memo_encoder_finish(&encoder, 1234567u);
+  assert(length == MEMO_HEADER + (encoder.samples + 1u) / 2u);
+  assert(memcmp(buffer, "HVM1", 4) == 0 && buffer[4] == 0x40 && buffer[5] == 0x1f && buffer[6] == MEMO_CODEC_IMA_ADPCM);
+  assert(read_u32(buffer, 8) == encoder.samples && read_u32(buffer, 12) == 1234567u);
+  assert(memo_encoder_seconds(&encoder) == 0u || memo_encoder_seconds(&encoder) == 1u);
+
+  static int16_t pcm[16000];
+  decode(buffer, encoder.samples, pcm);
+  double snr = tone_snr_db(pcm, encoder.samples, 440.0);
+  assert(snr > 20.0);
+
+  // A 7 kHz tone lies above the 4 kHz output band; the half-band filter must suppress it.
+  assert(memo_encoder_begin(&encoder, buffer, sizeof(buffer)));
+  phase = 0;
+  feed_tone(&encoder, 7000.0, 12000.0, 16000u, &phase);
+  uint32_t alias_samples = encoder.samples;
+  memo_encoder_finish(&encoder, 0u);
+  decode(buffer, alias_samples, pcm);
+  double energy = 0;
+  for (uint32_t i = 400; i < alias_samples; i++) energy += (double)pcm[i] * pcm[i];
+  double rms = sqrt(energy / (alias_samples - 400u));
+  assert(rms < 12000.0 / sqrt(2.0) * 0.12); // At least ~18 dB down.
+
+  // Capacity is a hard bound: overflow stops cleanly with an even or odd final sample.
+  static uint8_t tiny[MEMO_HEADER + 101u];
+  assert(memo_encoder_begin(&encoder, tiny, sizeof(tiny)));
+  phase = 0;
+  int16_t loud[320];
+  for (int i = 0; i < 320; i++) loud[i] = (int16_t)(i % 2 ? 30000 : -30000);
+  bool room = true;
+  for (int i = 0; i < 20 && room; i++) room = memo_encoder_push(&encoder, loud, 320u);
+  assert(!room && encoder.full && encoder.length == sizeof(tiny) && encoder.samples == 202u);
+  assert(!memo_encoder_push(&encoder, loud, 320u) && encoder.samples == 202u);
+  assert(memo_encoder_finish(&encoder, 0u) == sizeof(tiny));
+
+  // Fixture for the Kotlin decoder: 1.5 s of 440 Hz, odd sample count included.
+  static uint8_t fixture[MEMO_HEADER + 2u * MEMO_BYTES_PER_SECOND];
+  assert(memo_encoder_begin(&encoder, fixture, sizeof(fixture)));
+  phase = 0;
+  feed_tone(&encoder, 440.0, 12000.0, 24003u, &phase);
+  uint32_t fixture_length = memo_encoder_finish(&encoder, 42u);
+  if (argc > 1) {
+    FILE *file = fopen(argv[1], "wb");
+    assert(file != NULL && fwrite(fixture, 1, fixture_length, file) == fixture_length && fclose(file) == 0);
+  }
+  printf("Voice memo codec: CRC-32, header, bounds, 440 Hz SNR %.1f dB, 7 kHz suppressed to %.0f RMS, fixture %u bytes passed\n",
+         snr, rms, (unsigned)fixture_length);
+  return 0;
+}

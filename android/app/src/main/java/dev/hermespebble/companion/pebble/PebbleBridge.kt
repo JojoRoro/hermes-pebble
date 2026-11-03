@@ -192,6 +192,15 @@ class PebbleBridge(
             status = if (complete) WireStatus.NOTE_SAVED.value else WireStatus.WAITING_FOR_PHONE.value)
     }
 
+    suspend fun sendMemoReceipt(watch: String, block: VoiceMemoBlock, saved: Boolean) {
+        sendTransfer(watch = watch, kind = WireMessageKind.MEMO_RECEIPT,
+            captureId = block.captureId, correlationId = block.transferId,
+            pageOffset = block.total, totalBytes = block.total, generation = block.checksum,
+            flags = WireProtocol.FLAG_DURABLE_COMMIT,
+            status = if (saved) WireStatus.NOTE_SAVED.value else WireStatus.FAILED.value,
+            errorCode = if (saved) WireError.NONE.value else WireError.MALFORMED.value)
+    }
+
     fun onAudioStatus(watch: String, message: WireMessage) {
         DiagnosticLog.record("Audio", "Watch status ${message.status}; confirmed ${message.pageOffset}/${message.totalBytes} bytes")
         audioTransfer.onStatus(watch, message)

@@ -53,6 +53,7 @@ enum class WireMessageKind(val value: Int) {
     STOP_REQUEST(8),
     INK_BLOCK(9),
     AUDIO_STATUS(10),
+    MEMO_BLOCK(11),
     HANDSHAKE_ACK(101),
     DURABLE_RECEIPT(102),
     STATUS_UPDATE(103),
@@ -67,6 +68,7 @@ enum class WireMessageKind(val value: Int) {
     AUDIO_PLAY(112),
     AUDIO_CANCEL(113),
     VOICE_STATUS(114),
+    MEMO_RECEIPT(115),
     ;
 
     companion object {
@@ -392,6 +394,35 @@ object OutgoingProtocolCodec {
     }
 
     private fun isContinuation(value: Byte): Boolean = (value.toInt() and 0xc0) == 0x80
+}
+
+sealed interface MemoBlockDecode {
+    data object NotMemo : MemoBlockDecode
+    data class Invalid(val reason: String) : MemoBlockDecode
+    data class Block(val block: VoiceMemoBlock) : MemoBlockDecode
+}
+
+/**
+ * Voice memo blocks bypass [IncomingTransferAssembler]: each is one AppMessage of up to
+ * [VoiceMemoCodec.MAX_BLOCK_BYTES] binary bytes, so they need neither chunking nor the 1 KiB cap.
+ */
+fun decodeMemoBlock(data: PebbleDictionary): MemoBlockDecode {
+    if (data.uint8(WireProtocol.KEY_MESSAGE_KIND) != WireMessageKind.MEMO_BLOCK.value) return MemoBlockDecode.NotMemo
+    if (data.uint8(WireProtocol.KEY_PROTOCOL_VERSION) != WireProtocol.VERSION) return MemoBlockDecode.Invalid("Protocol version differs")
+    val block = VoiceMemoBlock(
+        transferId = data.uint32(WireProtocol.KEY_TRANSFER_ID)?.takeIf { it != 0L } ?: return MemoBlockDecode.Invalid("Transfer ID is missing"),
+        captureId = data.uint32(WireProtocol.KEY_CAPTURE_ID) ?: return MemoBlockDecode.Invalid("Capture ID is missing"),
+        offset = data.uint32(WireProtocol.KEY_PAGE_OFFSET) ?: return MemoBlockDecode.Invalid("Offset is missing"),
+        total = data.uint32(WireProtocol.KEY_TOTAL_BYTES) ?: return MemoBlockDecode.Invalid("Total size is missing"),
+        checksum = data.uint32(WireProtocol.KEY_CONVERSATION_GENERATION) ?: return MemoBlockDecode.Invalid("Checksum is missing"),
+        payload = data.bytes(WireProtocol.KEY_PAYLOAD) ?: return MemoBlockDecode.Invalid("Payload is missing"),
+    )
+    return try {
+        VoiceMemoCodec.validateBlock(block)
+        MemoBlockDecode.Block(block)
+    } catch (error: IllegalArgumentException) {
+        MemoBlockDecode.Invalid(error.message ?: "Invalid memo block")
+    }
 }
 
 fun decodeUtf8(bytes: ByteArray): String = Charsets.UTF_8.newDecoder()

@@ -64,6 +64,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 8 | Watch → phone | `STOP_REQUEST` | Transfer, original capture |
 | 9 | Watch → phone | `INK_BLOCK` | Capture, one binary block, byte offset, total ink bytes, whole-file CRC in generation |
 | 10 | Watch → phone | `AUDIO_STATUS` | Correlation, audio session in capture, audio status, confirmed byte offset, total audio bytes, checksum in generation |
+| 11 | Watch → phone | `MEMO_BLOCK` | Capture, one binary block of up to 1,024 bytes, byte offset, total memo bytes, whole-file CRC in generation, flags `0x01` while more follows |
 | 101 | Phone → watch | `HANDSHAKE_ACK` | Transfer, correlation, protocol version, conversation generation |
 | 102 | Phone → watch | `DURABLE_RECEIPT` | Transfer, correlation, capture, item kind, item ID when assigned, status |
 | 103 | Phone → watch | `STATUS_UPDATE` | Transfer, correlation zero, capture, item ID, status, error code, flags |
@@ -77,6 +78,8 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 111 | Phone → watch | `AUDIO_BLOCK` | Session, offset, binary PCM block, total, checksum, format |
 | 112 | Phone → watch | `AUDIO_PLAY` | Session, total, checksum, format; empty payload |
 | 113 | Phone → watch | `AUDIO_CANCEL` | Session to discard/stop; empty payload |
+| 114 | Phone → watch | `VOICE_STATUS` | Originating capture, UTF-8 voice-reply status payload (presentation only) |
+| 115 | Phone → watch | `MEMO_RECEIPT` | Correlation, capture, total, CRC, durable flag; status 13 when saved, status 8 with error 3 when rejected |
 
 A phone reply is stale and ignored when its `CorrelationId` does not match the current screen's outstanding transfer. A status for an older capture never replaces a newer visible screen.
 
@@ -301,3 +304,30 @@ BEGIN allocates a 24,576-byte PCM ring. PLAY is accepted once at least 12,288 sa
 The speaker stays in one stream while packets refill the ring. Partial writes and ring wrap retain exact sample ordering. If empty, the pump waits for 12,288 samples or the remaining complete tail before feeding it again. Streaming stalls expire after 30 seconds without accepted packets or speaker progress; Android bounds the whole exchange to nine minutes. Final completion still comes only from the speaker callback, after the final block receipt has been queued. Back, Quiet Time and cancellation discard the ring.
 
 No new audio data is persisted. Format 2 is rejected by v0.1.18; the old cache namespace is retained only for migration cleanup, one page per idle 250 ms timer event, paused while any audio session is active. Status 10 remains reserved for compatibility with v0.1.17. Startup UI percentage describes the small initial buffer; remaining packets do not overwrite the playing footer.
+## Voice memos
+
+Added in 0.1.21; install matching APK/PBW versions. Requires watch firmware 4.43 or newer: the PBW is built with SDK revision 111 (`mic_capture_start`), and older firmware refuses to install an app built against a newer SDK minor version.
+
+### HVM1 file
+
+All multi-byte integers are little-endian.
+
+| Offset | Bytes | Meaning |
+| ---: | ---: | --- |
+| 0 | 4 | ASCII `HVM1` |
+| 4 | 2 | Sample rate, 8000 |
+| 6 | 1 | Codec, 1 = IMA ADPCM, 4 bits per sample, mono |
+| 7 | 1 | Reserved, 0 |
+| 8 | 4 | Sample count *n* |
+| 12 | 4 | Watch time at the end of recording, Unix seconds |
+| 16 | ⌈*n*/2⌉ | ADPCM codes, low nibble first; predictor and step index start at 0 |
+
+The microphone delivers 16 kHz signed 16-bit mono PCM in 320-sample callbacks (256 kbit/s). The watch low-pass filters with the half-band kernel (−1, 0, 9, 16, 9, 0, −1)/32, keeps every second sample, and encodes IMA ADPCM: 32 kbit/s, 4,000 bytes per second. The memo exists only in watch RAM; it is never written to persistent storage. Its size is all free heap above an 8 KiB reserve, capped at 30 seconds; the watch shows the actual limit.
+
+### Transfer
+
+Each kind-11 message is one AppMessage, not chunked: it carries only `ProtocolVersion`, `MessageKind`, `TransferId`, `CaptureId`, `PageOffset`, `TotalBytes`, `ConversationGeneration` (CRC-32/IEEE of the whole HVM1 file), `Flags` and `Payload`, so a 768-byte block fits the 1,024-byte outbox with about 80 bytes to spare. `CaptureId` comes from the durable watch counter. Android decodes these messages before the text-transfer assembler, so the 192-byte chunk and 1,024-byte transfer limits do not apply.
+
+Flow control is the AppMessage ACK. Android returns ACK only after the block is appended to `partial/<watch>-<capture>-<crc>.part` in app storage, so the watch sends the next block from its outbox-sent callback without waiting for a separate receipt. Blocks that repeat stored bytes are acknowledged without writing; a block at offset 0 restarts the partial file; a gap or conflicting bytes gets NACK. The watch yields to the main transport whenever it has a transfer in progress. After NACKs it backs off (0.5–4 s), halves the block size after two consecutive refusals (minimum 192 bytes), and gives up after six. A manual retry restarts at offset 0 with 768-byte blocks.
+
+When the last byte arrives, Android checks the length and CRC, decodes the ADPCM, removes DC offset, normalizes the peak (at most 12× gain), and saves a 16-bit 8 kHz WAV as `<receivedAt>-<watch>-<capture>-<crc>.wav`. It then sends kind 115 with status 13 (or status 8, error 3, discarding the partial file when the checksum or header is wrong). The watch frees the clip only on a matching status-13 receipt. If no receipt arrives within 15 seconds, it resends the final block, up to three times; Android repeats the receipt for a memo it already saved. A receipt that overtakes the final ACK is accepted. Partial files older than a day are deleted when a new memo starts. Deleting a memo in the Android app removes its WAV file; app backups exclude these files.

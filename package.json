@@ -1,7 +1,7 @@
 {
   "name": "hermes-pebble",
   "author": "hermes-pebble",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},
@@ -9,9 +9,11 @@
     "displayName": "Hermes Pebble",
     "uuid": "7d07aa22-7d13-48c1-a400-2602a5ae4647",
     "sdkVersion": "3",
+    "manifestVersion": 2,
     "enableMultiJS": false,
     "targetPlatforms": ["emery"],
     "capabilities": ["health"],
+    "usesPermissions": ["WatchMicrophone"],
     "watchapp": { "watchface": false },
     "messageKeys": {
       "ProtocolVersion": 0,

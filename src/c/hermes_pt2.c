@@ -52,6 +52,7 @@
 #define ROW_RECONNECT 9u
 #define ROW_BIKE 10u
 #define ROW_ERROR 11u
+#define ROW_MEMO 12u
 
 // Ready work runs almost immediately; nothing polls on a fixed interval.
 #define TIMER_SOON_MS 50u
@@ -417,8 +418,14 @@ static size_t json_encode_utf8(uint32_t codepoint, char *output, size_t capacity
 
 #include "audio_watch.h"
 #include "bike_watch.h"
+#include "memo_watch.h"
 
-static bool audio_dictation_active(void) { return s_dictation_session != NULL; }
+static void memo_quiet_speaker(void) {
+  if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
+}
+
+// The speaker stays quiet while either dictation or a voice memo uses the microphone.
+static bool audio_dictation_active(void) { return s_dictation_session != NULL || s_memo.state == MEMO_RECORDING; }
 
 static bool audio_send_status(uint32_t session, uint32_t total, uint32_t checksum,
                               uint32_t received, uint8_t status) {
@@ -522,6 +529,7 @@ static GColor ui_row_color(uint8_t row) {
     case ROW_BIKE:
       return GColorIslamicGreen;
     case ROW_INK: return GColorPurple;
+    case ROW_MEMO: return GColorFolly;
     case ROW_RECENT: return GColorBlueMoon;
     case ROW_STATUS: return GColorWindsorTan;
     case ROW_NEW: return GColorMidnightGreen;
@@ -566,6 +574,11 @@ static void ui_draw_icon(GContext *ctx, uint8_t icon, GPoint c, int r, GColor ba
       graphics_context_set_stroke_width(ctx, r >= 18 ? 5 : 3);
       graphics_draw_line(ctx, ui_offset(c, -u + 2, u - 2), ui_offset(c, u, -u));
       graphics_fill_circle(ctx, ui_offset(c, -u + 1, u - 1), 1);
+      break;
+    case ROW_MEMO:
+      // Record button: ring around a solid dot.
+      graphics_draw_circle(ctx, c, u + 1);
+      graphics_fill_circle(ctx, c, u / 2 + 1);
       break;
     case ROW_RECENT:
       graphics_draw_circle(ctx, c, u + 1);
@@ -827,6 +840,7 @@ static const char *ui_row_title(uint8_t row) {
     case ROW_ASK: return "Ask Hermes";
     case ROW_NOTE: return "Save note";
     case ROW_INK: return "Handwritten note";
+    case ROW_MEMO: return "Voice memo";
     case ROW_RECENT: return "Recent";
     case ROW_STATUS: return "Status";
     case ROW_NEW: return "New conversation";
@@ -843,6 +857,7 @@ static const char *ui_row_subtitle(uint8_t row) {
     case ROW_ASK: return "Dictate, review, send";
     case ROW_NOTE: return "Keep a note on your phone";
     case ROW_INK: return "Draw letters, sync later";
+    case ROW_MEMO: return memo_subtitle();
     case ROW_RECENT: return "Requests, notes & answers";
     case ROW_STATUS: return s_visible_capture_id != 0u ? status_short(s_visible_status) : "Your last request";
     case ROW_NEW: return "Start with a fresh context";
@@ -998,6 +1013,7 @@ static void ui_show_menu(void) {
     s_menu_rows[count++] = ROW_NOTE;
   }
   s_menu_rows[count++] = ROW_INK;
+  s_menu_rows[count++] = ROW_MEMO;
   s_menu_rows[count++] = ROW_RECENT;
   s_menu_rows[count++] = ROW_STATUS;
   s_menu_rows[count++] = ROW_NEW;
@@ -1292,6 +1308,11 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
         break;
       case ROW_INK:
         ink_open();
+        break;
+      case ROW_MEMO:
+        cancel_auto_result();
+        s_stay_on_menu = true;
+        memo_open();
         break;
       case ROW_RECENT:
         start_fetch_recent();
@@ -2564,6 +2585,7 @@ static void outbound_failed(uint32_t error_code, const char *text) {
 }
 
 static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
+  if (memo_on_sent(iterator)) return;
   if (!s_outbound.active) {
     return;
   }
@@ -2596,6 +2618,7 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
 static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResult result, void *context) {
   (void)context; (void)result;
   uint32_t transfer_id = 0;
+  if (memo_on_failed(iterator)) return;
   if (!read_u32(iterator, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || transfer_id != s_outbound.transfer_id) return;
   if (s_outbound.active) {
     if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
@@ -3111,7 +3134,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     inbound_error(HERMES_ERROR_PROTOCOL_VERSION, "The phone and watch use incompatible protocol versions. Update both apps.");
     return;
   }
-  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_VOICE_STATUS) {
+  if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_MEMO_RECEIPT) {
     inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported message kind.");
     return;
   }
@@ -3276,6 +3299,10 @@ static void process_phone_message(const InboundTransfer *message) {
     }
     audio_handle(message->kind, message->capture_id, message->transfer_id, message->total_bytes,
       message->generation, message->flags, message->page_offset, message->payload, message->payload_length);
+    return;
+  }
+  if (message->kind == HERMES_KIND_MEMO_RECEIPT) {
+    memo_receipt(message);
     return;
   }
   if (queue_phone_probe(message)) {
@@ -4035,6 +4062,7 @@ int main(void) {
     ink_schedule_sync();
   }
   app_event_loop();
+  memo_shutdown();
   bike_shutdown();
   audio_shutdown();
   connection_service_unsubscribe();

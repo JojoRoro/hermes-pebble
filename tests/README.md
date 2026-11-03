@@ -15,7 +15,7 @@ python3 tools/check_local.py \
   --pebble-model /path/to/PebbleDictionaryItem.kt
 ```
 
-Use SDK 4.33.1 headers and the `PebbleDictionaryItem.kt` file from PebbleKit Android 2's `common-api/src/main/kotlin/io/rebble/pebblekit2/common/model/`. The review used the repository's existing upstream source snapshot. The helper creates temporary resource/message headers and a host libc time shim; it leaves the SDK untouched.
+Use headers from an SDK that includes revision 111 (the local microphone API) and the `PebbleDictionaryItem.kt` file from PebbleKit Android 2's `common-api/src/main/kotlin/io/rebble/pebblekit2/common/model/`. The review used the repository's existing upstream source snapshot. The helper creates temporary resource/message headers and a host libc time shim; it leaves the SDK untouched.
 
 The Kotlin library directory must contain these Maven artifacts (no repository secrets or Gradle execution needed):
 
@@ -70,6 +70,12 @@ The optional local suite runs `watch_audio_test.c` against the production receiv
 After building the PBW, `tests/watch_audio_smoke.py --emulator emery` uses the same SDK Python environment as the other smoke scripts. It uploads the bundled speech clip, rejects an incomplete play, validates every block receipt, and requires playback completion. On a Linux build host without working audio, stop the existing emulator with `pebble kill`, then run the test with `SDL_AUDIODRIVER=dummy`. Without a draining audio backend, the emulator fills its 8 KiB speaker buffer and playback times out. The dummy backend exercises completion without producing audible sound. Physical audibility and Android Bluetooth/host behavior require the real phone and watch.
 
 Quiet Time cases run with speaker mute explicitly false: reject BEGIN, discard on BLOCK/PLAY, discard while waiting for blocks, stop active playback, and reject a replay after Quiet Time turns off. Kotlin checks that the new status displays an actionable message and sends no audio blocks after rejection.
+
+## Voice memo checks
+
+The default check runs `watch_memo_core_test.c` and `watch_memo_test.c` with host GCC; neither needs the SDK. The codec test checks CRC-32, the HVM1 header, hard capacity bounds, a 440 Hz round trip (about 30 dB SNR), and suppression of a 7 kHz tone by the 16→8 kHz filter. It also writes a fixture for Kotlin. The flow test includes the production `memo_watch.h` with `tests/memo_stub/pebble.h`, a minimal stand-in for the revision 111 API. It drives recording, ACK-paced blocks, receipts, a receipt that overtakes the final ACK, resend after a lost receipt, NACK backoff and block shrinking, a small outbox, yielding to the main transport, disconnection, memory bounds, permission refusal, interruption, revocation, too-short clips, and confirmed deletion.
+
+`VoiceMemoCheck.kt` decodes the C fixture, round-trips ADPCM and WAV (normalization, DC removal, silence), rejects malformed headers and blocks, and decodes memo dictionaries larger than 192 bytes. It exercises `VoiceMemoRepository` on a temporary directory: in-order append, resends, gaps, conflicting bytes, restarts, idempotent completion, a second watch, corrupt checksums and headers, cleanup of abandoned partials, reopening, and deletion. Microphone capture, Bluetooth throughput, the Core app permission flow, and Android playback need the real watch and phone.
 
 ## Bike detection checks
 

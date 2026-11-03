@@ -56,6 +56,9 @@ class AppContainer(context: Context) {
     val database: HermesDatabase = HermesDatabase.create(applicationContext)
     val inkRepository = dev.hermespebble.companion.data.local.InkRepository(database)
     val inkNotifier = dev.hermespebble.companion.pebble.InkNotifier(applicationContext, database)
+    val voiceMemoRepository = dev.hermespebble.companion.data.local.VoiceMemoRepository(
+        java.io.File(applicationContext.filesDir, "voice-memos"),
+    )
     val secretStore = SecretStore(applicationContext)
     val commandRepository = CommandRepository(database)
     val conversationRepository = ConversationRepository(database)

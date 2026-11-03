@@ -4,6 +4,7 @@ import dev.hermespebble.companion.HermesPt2Application
 import dev.hermespebble.companion.data.local.CommandState
 import dev.hermespebble.companion.data.local.CommandValidationException
 import dev.hermespebble.companion.data.local.DuplicateCaptureConflictException
+import dev.hermespebble.companion.data.local.MemoAcceptResult
 import io.rebble.pebblekit2.client.BasePebbleListenerService
 import io.rebble.pebblekit2.common.model.PebbleDictionary
 import io.rebble.pebblekit2.common.model.ReceiveResult
@@ -53,6 +54,14 @@ class PebbleListenerService : BasePebbleListenerService() {
             return ReceiveResult.Ack
         }
         bridge.markActive(watch.value)
+        when (val memo = decodeMemoBlock(data)) {
+            MemoBlockDecode.NotMemo -> Unit
+            is MemoBlockDecode.Invalid -> {
+                DiagnosticLog.record("Memo", "RX rejected: ${memo.reason}")
+                return ReceiveResult.Nack
+            }
+            is MemoBlockDecode.Block -> return handleMemoBlock(watch.value, memo.block)
+        }
         val assembler = assemblers.getOrPut(watch.value) { IncomingTransferAssembler() }
         return when (val decoded = assembler.accept(data)) {
             is DecodedChunkResult.Pending -> ReceiveResult.Ack
@@ -205,6 +214,34 @@ class PebbleListenerService : BasePebbleListenerService() {
             DiagnosticLog.record("Pebble", "RX failed; NACK: ${error.javaClass.simpleName}")
             ReceiveResult.Nack
         }
+    }
+
+    /** The ACK is the watch's flow control: it is returned only once the block is on disk. */
+    private suspend fun handleMemoBlock(watch: String, block: VoiceMemoBlock): ReceiveResult = try {
+        when (val result = withContext(Dispatchers.IO) { container.voiceMemoRepository.accept(watch, block) }) {
+            MemoAcceptResult.Accepted -> ReceiveResult.Ack
+            is MemoAcceptResult.Complete -> {
+                if (!result.duplicate) {
+                    DiagnosticLog.record("Memo", "Saved voice memo: ${result.memo.durationMillis / 1000.0}s, ${block.total} bytes from watch")
+                }
+                bridge.launch { bridge.sendMemoReceipt(watch, block, saved = true) }
+                ReceiveResult.Ack
+            }
+            is MemoAcceptResult.Corrupt -> {
+                DiagnosticLog.record("Memo", "Discarded voice memo: ${result.reason}")
+                bridge.launch { bridge.sendMemoReceipt(watch, block, saved = false) }
+                ReceiveResult.Ack
+            }
+            is MemoAcceptResult.Rejected -> {
+                DiagnosticLog.record("Memo", "Block at ${block.offset} refused: ${result.reason}")
+                ReceiveResult.Nack
+            }
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        DiagnosticLog.record("Memo", "Block at ${block.offset} failed; NACK: ${error.javaClass.simpleName}")
+        ReceiveResult.Nack
     }
 
     private suspend fun acceptDurableCommand(

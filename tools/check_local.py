@@ -52,6 +52,11 @@ def main():
         run(temp / 'bike-check')
         run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', 'tests/watch_bike_v2_test.c', '-lm', '-o', temp / 'bike-v2-check')
         run(temp / 'bike-v2-check')
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', 'tests/watch_memo_core_test.c', '-lm', '-o', temp / 'memo-core-check')
+        run(temp / 'memo-core-check', temp / 'memo-fixture.bin')
+        # The memo flow runs against a small SDK stand-in, so it needs no SDK download.
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Itests/memo_stub', 'tests/watch_memo_test.c', '-lm', '-o', temp / 'memo-check')
+        run(temp / 'memo-check')
         if args.sdk_headers:
             headers = temp / 'headers'
             shutil.copytree(args.sdk_headers, headers)
@@ -83,8 +88,10 @@ def main():
                 f'-Xplugin={plugin}', '-d', output,
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
                 SOURCES / 'network/RunConversationContext.kt',
-                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', SOURCES / 'pebble/VoicePcm.kt', SOURCES / 'pebble/VoiceAdpcm.kt', SOURCES / 'pebble/VoiceReplyRequests.kt', args.pebble_model.resolve(),
-                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt', 'tests/AudioCheck.kt')
+                SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', SOURCES / 'pebble/VoicePcm.kt', SOURCES / 'pebble/VoiceAdpcm.kt', SOURCES / 'pebble/VoiceReplyRequests.kt',
+                SOURCES / 'pebble/VoiceMemoCodec.kt', SOURCES / 'data/local/VoiceMemoRepository.kt', args.pebble_model.resolve(),
+                'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt', 'tests/AudioCheck.kt',
+                'tests/VoiceMemoCheck.kt')
             for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt', 'pebble.AudioCheckKt']:
                 run('java', '-cp', f'{classpath}:{output}', f'dev.hermespebble.companion.{entry}', *([temp / 'speech'] if entry.endswith('AudioCheckKt') else []))
             if args.sdk_headers:
@@ -117,6 +124,7 @@ def main():
 
             fixture = [temp / 'ink-fixture.bin'] if args.sdk_headers else []
             run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.InkCheckKt', *fixture)
+            run('java', '-cp', f'{classpath}:{output}', 'dev.hermespebble.companion.pebble.VoiceMemoCheckKt', temp / 'memo-fixture.bin')
 
 
 if __name__ == '__main__':

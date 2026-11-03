@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -414,11 +415,36 @@ private fun NotesScreen(state: HermesUiState, viewModel: AppViewModel, onRequest
         HandwritingDetail(selected, viewModel::showNotes)
         return
     }
+    val memos by viewModel.voiceMemos.collectAsStateWithLifecycle()
+    val playing by viewModel.playingMemoId.collectAsStateWithLifecycle()
+    var confirmDelete by remember { mutableStateOf<dev.hermespebble.companion.data.local.VoiceMemo?>(null) }
+    confirmDelete?.let { memo ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete voice memo?") },
+            text = { Text("This removes the recording from your phone. It cannot be restored.") },
+            confirmButton = { TextButton(onClick = { viewModel.deleteMemo(memo); confirmDelete = null }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
     Column(Modifier.fillMaxSize()) {
         Text("Local notes", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))
-        Text("Handwriting stays on your phone for you to review.", style = MaterialTheme.typography.bodySmall)
+        Text("Handwriting and voice memos stay on your phone for you to review.", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = onRequestNotificationPermission) { Text("Allow note sync notifications") }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(memos, key = { "memo-${it.id}" }) { memo ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            val seconds = (memo.durationMillis + 500) / 1000
+                            Text("Voice memo · ${seconds / 60}:${"%02d".format(seconds % 60)}", style = MaterialTheme.typography.titleMedium)
+                            Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(memo.receivedAt)))
+                        }
+                        TextButton(onClick = { viewModel.toggleMemoPlayback(memo) }) { Text(if (playing == memo.id) "Stop" else "Play") }
+                        TextButton(onClick = { confirmDelete = memo }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
             items(inkNotes, key = { "ink-${it.id}" }) { note ->
                 Card(Modifier.fillMaxWidth().clickable { viewModel.openInkNote(note.id) }) {
                     Column(Modifier.padding(12.dp)) {
@@ -433,7 +459,9 @@ private fun NotesScreen(state: HermesUiState, viewModel: AppViewModel, onRequest
                     Text(note.input, Modifier.padding(12.dp), maxLines = 3)
                 }
             }
-            if (notes.isEmpty() && inkNotes.isEmpty()) item { Text("No notes yet. Choose Handwritten note on your watch.", Modifier.padding(12.dp)) }
+            if (notes.isEmpty() && inkNotes.isEmpty() && memos.isEmpty()) {
+                item { Text("No notes yet. Choose Handwritten note or Voice memo on your watch.", Modifier.padding(12.dp)) }
+            }
         }
     }
 }
