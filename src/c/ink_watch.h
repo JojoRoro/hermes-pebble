@@ -285,13 +285,13 @@ static void ink_save(void) {
   encode_u32(s_ink, 8, (uint32_t)time(NULL));
   encode_u32(s_ink, 12, ink_crc(s_ink + INK_HEADER, s_ink_length - INK_HEADER));
   if (!storage_next_capture_id(&s_ink_capture) || !ink_store()) {
-    ui_show_error(HERMES_ERROR_NOTE_STORAGE, "Could not save handwriting. Your drawing is still in memory; reopen Handwritten note to retry.");
+    ui_show_error(HERMES_ERROR_NOTE_STORAGE, "Could not save. Reopen Handwritten note to retry.");
     return;
   }
   s_ink_saved = true;
   s_ink_offset = 0;
   s_ink_checksum = ink_crc(s_ink, s_ink_length);
-  snprintf(s_ink_status, sizeof(s_ink_status), "Saved on watch.\n\nWill sync to your phone when connected. Enable note sync notifications on the phone for an alert.");
+  snprintf(s_ink_status, sizeof(s_ink_status), "Saved on watch.\n\nWill sync to your phone when connected.");
   s_screen = HERMES_SCREEN_INK_STATUS;
   ink_spool();
   ui_rebuild();
@@ -360,6 +360,7 @@ static void ink_connection(bool connected) {
     s_ink_sync_requested = false;
     ui_link_changed();
   } else {
+    wm_connection();
     // A fresh connection is the best time to retry; restart the backoff.
     s_ink_retry_ms = INK_RETRY_MIN_MS;
     ink_cancel_timer(&s_ink_retry_timer);

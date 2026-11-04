@@ -248,10 +248,10 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     private val memoLogSessions = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    /** Stream mode: written before the ACK (the watch's flow control), then played live if enabled. */
+    /** Stream mode and watch memos: written before the ACK (the watch's flow control); live recordings then play if enabled. */
     private suspend fun handleMemoPart(watch: String, transferId: Long, part: VoiceMemoPart): ReceiveResult = try {
         val result = withContext(Dispatchers.IO) { container.voiceMemoRepository.acceptPart(watch, part) }
-        if (result !is MemoAcceptResult.Rejected) {
+        if (result !is MemoAcceptResult.Rejected && !part.stored) {
             try { container.liveMemoPlayer.onPart(watch, part) }
             catch (error: CancellationException) { throw error }
             catch (error: Exception) { DiagnosticLog.record("Memo", "Live playback error: ${error.javaClass.simpleName}") }
@@ -265,7 +265,7 @@ class PebbleListenerService : BasePebbleListenerService() {
         when (result) {
             MemoAcceptResult.Accepted -> ReceiveResult.Ack
             is MemoAcceptResult.Complete -> {
-                if (!result.duplicate) logSaved("streamed", result, end?.total ?: 0L)
+                if (!result.duplicate) logSaved(if (part.stored) "watch-stored" else "streamed", result, end?.total ?: 0L)
                 receipt(saved = true)
                 ReceiveResult.Ack
             }

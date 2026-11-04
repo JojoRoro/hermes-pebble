@@ -63,8 +63,6 @@ static void audio_reply(uint32_t session, uint32_t request, uint32_t total,
 }
 
 static void audio_terminal(uint8_t status) {
-  APP_LOG(APP_LOG_LEVEL_INFO, "Audio end status=%u received=%lu written=%lu total=%lu",
-    status, (unsigned long)s_audio.received, (unsigned long)s_audio.written, (unsigned long)s_audio.total);
   bool was_playing = s_audio.phase == 2u;
   s_audio.phase = 3u;
   s_audio.terminal_status = status;
@@ -83,7 +81,6 @@ static void audio_terminal(uint8_t status) {
 
 static void audio_finished(SpeakerFinishReason reason, void *context) {
   (void)context;
-  APP_LOG(APP_LOG_LEVEL_INFO, "Audio speaker finish reason=%d", (int)reason);
   if (s_audio.phase != 2u) return;
   uint8_t status = reason == SpeakerFinishReasonDone && s_audio.draining &&
     s_audio.written == s_audio.total ? HERMES_AUDIO_COMPLETE : HERMES_AUDIO_FAILED;

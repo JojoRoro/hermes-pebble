@@ -248,6 +248,9 @@ private fun liveModes(memo: ByteArray) {
     check(endPart.end!!.total == data.size.toLong() && endPart.end!!.checksum == crc && endPart.payload.isEmpty())
     check(decodeMemoStream(stream(0, header, true)) is MemoStreamDecode.Invalid) // End offset must equal total.
     check(decodeMemoBlock(stream(0, header, false)) == MemoBlockDecode.NotMemo)
+    check(!first.stored && !endPart.stored)
+    val storedPart = (decodeMemoStream(stream(0, data.copyOfRange(0, 700), false) + (WireProtocol.KEY_FLAGS to PebbleDictionaryItem.UInt8(0x41u))) as MemoStreamDecode.Part).part
+    check(storedPart.stored && storedPart.end == null)
 
     // Watch-flash items.
     val logFirst = VoiceMemoCodec.logPart(logItem(501, 0, data.copyOfRange(0, 224)))
@@ -296,6 +299,19 @@ private fun liveModes(memo: ByteArray) {
             MemoPartEnd(header, data.size.toLong(), VoiceMemoCodec.crc32(data.copyOf().also { java.util.Arrays.fill(it, 448, 672, 0) })))
         check(repository.acceptPart("watch", gapEnd, logged = true) is MemoAcceptResult.Complete)
 
+        // Sent from watch storage: never saved incomplete by either cleanup (the watch still holds
+        // it and starts again), a restart overwrites the partial copy, and the end saves it once.
+        val stored = pieces.map { VoiceMemoPart(507, it.offset, it.payload, stored = true) }
+        stored.take(4).forEach { check(repository.acceptPart("watch", it) == MemoAcceptResult.Accepted) }
+        check(repository.finishIncomplete("watch", logged = false).isEmpty())
+        check(repository.finishIncomplete("watch", logged = true, idleMillis = 0).isEmpty())
+        stored.forEach { check(repository.acceptPart("watch", it) == MemoAcceptResult.Accepted) }
+        val storedEnd = VoiceMemoPart(507, data.size.toLong(), ByteArray(0), MemoPartEnd(header, data.size.toLong(), crc), stored = true)
+        val storedSaved = repository.acceptPart("watch", storedEnd) as MemoAcceptResult.Complete
+        check(!storedSaved.duplicate && storedSaved.memo.file.readBytes().contentEquals(streamed.memo.file.readBytes()))
+        check((repository.acceptPart("watch", storedEnd) as MemoAcceptResult.Complete).duplicate)
+        check(repository.memos.value.size == 4)
+
         // Cut off without an end: streams are saved when the app closes, flash only when its
         // session finishes, and an idle filter protects partial files still being written.
         pieces.take(10).forEach { repository.acceptPart("watch", VoiceMemoPart(505, it.offset, it.payload)) }
@@ -305,7 +321,7 @@ private fun liveModes(memo: ByteArray) {
         check(cut.memo.durationMillis == 750L) // 3,000 bytes = 6,000 samples.
         check(repository.finishIncomplete("watch", logged = true, captureId = 506).single().memo.durationMillis == 375L)
         check(java.io.File(directory, "partial").listFiles().orEmpty().isEmpty())
-        check(repository.memos.value.size == 5)
+        check(repository.memos.value.size == 6)
     } finally {
         directory.deleteRecursively()
     }

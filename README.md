@@ -154,7 +154,8 @@ Open **Voice memo** in the watch menu. **Up** chooses where the audio goes (the 
 | --- | --- | --- | --- |
 | **RAM** | Watch memory; after recording, **Select** sends it or **Down** twice deletes it | About 9 s (free memory, at most 30 s) | No, but Hermes must stay open until **Saved on phone** |
 | **Stream** | To the phone while you record; RAM is only a 12-second buffer | Up to 10 min | Yes. Recording stops if the buffer fills because Bluetooth fell behind |
-| **Watch flash** | Into the watch's Data Logging storage while you record; the system uploads it on its own, even after Hermes closes | Up to 2 min (640 KB shared storage) | No |
+
+**Watch memos**, its own entry in the watch menu, keeps memos on the watch: see [below](#watch-memos). Memos already recorded with the former Watch flash mode still arrive on the phone.
 
 With **Settings › Voice memos › Play streamed memos live on this phone** (on by default), a Stream-mode memo also plays on the phone speaker while you record, about a second behind. Its level is adjusted as it goes; the saved copy gets the full treatment below.
 
@@ -167,10 +168,32 @@ Limits in this first version:
 
 - **Length:** see the table. In RAM mode the idle screen shows the current maximum; every mode stops with a buzz at its limit.
 - **Quality:** the microphone delivers 16 kHz 16-bit PCM (256 kbit/s). The watch boosts it 4× (dictation uses 3×), filters it to 8 kHz and compresses it to 4-bit IMA ADPCM (32 kbit/s, 4 KB per second). That is telephone-band quality, fine for speech. The phone raises the speech to a consistent level, turns down anything much louder than speech (button clicks), and mutes the first 300 ms and last 200 ms, where pressing and releasing the button is loudest. Start speaking a moment after pressing Select. If the watch receives audio for less than 80% of the recording time it says so, because the memo then has gaps.
-- **Transfer:** RAM and Stream memos go over Bluetooth in AppMessages of up to 768 bytes, each acknowledged only after the phone has written it to disk. Watch-flash memos travel by Data Logging, which can take a while after recording; they appear in Notes when the last item arrives.
-- **Durability:** a RAM memo is lost if you leave Hermes before sending. A Stream memo cut off by closing Hermes keeps what reached the phone. A Watch-flash memo survives closing Hermes; what was saved before a restart or a full storage still arrives. Nothing is sent to Hermes or transcribed; memos stay on the phone until you delete them.
+- **Transfer:** memos go over Bluetooth in AppMessages of up to 768 bytes, each acknowledged only after the phone has written it to disk.
+- **Durability:** a RAM memo is lost if you leave Hermes before sending. A Stream memo cut off by closing Hermes keeps what reached the phone. Nothing is sent to Hermes or transcribed; memos stay on the phone until you delete them.
 
 See [the memo format and transfer](protocol/README.md#voice-memos).
+
+### Watch memos
+
+**Watch memos** in the watch menu records memos that stay on the watch. The top of its list shows the storage in use and the recording time left; **Record new memo** comes first, then every memo, newest first, with its date, length and phone status:
+
+| Status | Meaning |
+| --- | --- |
+| **Only on watch** | Not sent yet; it goes when the phone is connected and Hermes is open |
+| **Sending 41%** | On its way to the phone |
+| **Confirming on phone…** | All sent; waiting for the phone to verify the checksum |
+| **On phone** | Saved under **Notes › Voice memos**. The watch keeps its copy until you delete it |
+| **Send failed · will retry** | Tried again every 30 s or on reconnection; **Up** on the memo retries now |
+| **Deleting 30%** | Being freed in the background |
+
+**Select** on a memo opens it: **Select** plays it on the watch speaker (or stops it), **Up** sends it now, and **Down** twice deletes it from the watch only. The phone's copy stays. Playback raises quiet speech and is refused while the watch is muted or in Quiet Time.
+
+Limits:
+
+- **Length:** up to 2 minutes per memo, 14 memos, and 512 KiB of audio in total (about 2 min 10 s). Delete memos to make room.
+- **Storage:** app storage, because an app cannot read Data Logging back. Each write blocks the app briefly, so a gap is possible while the firmware enlarges or compacts the store; if much audio was missed the watch says so after recording. The cap keeps these writes fast enough for live audio and the rest of the app responsive.
+- **Sending:** only while Hermes is open on the watch, unlike the former Watch flash mode, which the system uploaded on its own. A send interrupted by closing Hermes starts that memo again next time.
+- **Firmware:** the same 4.43 or newer as voice memos. A crash during recording loses that recording; leaving the screen or closing Hermes saves it.
 
 ## Android and GrapheneOS behavior
 

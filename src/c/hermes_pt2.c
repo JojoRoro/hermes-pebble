@@ -53,6 +53,7 @@
 #define ROW_BIKE 10u
 #define ROW_ERROR 11u
 #define ROW_MEMO 12u
+#define ROW_WATCH_MEMOS 13u
 
 // Ready work runs almost immediately; nothing polls on a fixed interval.
 #define TIMER_SOON_MS 50u
@@ -272,6 +273,7 @@ typedef struct {
   char result_page[UI_RESULT_BUFFER_SIZE + 1u];
   char body_text[UI_BODY_BUFFER_SIZE];
   PendingCapture pending;
+  PendingCapture pending_stored, pending_loaded, pending_candidate; // Work copies for saving and loading.
   OutboundTransfer outbound;
   InboundTransfer inbound;
   uint8_t ink[INK_CAPACITY];
@@ -291,6 +293,9 @@ static AppBuffers *s_buffers;
 #define s_result_page (s_buffers->result_page)
 #define s_body_text (s_buffers->body_text)
 #define s_pending (s_buffers->pending)
+#define s_pending_stored (s_buffers->pending_stored)
+#define s_pending_loaded (s_buffers->pending_loaded)
+#define s_pending_candidate (s_buffers->pending_candidate)
 #define s_outbound (s_buffers->outbound)
 #define s_inbound (s_buffers->inbound)
 #define s_ink (s_buffers->ink)
@@ -446,13 +451,14 @@ static size_t json_encode_utf8(uint32_t codepoint, char *output, size_t capacity
 #include "audio_watch.h"
 #include "bike_watch.h"
 #include "memo_watch.h"
+#include "memo_store.h"
 
 static void memo_quiet_speaker(void) {
   if (s_audio.phase == 1u || s_audio.phase == 2u) audio_terminal(HERMES_AUDIO_CANCELLED);
 }
 
 // The speaker stays quiet while either dictation or a voice memo uses the microphone.
-static bool audio_dictation_active(void) { return s_dictation_session != NULL || s_memo.state == MEMO_RECORDING; }
+static bool audio_dictation_active(void) { return s_dictation_session != NULL || s_memo.state == MEMO_RECORDING || wm_audio_busy(); }
 
 static bool audio_send_status(uint32_t session, uint32_t total, uint32_t checksum,
                               uint32_t received, uint8_t status) {
@@ -557,6 +563,7 @@ static GColor ui_row_color(uint8_t row) {
       return GColorIslamicGreen;
     case ROW_INK: return GColorPurple;
     case ROW_MEMO: return GColorFolly;
+    case ROW_WATCH_MEMOS: return GColorOrange;
     case ROW_RECENT: return GColorBlueMoon;
     case ROW_STATUS: return GColorWindsorTan;
     case ROW_NEW: return GColorMidnightGreen;
@@ -606,6 +613,12 @@ static void ui_draw_icon(GContext *ctx, uint8_t icon, GPoint c, int r, GColor ba
       // Record button: ring around a solid dot.
       graphics_draw_circle(ctx, c, u + 1);
       graphics_fill_circle(ctx, c, u / 2 + 1);
+      break;
+    case ROW_WATCH_MEMOS:
+      // Watch: a round case with a strap above and below.
+      graphics_draw_circle(ctx, c, u);
+      graphics_draw_line(ctx, ui_offset(c, -u / 2, -u - 1), ui_offset(c, u / 2, -u - 1));
+      graphics_draw_line(ctx, ui_offset(c, -u / 2, u + 1), ui_offset(c, u / 2, u + 1));
       break;
     case ROW_RECENT:
       graphics_draw_circle(ctx, c, u + 1);
@@ -868,6 +881,7 @@ static const char *ui_row_title(uint8_t row) {
     case ROW_NOTE: return "Save note";
     case ROW_INK: return "Handwritten note";
     case ROW_MEMO: return "Voice memo";
+    case ROW_WATCH_MEMOS: return "Watch memos";
     case ROW_RECENT: return "Recent";
     case ROW_STATUS: return "Status";
     case ROW_NEW: return "New conversation";
@@ -885,6 +899,7 @@ static const char *ui_row_subtitle(uint8_t row) {
     case ROW_NOTE: return "Keep a note on your phone";
     case ROW_INK: return "Draw letters, sync later";
     case ROW_MEMO: return memo_subtitle();
+    case ROW_WATCH_MEMOS: return wm_subtitle();
     case ROW_RECENT: return "Requests, notes & answers";
     case ROW_STATUS: return s_visible_capture_id != 0u ? status_short(s_visible_status) : "Your last request";
     case ROW_NEW: return "Start with a fresh context";
@@ -1021,7 +1036,7 @@ static void ui_rebuild(void) {
       break;
     case HERMES_SCREEN_CONNECTING:
       ui_show_notice(HERMES_SCREEN_CONNECTING, "Connect", ROW_RECONNECT, "Connecting…",
-          "Waiting for the phone. If this takes long, open Hermes Pebble on Android and select your Pebble host in Setup.", NULL);
+          "Waiting for the phone. If slow, select your Pebble host in Android Setup.", NULL);
       break;
     default:
       s_screen = HERMES_SCREEN_MENU;
@@ -1041,6 +1056,7 @@ static void ui_show_menu(void) {
   }
   s_menu_rows[count++] = ROW_INK;
   s_menu_rows[count++] = ROW_MEMO;
+  s_menu_rows[count++] = ROW_WATCH_MEMOS;
   s_menu_rows[count++] = ROW_RECENT;
   s_menu_rows[count++] = ROW_STATUS;
   s_menu_rows[count++] = ROW_NEW;
@@ -1340,6 +1356,11 @@ static void menu_select(void *context, MenuLayer *menu_layer, MenuIndex *selecti
         cancel_auto_result();
         s_stay_on_menu = true;
         memo_open();
+        break;
+      case ROW_WATCH_MEMOS:
+        cancel_auto_result();
+        s_stay_on_menu = true;
+        wm_open();
         break;
       case ROW_RECENT:
         start_fetch_recent();
@@ -2132,7 +2153,6 @@ static bool storage_save_pending(const PendingCapture *pending) {
   uint8_t chunk_lengths[HERMES_MAX_CHUNKS] = {0};
   uint16_t offsets[HERMES_MAX_CHUNKS];
   uint8_t encoded[HERMES_STORAGE_META_SIZE];
-  static PendingCapture stored;
   uint8_t count;
   uint8_t i;
   if (pending == NULL || pending->length == 0u || pending->length > HERMES_MAX_DICTATION_BYTES || !utf8_valid((const uint8_t *)pending->text, pending->length)) {
@@ -2156,16 +2176,16 @@ static bool storage_save_pending(const PendingCapture *pending) {
       return false;
     }
   }
-  stored = *pending;
-  stored.chunk_count = count;
-  memcpy(stored.chunk_lengths, chunk_lengths, sizeof(chunk_lengths));
-  encode_pending_meta(&stored, encoded, 0u);
+  s_pending_stored = *pending;
+  s_pending_stored.chunk_count = count;
+  memcpy(s_pending_stored.chunk_lengths, chunk_lengths, sizeof(chunk_lengths));
+  encode_pending_meta(&s_pending_stored, encoded, 0u);
   if (persist_write_data(HERMES_STORAGE_KEY_PENDING_META, encoded, sizeof(encoded)) != (int)sizeof(encoded)) {
     storage_delete_chunks();
     (void)persist_delete(HERMES_STORAGE_KEY_PENDING_META);
     return false;
   }
-  encode_pending_meta(&stored, encoded, HERMES_PENDING_COMMIT);
+  encode_pending_meta(&s_pending_stored, encoded, HERMES_PENDING_COMMIT);
   if (persist_write_data(HERMES_STORAGE_KEY_PENDING_META, encoded, sizeof(encoded)) != (int)sizeof(encoded)) {
     storage_delete_chunks();
     (void)persist_delete(HERMES_STORAGE_KEY_PENDING_META);
@@ -2176,7 +2196,6 @@ static bool storage_save_pending(const PendingCapture *pending) {
 
 static bool storage_load_pending(void) {
   uint8_t encoded[HERMES_STORAGE_META_SIZE];
-  static PendingCapture loaded;
   uint8_t count;
   uint8_t i;
   uint32_t expected_crc;
@@ -2201,46 +2220,46 @@ static bool storage_load_pending(void) {
     s_discard_capture_id = 0u;
     return true;
   }
-  memset(&loaded, 0, sizeof(loaded));
-  if (!decode_pending_meta(encoded, &loaded)) {
+  memset(&s_pending_loaded, 0, sizeof(s_pending_loaded));
+  if (!decode_pending_meta(encoded, &s_pending_loaded)) {
     s_storage_corrupt = true;
     s_discard_capture_id = decode_u32(encoded, 8u);
     return false;
   }
   if (decode_u32(encoded, 28u) != s_counter || decode_u32(encoded, 32u) != s_install_hash) {
     s_storage_corrupt = true;
-    s_discard_capture_id = loaded.capture_id;
+    s_discard_capture_id = s_pending_loaded.capture_id;
     return false;
   }
-  count = (uint8_t)((loaded.length + HERMES_STORAGE_CHUNK_SIZE - 1u) / HERMES_STORAGE_CHUNK_SIZE);
-  if (loaded.chunk_count != count) {
+  count = (uint8_t)((s_pending_loaded.length + HERMES_STORAGE_CHUNK_SIZE - 1u) / HERMES_STORAGE_CHUNK_SIZE);
+  if (s_pending_loaded.chunk_count != count) {
     s_storage_corrupt = true;
-    s_discard_capture_id = loaded.capture_id;
+    s_discard_capture_id = s_pending_loaded.capture_id;
     return false;
   }
-  if (loaded.length == 0u) {
+  if (s_pending_loaded.length == 0u) {
     s_storage_corrupt = true;
-    s_discard_capture_id = loaded.capture_id;
+    s_discard_capture_id = s_pending_loaded.capture_id;
     return false;
   }
   for (i = 0u; i < count; i++) {
-    uint16_t expected_length = i + 1u < count ? HERMES_STORAGE_CHUNK_SIZE : (uint16_t)(loaded.length - (uint16_t)i * HERMES_STORAGE_CHUNK_SIZE);
-    if (expected_length == 0u || expected_length > HERMES_STORAGE_CHUNK_SIZE || persist_read_data(HERMES_STORAGE_KEY_CHUNK_BASE + i, loaded.text + (uint16_t)i * HERMES_STORAGE_CHUNK_SIZE, expected_length) != expected_length) {
+    uint16_t expected_length = i + 1u < count ? HERMES_STORAGE_CHUNK_SIZE : (uint16_t)(s_pending_loaded.length - (uint16_t)i * HERMES_STORAGE_CHUNK_SIZE);
+    if (expected_length == 0u || expected_length > HERMES_STORAGE_CHUNK_SIZE || persist_read_data(HERMES_STORAGE_KEY_CHUNK_BASE + i, s_pending_loaded.text + (uint16_t)i * HERMES_STORAGE_CHUNK_SIZE, expected_length) != expected_length) {
       s_storage_corrupt = true;
-      s_discard_capture_id = loaded.capture_id;
+      s_discard_capture_id = s_pending_loaded.capture_id;
       return false;
     }
   }
-  loaded.text[loaded.length] = '\0';
+  s_pending_loaded.text[s_pending_loaded.length] = '\0';
   stored_crc = decode_u32(encoded, 24u);
-  expected_crc = pending_crc(&loaded);
-  if (stored_crc != expected_crc || !utf8_valid((const uint8_t *)loaded.text, loaded.length)) {
+  expected_crc = pending_crc(&s_pending_loaded);
+  if (stored_crc != expected_crc || !utf8_valid((const uint8_t *)s_pending_loaded.text, s_pending_loaded.length)) {
     s_storage_corrupt = true;
-    s_discard_capture_id = loaded.capture_id;
+    s_discard_capture_id = s_pending_loaded.capture_id;
     return false;
   }
-  s_pending = loaded;
-  s_discard_capture_id = loaded.capture_id;
+  s_pending = s_pending_loaded;
+  s_discard_capture_id = s_pending_loaded.capture_id;
   s_storage_corrupt = false;
   return true;
 }
@@ -2527,7 +2546,7 @@ static void outbound_schedule_retry(void) {
     return;
   }
   if (s_outbound.retry_count >= HERMES_MAX_RETRY_COUNT) {
-    outbound_failed(HERMES_ERROR_WATCH_UNAVAILABLE, "No phone reply. Open Android Setup and select your Pebble host. Then choose Reconnect here. Drafts stay saved.");
+    outbound_failed(HERMES_ERROR_WATCH_UNAVAILABLE, "No phone reply. Select your Pebble host in Android Setup, then Reconnect here.");
     return;
   }
   s_outbound.retry_count++;
@@ -2612,7 +2631,7 @@ static void outbound_failed(uint32_t error_code, const char *text) {
 }
 
 static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
-  if (memo_on_sent(iterator)) return;
+  if (memo_on_sent(iterator) || wm_on_sent(iterator)) return;
   if (!s_outbound.active) {
     return;
   }
@@ -2645,7 +2664,7 @@ static void outbound_message_sent(DictionaryIterator *iterator, void *context) {
 static void outbound_message_failed(DictionaryIterator *iterator, AppMessageResult result, void *context) {
   (void)context; (void)result;
   uint32_t transfer_id = 0;
-  if (memo_on_failed(iterator)) return;
+  if (memo_on_failed(iterator) || wm_on_failed(iterator)) return;
   if (!read_u32(iterator, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || transfer_id != s_outbound.transfer_id) return;
   if (s_outbound.active) {
     if (s_outbound.kind == HERMES_KIND_HANDSHAKE && s_phone_probe_id != 0u) {
@@ -2758,7 +2777,6 @@ static void start_handshake(void) {
 }
 
 static void prepare_capture(uint8_t operation) {
-  static PendingCapture candidate;
   uint32_t capture_id;
   uint8_t kind;
   uint8_t expected_kind;
@@ -2777,24 +2795,24 @@ static void prepare_capture(uint8_t operation) {
     return;
   }
   if (!storage_next_capture_id(&capture_id)) {
-    ui_show_error(operation == HERMES_PENDING_NOTE ? HERMES_ERROR_NOTE_STORAGE : HERMES_ERROR_DURABLE_STORAGE, "The watch capture counter could not be persisted.");
+    ui_show_error(operation == HERMES_PENDING_NOTE ? HERMES_ERROR_NOTE_STORAGE : HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
     return;
   }
-  memset(&candidate, 0, sizeof(candidate));
-  candidate.operation = operation;
-  candidate.capture_id = capture_id;
-  candidate.transfer_id = next_transfer_id();
-  candidate.generation = s_generation;
-  candidate.length = length;
-  memcpy(candidate.text, s_capture_text, length);
-  candidate.text[length] = '\0';
-  if (!storage_save_pending(&candidate)) {
-    ui_show_error(operation == HERMES_PENDING_NOTE ? HERMES_ERROR_NOTE_STORAGE : HERMES_ERROR_DURABLE_STORAGE, "The pending capture could not be committed on the watch.");
+  memset(&s_pending_candidate, 0, sizeof(s_pending_candidate));
+  s_pending_candidate.operation = operation;
+  s_pending_candidate.capture_id = capture_id;
+  s_pending_candidate.transfer_id = next_transfer_id();
+  s_pending_candidate.generation = s_generation;
+  s_pending_candidate.length = length;
+  memcpy(s_pending_candidate.text, s_capture_text, length);
+  s_pending_candidate.text[length] = '\0';
+  if (!storage_save_pending(&s_pending_candidate)) {
+    ui_show_error(operation == HERMES_PENDING_NOTE ? HERMES_ERROR_NOTE_STORAGE : HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
     return;
   }
   s_voice_capture_id = 0u;
   s_voice_status[0] = '\0';
-  s_pending = candidate;
+  s_pending = s_pending_candidate;
   s_discard_capture_id = capture_id;
   cancel_auto_result();
   s_follow_capture_id = operation == HERMES_PENDING_REQUEST ? capture_id : 0u;
@@ -2819,7 +2837,7 @@ static void prepare_capture(uint8_t operation) {
   }
   s_screen = HERMES_SCREEN_STATUS;
   ui_rebuild();
-  outbound_start(kind, expected_kind, candidate.transfer_id, candidate.capture_id, candidate.generation, 0u, 0u, 0u, HERMES_STATUS_WAITING_PHONE, HERMES_ERROR_NONE, s_visible_item_kind, HERMES_STATUS_WAITING_PHONE, 0u, 0u, (const uint8_t *)candidate.text, candidate.length);
+  outbound_start(kind, expected_kind, s_pending_candidate.transfer_id, s_pending_candidate.capture_id, s_pending_candidate.generation, 0u, 0u, 0u, HERMES_STATUS_WAITING_PHONE, HERMES_ERROR_NONE, s_visible_item_kind, HERMES_STATUS_WAITING_PHONE, 0u, 0u, (const uint8_t *)s_pending_candidate.text, s_pending_candidate.length);
   if (!s_outbound.active) {
     ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The pending capture is retained, but the transfer could not be started.");
   }
@@ -3154,7 +3172,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   flags = 0u;
   (void)context;
   if (!read_u8(iter, HERMES_KEY_PROTOCOL_VERSION, &protocol_version, true) || !read_u8(iter, HERMES_KEY_MESSAGE_KIND, &kind, true) || !read_u32(iter, HERMES_KEY_TRANSFER_ID, &transfer_id, true) || !read_u32(iter, HERMES_KEY_CAPTURE_ID, &capture_id, false) || !read_u8(iter, HERMES_KEY_CHUNK_INDEX, &chunk_index, true) || !read_u8(iter, HERMES_KEY_CHUNK_COUNT, &chunk_count, true)) {
-    inbound_error(HERMES_ERROR_MALFORMED, "Missing or invalid required phone fields.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Invalid data from the phone. Try again.");
     return;
   }
   if (protocol_version != HERMES_PROTOCOL_VERSION) {
@@ -3162,29 +3180,29 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     return;
   }
   if (kind < HERMES_KIND_HANDSHAKE_ACK || kind > HERMES_KIND_MEMO_RECEIPT) {
-    inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported message kind.");
+    inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "Invalid data from the phone. Try again.");
     return;
   }
   if (transfer_id == 0u || chunk_count == 0u || chunk_count > HERMES_MAX_CHUNKS || chunk_index >= chunk_count) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid phone transfer ID or chunk range.");
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid data from the phone. Try again.");
     return;
   }
   if (!read_u32(iter, HERMES_KEY_CORRELATION_ID, &correlation_id, false) || !read_u32(iter, HERMES_KEY_ITEM_ID, &item_id, false) || !read_u8(iter, HERMES_KEY_STATUS, &status, false) || !read_u8(iter, HERMES_KEY_ERROR_CODE, &error_code, false) || !read_u8(iter, HERMES_KEY_ITEM_STATE, &item_state, false) || !read_u8(iter, HERMES_KEY_ITEM_KIND, &item_kind, false) || !read_u32(iter, HERMES_KEY_PAGE_OFFSET, &page_offset, false) || !read_u8(iter, HERMES_KEY_PAGE_COUNT, &page_count, false) || !read_u32(iter, HERMES_KEY_TOTAL_BYTES, &total_bytes, false) || !read_u32(iter, HERMES_KEY_CONVERSATION_GENERATION, &generation, false) || !read_u8(iter, HERMES_KEY_FLAGS, &flags, false) || !read_bytes(iter, HERMES_KEY_PAYLOAD, &payload, HERMES_AUDIO_CHUNK_PAYLOAD_SIZE, &payload_length, false)) {
-    inbound_error(HERMES_ERROR_MALFORMED, "Invalid phone field type or chunk size.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Invalid data from the phone. Try again.");
     return;
   }
   if (payload_length > (kind == HERMES_KIND_AUDIO_BLOCK ? HERMES_AUDIO_CHUNK_PAYLOAD_SIZE : HERMES_CHUNK_PAYLOAD_SIZE)) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "The phone sent a chunk outside its payload limit.");
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid data from the phone. Try again.");
     return;
   }
   if (!s_inbound.active && s_inbound.transfer_id == transfer_id) {
     if (s_inbound.chunk_count == chunk_count && s_inbound.chunk_lengths[chunk_index] == payload_length &&
         memcmp(s_inbound.chunks + s_inbound.chunk_offsets[chunk_index], payload, payload_length) == 0) return;
-    inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Completed transfer was repeated with different bytes.");
+    inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Invalid data from the phone. Try again.");
     return;
   }
   if (s_inbound.active && s_inbound.transfer_id != transfer_id) {
-    inbound_error(HERMES_ERROR_MALFORMED, "A second phone transfer arrived before the current transfer completed.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Invalid data from the phone. Try again.");
     return;
   }
   first_chunk = !s_inbound.active;
@@ -3210,19 +3228,19 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     s_inbound.generation = generation;
     s_inbound.flags = flags;
   } else if (!common_fields_equal(&s_inbound, protocol_version, kind, transfer_id, capture_id, chunk_count) || s_inbound.correlation_id != correlation_id || s_inbound.item_id != item_id || s_inbound.status != status || s_inbound.error_code != error_code || s_inbound.item_state != item_state || s_inbound.item_kind != item_kind || s_inbound.page_offset != page_offset || s_inbound.page_count != page_count || s_inbound.total_bytes != total_bytes || s_inbound.generation != generation || s_inbound.flags != flags) {
-    inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Chunks for one transfer carried conflicting metadata.");
+    inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Invalid data from the phone. Try again.");
     return;
   }
   duplicate = (s_inbound.received_mask & (uint8_t)(1u << chunk_index)) != 0u;
   if (duplicate) {
     if (s_inbound.chunk_lengths[chunk_index] != payload_length || memcmp(s_inbound.chunks + s_inbound.chunk_offsets[chunk_index], payload, payload_length) != 0) {
-      inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "A duplicate chunk did not match the original bytes.");
+      inbound_error(HERMES_ERROR_DUPLICATE_CHUNK, "Invalid data from the phone. Try again.");
       return;
     }
     return;
   }
   if ((uint16_t)s_inbound.total_length + payload_length > HERMES_MAX_TRANSFER_BYTES) {
-    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Phone transfer exceeds 1024 bytes.");
+    inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid data from the phone. Try again.");
     return;
   }
   s_inbound.chunk_offsets[chunk_index] = s_inbound.total_length;
@@ -3244,7 +3262,7 @@ static void process_inbound_transfer(void) {
   // local payload plus a full InboundTransfer copy overflows the watch stack.
   for (i = 0u; i < s_inbound.chunk_count; i++) {
     if (offset > HERMES_MAX_TRANSFER_BYTES || s_inbound.chunk_lengths[i] > HERMES_MAX_TRANSFER_BYTES - offset) {
-      inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Reassembled phone transfer is too large.");
+      inbound_error(HERMES_ERROR_TRANSFER_BOUND, "Invalid data from the phone. Try again.");
       return;
     }
     memcpy(s_inbound.payload + offset, s_inbound.chunks + s_inbound.chunk_offsets[i], s_inbound.chunk_lengths[i]);
@@ -3252,7 +3270,7 @@ static void process_inbound_transfer(void) {
   }
   if (offset != s_inbound.total_length ||
       (s_inbound.kind != HERMES_KIND_AUDIO_BLOCK && !utf8_valid(s_inbound.payload, offset))) {
-    inbound_error(HERMES_ERROR_MALFORMED, "Phone payload is not valid UTF-8.");
+    inbound_error(HERMES_ERROR_MALFORMED, "Invalid data from the phone. Try again.");
     return;
   }
   s_inbound.payload_length = offset;
@@ -3329,7 +3347,7 @@ static void process_phone_message(const InboundTransfer *message) {
     return;
   }
   if (message->kind == HERMES_KIND_MEMO_RECEIPT) {
-    memo_receipt(message);
+    if (!wm_receipt(message)) memo_receipt(message);
     return;
   }
   if (queue_phone_probe(message)) {
@@ -3351,7 +3369,7 @@ static void process_phone_message(const InboundTransfer *message) {
       }
       if (!storage_write_generation(message->generation)) {
         outbound_finish();
-        ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The conversation generation could not be persisted.");
+        ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
         return;
       }
       s_handshake_ready = true;
@@ -3386,7 +3404,7 @@ static void process_phone_message(const InboundTransfer *message) {
         outbound_finish();
         if (s_pending.operation != HERMES_PENDING_NONE || s_storage_corrupt) {
           if (!storage_clear_pending()) {
-            ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The phone acknowledged discard, but watch storage could not be cleared.");
+            ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
             return;
           }
         }
@@ -3400,7 +3418,7 @@ static void process_phone_message(const InboundTransfer *message) {
       }
       break;
     default:
-      inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone sent an unsupported response kind.");
+      inbound_error(HERMES_ERROR_UNSUPPORTED_KIND, "The phone reply was invalid. Try again.");
       break;
   }
 }
@@ -3422,13 +3440,13 @@ static void process_durable_receipt(const InboundTransfer *message) {
   expected_kind = s_pending.operation == HERMES_PENDING_NOTE ? HERMES_ITEM_KIND_NOTE : (s_pending.operation == HERMES_PENDING_NONE ? s_visible_item_kind : HERMES_ITEM_KIND_REQUEST);
   if (message->item_kind != HERMES_ITEM_KIND_NONE && message->item_kind != expected_kind) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The phone receipt identified a different item kind.");
+    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The phone reply was invalid. Try again.");
     return;
   }
   if (!(message->flags & HERMES_FLAG_DURABLE_COMMIT) ||
       (message->status != HERMES_STATUS_SAVED_QUEUED && message->status != HERMES_STATUS_NOTE_SAVED)) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The phone receipt did not confirm durable storage.");
+    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The phone reply was invalid. Try again.");
     return;
   }
   s_visible_capture_id = message->capture_id;
@@ -3440,7 +3458,7 @@ static void process_durable_receipt(const InboundTransfer *message) {
   if (s_pending.operation != HERMES_PENDING_NONE && message->capture_id == s_pending.capture_id) {
     if (!storage_clear_pending()) {
       outbound_finish();
-      ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The command was acknowledged, but the watch could not delete its pending copy.");
+      ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
       return;
     }
   }
@@ -3495,12 +3513,12 @@ static void process_recent_page(const InboundTransfer *message) {
   }
   if (length > UI_RESULT_BUFFER_SIZE) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The recent page was larger than the watch limit.");
+    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone reply was invalid. Try again.");
     return;
   }
   outbound_finish();
   if (!parse_recent_payload((const char *)message->payload, (uint16_t)length)) {
-    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone recent page was not valid JSON.");
+    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone reply was invalid. Try again.");
     return;
   }
   s_screen = HERMES_SCREEN_RECENT;
@@ -3516,12 +3534,12 @@ static void process_result_page(const InboundTransfer *message) {
   }
   if (length > UI_RESULT_BUFFER_SIZE) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The result page was larger than the watch limit.");
+    ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone reply was invalid. Try again.");
     return;
   }
   if (message->capture_id != s_outbound.capture_id || message->page_offset != s_result_offset) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_NOT_FOUND, "The result page did not match the requested capture.");
+    ui_show_error(HERMES_ERROR_NOT_FOUND, "The phone reply was invalid. Try again.");
     return;
   }
   s_visible_generation = message->generation;
@@ -3530,7 +3548,7 @@ static void process_result_page(const InboundTransfer *message) {
   if (!parse_result_payload((const char *)message->payload, (uint16_t)length) ||
       s_visible_capture_id != message->capture_id ||
       !result_append_page(message->page_offset, message->total_bytes, s_result_more != 0u)) {
-    outbound_failed(HERMES_ERROR_INVALID_RESPONSE, "The phone result text was inconsistent. Refresh the answer.");
+    outbound_failed(HERMES_ERROR_INVALID_RESPONSE, "The phone reply was invalid. Try again.");
     return;
   }
   // Dense newline-heavy answers also need a bounded drawing height. Keep the
@@ -3570,7 +3588,7 @@ static void process_conversation_ack(const InboundTransfer *message) {
     if (!json_uint_in_span((const char *)message->payload, message->payload_length, 0u, message->payload_length, "previous", &previous) || !json_uint_in_span((const char *)message->payload, message->payload_length, 0u, message->payload_length, "new", &next)) {
       if (message->page_offset == 0u || message->generation == 0u) {
         outbound_finish();
-        ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The conversation acknowledgment was malformed.");
+        ui_show_error(HERMES_ERROR_INVALID_RESPONSE, "The phone reply was invalid. Try again.");
         return;
       }
       previous = message->page_offset;
@@ -3579,7 +3597,7 @@ static void process_conversation_ack(const InboundTransfer *message) {
   }
   if (s_generation == UINT32_MAX || (previous != 0u && previous != s_generation)) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_IDEMPOTENCY_CONFLICT, "The conversation generation was not current.");
+    ui_show_error(HERMES_ERROR_IDEMPOTENCY_CONFLICT, "The phone reply was invalid. Try again.");
     return;
   }
   if (next == 0u) {
@@ -3587,12 +3605,12 @@ static void process_conversation_ack(const InboundTransfer *message) {
   }
   if (next <= s_generation && next != s_generation + 1u) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_IDEMPOTENCY_CONFLICT, "The conversation generation was not newer.");
+    ui_show_error(HERMES_ERROR_IDEMPOTENCY_CONFLICT, "The phone reply was invalid. Try again.");
     return;
   }
   if (!storage_write_generation(next)) {
     outbound_finish();
-    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "The new conversation generation could not be persisted.");
+    ui_show_error(HERMES_ERROR_DURABLE_STORAGE, "Could not write watch storage.");
     return;
   }
   outbound_finish();
@@ -4055,7 +4073,7 @@ static void handle_launch_reason(AppLaunchReason reason) {
 int main(void) {
   AppMessageResult open_result;
   AppLaunchReason reason;
-  if (!app_buffers_init()) return 1;
+  if (!app_buffers_init() || !memo_init()) return 1;
   s_visible_output = calloc(UI_RESULT_TEXT_SIZE + 1u, 1u);
   if (s_visible_output == NULL) { free(s_buffers); return 1; }
   s_window = window_create();
@@ -4074,6 +4092,7 @@ int main(void) {
   audio_cache_recover(); // Interrupted audio is discarded, never resumed.
   audio_schedule();
   ink_load();
+  wm_init();
   touch_navigation_load();
   connection_service_subscribe((ConnectionHandlers){ .pebble_app_connection_handler = ink_connection });
   open_result = app_message_open(HERMES_APP_MESSAGE_INBOX_SIZE, HERMES_APP_MESSAGE_OUTBOX_SIZE);
@@ -4092,8 +4111,10 @@ int main(void) {
     start_handshake();
     handle_launch_reason(reason);
     ink_schedule_sync();
+    wm_send_pump();
   }
   app_event_loop();
+  wm_shutdown();
   memo_shutdown();
   bike_shutdown();
   audio_shutdown();

@@ -59,6 +59,8 @@ def main():
         run(temp / 'memo-check')
         run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Itests/memo_stub', '-DMEMO_TEST_OLD_FIRMWARE', 'tests/watch_memo_test.c', '-lm', '-o', temp / 'memo-old-check')
         run(temp / 'memo-old-check')
+        run('gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Itests/memo_stub', 'tests/watch_memo_store_test.c', '-lm', '-o', temp / 'memo-store-check')
+        run(temp / 'memo-store-check')
         if args.sdk_headers:
             headers = temp / 'headers'
             shutil.copytree(args.sdk_headers, headers)

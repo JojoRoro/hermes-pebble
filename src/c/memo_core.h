@@ -1,6 +1,9 @@
 #ifndef HERMES_MEMO_CORE_H
 #define HERMES_MEMO_CORE_H
 
+/* Each feature uses a different part of this file. */
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -165,6 +168,74 @@ static uint32_t memo_encoder_finish(MemoEncoder *encoder, uint32_t recorded_at) 
   }
   if (!encoder->ring) memo_write_header(encoder, encoder->bytes, recorded_at);
   return encoder->length;
+}
+
+/* Watch-speaker playback: ADPCM in, signed 8-bit PCM out, one 20 ms window at a time. Mirrors the
+ * phone's live chain with integers: the first 300 ms are muted (button press), DC and rumble are
+ * removed, the gain follows the speech level, a window that would clip is turned down on its own
+ * so clicks do not duck what follows, and pauses are lowered. */
+#define MEMO_PLAY_WINDOW 160u
+#define MEMO_PLAY_LEAD_MUTE 2400u
+#define MEMO_PLAY_TARGET 5000
+#define MEMO_PLAY_LEVEL_FLOOR 40
+#define MEMO_PLAY_MAX_GAIN_Q8 (64 * 256)
+#define MEMO_PLAY_PEAK 30000
+
+typedef struct {
+  int32_t predictor, previous_in, previous_out, level;
+  uint32_t produced;
+  uint16_t filled;
+  uint8_t index;
+  int16_t window[MEMO_PLAY_WINDOW];
+} MemoPlayback;
+
+/* Turns the current window into PCM at out[(*head)++ % capacity]. */
+static void memo_playback_flush(MemoPlayback *p, int8_t *out, uint32_t capacity, uint32_t *head) {
+  if (p->filled == 0u) return;
+  int32_t sum = 0, peak = 0;
+  for (uint16_t i = 0; i < p->filled; i++) {
+    int32_t v = p->window[i] < 0 ? -(int32_t)p->window[i] : p->window[i];
+    sum += v;
+    if (v > peak) peak = v;
+  }
+  int32_t mean = sum / p->filled;
+  if (mean > 0) p->level += mean > p->level ? (mean - p->level) / 4 : -(p->level / 64);
+  int32_t level = p->level < MEMO_PLAY_LEVEL_FLOOR ? MEMO_PLAY_LEVEL_FLOOR : p->level;
+  int32_t gain = MEMO_PLAY_TARGET * 256 / level;
+  if (gain < 256) gain = 256;
+  if (gain > MEMO_PLAY_MAX_GAIN_Q8) gain = MEMO_PLAY_MAX_GAIN_Q8;
+  if (peak > 0 && (int64_t)peak * gain > (int64_t)MEMO_PLAY_PEAK * 256) gain = MEMO_PLAY_PEAK * 256 / peak;
+  if (mean * 10 < p->level) gain /= 3;
+  for (uint16_t i = 0; i < p->filled; i++) out[(*head)++ % capacity] = (int8_t)((p->window[i] * gain) >> 16);
+  p->filled = 0u;
+}
+
+static void memo_playback_nibble(MemoPlayback *p, uint8_t code, int8_t *out, uint32_t capacity, uint32_t *head) {
+  int32_t step = s_memo_steps[p->index];
+  int32_t delta = step >> 3;
+  if (code & 4u) delta += step;
+  if (code & 2u) delta += step >> 1;
+  if (code & 1u) delta += step >> 2;
+  p->predictor += (code & 8u) ? -delta : delta;
+  if (p->predictor > 32767) p->predictor = 32767;
+  if (p->predictor < -32768) p->predictor = -32768;
+  int32_t index = (int32_t)p->index + s_memo_index_steps[code & 7u];
+  p->index = (uint8_t)(index < 0 ? 0 : index > 88 ? 88 : index);
+  int32_t y = p->predictor - p->previous_in + p->previous_out * 15 / 16;
+  p->previous_in = p->predictor;
+  p->previous_out = y;
+  if (y > 32767) y = 32767;
+  if (y < -32768) y = -32768;
+  p->window[p->filled++] = p->produced++ < MEMO_PLAY_LEAD_MUTE ? 0 : (int16_t)y;
+  if (p->filled == MEMO_PLAY_WINDOW) memo_playback_flush(p, out, capacity, head);
+}
+
+/* Decodes count ADPCM bytes. The caller keeps at least (count * 2 + 160) free in out. */
+static void memo_playback_feed(MemoPlayback *p, const uint8_t *bytes, uint32_t count, int8_t *out, uint32_t capacity, uint32_t *head) {
+  for (uint32_t i = 0; i < count; i++) {
+    memo_playback_nibble(p, bytes[i] & 0x0fu, out, capacity, head);
+    memo_playback_nibble(p, bytes[i] >> 4, out, capacity, head);
+  }
 }
 
 static uint32_t memo_encoder_seconds(const MemoEncoder *encoder) {

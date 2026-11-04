@@ -4,20 +4,17 @@
 #include "mic_shim.h"
 
 /* Voice memo: record with the local microphone API (firmware 4.43+, see mic_shim.h) in one of
- * three modes, chosen with UP and remembered:
+ * two modes, chosen with UP and remembered:
  *  - RAM: the clip stays in watch RAM and is sent after recording in ACK-paced blocks (kind 11),
  *    each acknowledged once the phone has written it; a receipt confirms the checksum.
  *  - Stream: ADPCM leaves while recording (kind 12), so RAM is only a buffer; the phone can play
  *    it live. Up to MEMO_STREAM_SECONDS.
- *  - Watch flash: ADPCM goes into a Data Logging session while recording. The system keeps it in
- *    flash and uploads it by itself, even after Hermes closes. Up to MEMO_LOG_SECONDS. */
+ * Memos kept on the watch itself live in memo_store.h. */
 #define MEMO_MAX_SECONDS 30u
 #define MEMO_STREAM_SECONDS 600u
-#define MEMO_LOG_SECONDS 120u
 #define MEMO_MIN_SECONDS 3u
 #define MEMO_HEAP_RESERVE 8192u
 #define MEMO_STREAM_RING 49152u /* About 12 s of slack when Bluetooth falls behind. */
-#define MEMO_LOG_RING 16384u
 #define MEMO_MIN_RING 4096u
 #define MEMO_BLOCK_BYTES 768u
 #define MEMO_MIN_BLOCK_BYTES 192u
@@ -30,32 +27,24 @@
 /* Below this share of the elapsed time, frames were dropped and the memo has gaps. */
 #define MEMO_MIN_COVERAGE 80u
 #define MEMO_COVERAGE_MIN_ELAPSED_MS 2000u
-/* Watch flash items: capture u32, data offset u32, type u8 (0 data, 1 end), 0, length u16,
- * 4 reserved bytes, then the payload. The end item carries the HVM1 header, data CRC and length. */
-#define MEMO_LOG_TAG 0x48564c31u /* "HVL1" */
-#define MEMO_LOG_ITEM 240u
-#define MEMO_LOG_HEAD 16u
-#define MEMO_LOG_PAYLOAD (MEMO_LOG_ITEM - MEMO_LOG_HEAD)
-#define MEMO_LOG_DRAIN_MS 40u
-
 #define MEMO_MODE_RAM 0u
 #define MEMO_MODE_STREAM 1u
-#define MEMO_MODE_LOG 2u
-#define MEMO_MODES 3u
+#define MEMO_MODES 2u
 
 #define MEMO_IDLE 0u
 #define MEMO_RECORDING 1u
 #define MEMO_READY 2u
-#define MEMO_SENDING 3u /* Stream and flash modes: recording has ended, the rest is leaving. */
+#define MEMO_SENDING 3u /* Recording has ended and the memo is leaving. */
 #define MEMO_WAIT_RECEIPT 4u
 #define MEMO_SENT 5u
 #define MEMO_FAILED 6u
 
+#define MEMO_STATUS_SIZE 160u
+
 typedef struct {
   MemoEncoder encoder;
   uint8_t *buffer;
-  DataLoggingSessionRef log;
-  /* RAM mode: length and crc cover the whole file. Stream and flash: the ADPCM data only. */
+  /* RAM mode: length and crc cover the whole file. Stream: the ADPCM data only. */
   uint32_t capacity, length, crc, capture, offset, final_offset, flight_length, transfer_id, callbacks;
   time_t started_s;
   uint16_t started_ms;
@@ -63,7 +52,7 @@ typedef struct {
   uint8_t header[MEMO_HEADER];
   uint8_t state, mode, retries, receipt_waits, level;
   bool in_flight, flight_end, confirm_delete, mode_loaded;
-  char status[160];
+  char *status; /* MEMO_STATUS_SIZE, from memo_init(): kept out of the image. */
 } VoiceMemo;
 
 static VoiceMemo s_memo;
@@ -76,7 +65,7 @@ static void memo_quiet_speaker(void); // Provided by the app: stop reply playbac
 static void memo_redraw(void) { if (s_memo_layer) layer_mark_dirty(s_memo_layer); }
 
 static void memo_set_status(const char *text) {
-  snprintf(s_memo.status, sizeof(s_memo.status), "%s", text);
+  snprintf(s_memo.status, MEMO_STATUS_SIZE, "%s", text);
   memo_redraw();
 }
 
@@ -85,7 +74,7 @@ static void memo_cancel_timer(void) {
   s_memo_timer = NULL;
 }
 
-/* Stream mode sends while recording; every mode sends (or saves) in MEMO_SENDING. */
+/* Stream mode sends while recording; both modes send in MEMO_SENDING. */
 static bool memo_transferring(void) {
   return s_memo.state == MEMO_SENDING || (s_memo.state == MEMO_RECORDING && s_memo.mode == MEMO_MODE_STREAM);
 }
@@ -103,7 +92,7 @@ static void memo_tick(void *context) {
     s_memo.state = MEMO_SENDING;
     if (++s_memo.receipt_waits > 3u) {
       s_memo.state = MEMO_FAILED;
-      memo_set_status("The phone has not confirmed the memo. Check Hermes Pebble on Android, then press SELECT to resend.");
+      memo_set_status("The phone has not confirmed the memo. Press SELECT to resend.");
       return;
     }
     memo_pump();
@@ -118,9 +107,6 @@ static void memo_schedule(uint32_t ms) {
 static void memo_release(void) {
   free(s_memo.buffer);
   s_memo.buffer = NULL;
-  // Finishing an unfinished session lets the phone keep what arrived.
-  if (s_memo.log) data_logging_finish(s_memo.log);
-  s_memo.log = NULL;
   s_memo.capacity = s_memo.length = s_memo.offset = 0u;
   s_memo.in_flight = false;
   s_memo.confirm_delete = false;
@@ -134,14 +120,13 @@ static void memo_load_mode(void) {
 }
 
 static const char *memo_mode_name(void) {
-  return s_memo.mode == MEMO_MODE_STREAM ? "Stream" : s_memo.mode == MEMO_MODE_LOG ? "Watch flash" : "RAM";
+  return s_memo.mode == MEMO_MODE_STREAM ? "Stream" : "RAM";
 }
 
 /* Bytes to allocate for a new memo: all free heap above a reserve for the rest of the app,
- * up to a whole RAM-mode memo or a stream/flash ring. */
+ * up to a whole RAM-mode memo or a stream ring. */
 static uint32_t memo_capacity_for(size_t free_heap) {
-  uint32_t capacity = s_memo.mode == MEMO_MODE_STREAM ? MEMO_STREAM_RING :
-      s_memo.mode == MEMO_MODE_LOG ? MEMO_LOG_RING : MEMO_HEADER + MEMO_MAX_SECONDS * MEMO_BYTES_PER_SECOND;
+  uint32_t capacity = s_memo.mode == MEMO_MODE_STREAM ? MEMO_STREAM_RING : MEMO_HEADER + MEMO_MAX_SECONDS * MEMO_BYTES_PER_SECOND;
   uint32_t minimum = s_memo.mode == MEMO_MODE_RAM ? MEMO_HEADER + MEMO_MIN_SECONDS * MEMO_BYTES_PER_SECOND : MEMO_MIN_RING;
   if (free_heap < MEMO_HEAP_RESERVE + minimum) return 0u;
   if (capacity > free_heap - MEMO_HEAP_RESERVE) capacity = (uint32_t)(free_heap - MEMO_HEAP_RESERVE);
@@ -150,7 +135,6 @@ static uint32_t memo_capacity_for(size_t free_heap) {
 
 static uint32_t memo_max_seconds(uint32_t capacity) {
   if (s_memo.mode == MEMO_MODE_STREAM) return MEMO_STREAM_SECONDS;
-  if (s_memo.mode == MEMO_MODE_LOG) return MEMO_LOG_SECONDS;
   return capacity > MEMO_HEADER ? (capacity - MEMO_HEADER) / MEMO_BYTES_PER_SECOND : 0u;
 }
 
@@ -159,7 +143,7 @@ static const char *memo_start_error(MicCaptureStartResult result) {
     case MicCaptureStartErrBusy: return "The microphone is busy (dictation or another app). Try again in a moment.";
     case MicCaptureStartErrNotForeground: return "Keep Hermes open on screen to record.";
     case MicCaptureStartErrPermissionDenied:
-      return "Microphone not allowed. In the Pebble phone app, open Hermes Pebble and allow Microphone (needs the permission preview), then reopen Hermes.";
+      return "Allow Microphone for Hermes Pebble in the Pebble phone app, then reopen Hermes.";
     case MicCaptureStartErrUnavailable: return "This watch firmware has no microphone API. Update to 4.43 or newer.";
     case MicCaptureStartErrNoMemory: return "The watch is low on memory. Close Hermes and try again.";
     default: return "The microphone could not start.";
@@ -168,17 +152,33 @@ static const char *memo_start_error(MicCaptureStartResult result) {
 
 /* Percent of the wall-clock recording time covered by the samples that arrived (1-100). The
  * firmware drops frames when its two-frame queue overflows, which leaves gaps in the memo. */
-static uint8_t memo_coverage(uint32_t *elapsed_ms_out) {
+static uint8_t memo_coverage_of(const MemoEncoder *encoder, time_t started_s, uint16_t started_ms, uint32_t *elapsed_ms_out) {
   time_t now_s = 0;
   uint16_t now_ms = 0u;
   time_ms(&now_s, &now_ms);
-  int64_t elapsed = (int64_t)(now_s - s_memo.started_s) * 1000 + (int64_t)now_ms - (int64_t)s_memo.started_ms;
+  int32_t elapsed = (int32_t)(now_s - started_s) * 1000 + (int32_t)now_ms - (int32_t)started_ms;
   uint32_t elapsed_ms = elapsed > 0 ? (uint32_t)elapsed : 0u;
-  uint32_t captured_ms = (uint32_t)((uint64_t)s_memo.encoder.samples * 1000u / MEMO_RATE);
+  uint32_t captured_ms = encoder->samples / (MEMO_RATE / 1000u);
   if (elapsed_ms_out) *elapsed_ms_out = elapsed_ms;
   if (elapsed_ms == 0u || captured_ms >= elapsed_ms) return 100u;
   uint32_t percent = captured_ms * 100u / elapsed_ms;
   return (uint8_t)(percent < 1u ? 1u : percent);
+}
+
+/* The level meter's next value: peak distance from the frame's mean, so the microphone's DC offset
+ * does not count, on a rough log scale where each doubling adds one of twelve steps. */
+static uint8_t memo_meter(const int16_t *samples, size_t count, uint8_t previous) {
+  int32_t sum = 0, peak = 0;
+  for (size_t i = 0; i < count; i++) sum += samples[i];
+  int32_t mean = sum / (int32_t)count;
+  for (size_t i = 0; i < count; i++) {
+    int32_t v = samples[i] - mean;
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+  }
+  uint8_t level = 0u;
+  while (peak > 8 && level < 12u) { peak >>= 1; level++; }
+  return level > previous ? level : (uint8_t)(previous > 0u ? previous - 1u : 0u);
 }
 
 static void memo_assign_capture(void) {
@@ -196,18 +196,14 @@ static void memo_send_failed(const char *text) {
   memo_set_status(text);
 }
 
-static void memo_log_drain(void);
-
 static void memo_finish_recording(const char *note) {
   if (s_memo.state != MEMO_RECORDING) return;
   memo_mic_stop();
   uint32_t elapsed_ms = 0u;
-  s_memo.encoder.coverage = memo_coverage(&elapsed_ms);
-  APP_LOG(APP_LOG_LEVEL_INFO, "Memo: %lu samples in %lu ms (%u%%)", (unsigned long)s_memo.encoder.samples,
-      (unsigned long)elapsed_ms, (unsigned)s_memo.encoder.coverage);
+  s_memo.encoder.coverage = memo_coverage_of(&s_memo.encoder, s_memo.started_s, s_memo.started_ms, &elapsed_ms);
   s_memo.length = memo_encoder_finish(&s_memo.encoder, (uint32_t)time(NULL));
   s_memo.confirm_delete = false;
-  char text[sizeof(s_memo.status)];
+  char text[MEMO_STATUS_SIZE];
   if (elapsed_ms >= MEMO_COVERAGE_MIN_ELAPSED_MS && s_memo.encoder.coverage < MEMO_MIN_COVERAGE) {
     snprintf(text, sizeof(text), "%s%sThe watch missed audio: only %u%% of the time was captured.",
         note, note[0] ? " " : "", (unsigned)s_memo.encoder.coverage);
@@ -243,25 +239,12 @@ static void memo_finish_recording(const char *note) {
 static void memo_on_audio(const int16_t *samples, size_t count, void *context) {
   (void)context;
   if (s_memo.state != MEMO_RECORDING || samples == NULL || count == 0u) return;
-  // Meter the sound, not the microphone's DC offset: peak distance from the frame's mean.
-  int32_t sum = 0, peak = 0;
-  for (size_t i = 0; i < count; i++) sum += samples[i];
-  int32_t mean = sum / (int32_t)count;
-  for (size_t i = 0; i < count; i++) {
-    int32_t v = samples[i] - mean;
-    if (v < 0) v = -v;
-    if (v > peak) peak = v;
-  }
-  // Rough log scale: each doubling of amplitude adds one of twelve meter steps.
-  uint8_t level = 0u;
-  while (peak > 8 && level < 12u) { peak >>= 1; level++; }
-  s_memo.level = level > s_memo.level ? level : (uint8_t)(s_memo.level > 0u ? s_memo.level - 1u : 0u);
+  s_memo.level = memo_meter(samples, count, s_memo.level);
   bool room = memo_encoder_push(&s_memo.encoder, samples, count);
   if (!room) {
     vibes_short_pulse();
     memo_finish_recording(s_memo.mode == MEMO_MODE_STREAM ?
-        "The phone fell behind and the buffer filled, so recording stopped. The rest is being sent." :
-        s_memo.mode == MEMO_MODE_LOG ? "Watch storage fell behind, so recording stopped. What was recorded is kept." :
+        "The phone fell behind, so recording stopped. The rest is being sent." :
         "Memory full, recording stopped. SELECT sends it to your phone.");
     return;
   }
@@ -299,7 +282,7 @@ static void memo_start_recording(void) {
     return;
   }
   if (s_memo.mode == MEMO_MODE_STREAM && (!s_app_message_open || !connection_service_peek_pebble_app_connection())) {
-    memo_set_status("Stream mode needs the phone connected. Press UP for RAM or Watch flash.");
+    memo_set_status("Stream mode needs the phone connected. Press UP for RAM.");
     return;
   }
   memo_quiet_speaker(); // Also frees a reply's audio buffer before sizing the memo.
@@ -315,14 +298,6 @@ static void memo_start_recording(void) {
   s_memo.capacity = capacity;
   s_memo.crc = 0u;
   if (ring) memo_assign_capture();
-  if (s_memo.mode == MEMO_MODE_LOG) {
-    s_memo.log = data_logging_create(MEMO_LOG_TAG, DATA_LOGGING_BYTE_ARRAY, MEMO_LOG_ITEM, false);
-    if (s_memo.log == NULL) {
-      memo_release();
-      memo_set_status("Watch storage is not available for memos right now. Try RAM or Stream.");
-      return;
-    }
-  }
   s_memo.callbacks = 0u;
   s_memo.level = 0u;
   s_memo.offset = 0u;
@@ -358,62 +333,35 @@ static void memo_start_send(void) {
   memo_pump();
 }
 
-/* Watch flash: moves whole items from the ring into the Data Logging session. The session
- * buffers one item; BUSY means the system task has not written the last one to flash yet. */
-static void memo_log_drain(void) {
-  bool done = s_memo.state == MEMO_SENDING;
-  if (s_memo.log == NULL || (!done && s_memo.state != MEMO_RECORDING)) return;
-  for (uint8_t n = 0; n < 4u; n++) {
-    uint8_t item[MEMO_LOG_ITEM];
-    uint32_t pending = memo_ring_pending(&s_memo.encoder);
-    uint32_t count = pending > MEMO_LOG_PAYLOAD ? MEMO_LOG_PAYLOAD : pending;
-    bool end = done && pending == 0u;
-    if (!end && (count == 0u || (!done && count < MEMO_LOG_PAYLOAD))) return; // Wait for a full item.
-    memset(item, 0, sizeof(item));
-    memo_put_u32(item, 0u, s_memo.capture);
-    memo_put_u32(item, 4u, s_memo.encoder.consumed);
-    if (end) {
-      item[8] = 1u;
-      memcpy(item + MEMO_LOG_HEAD, s_memo.header, MEMO_HEADER);
-      memo_put_u32(item, MEMO_LOG_HEAD + MEMO_HEADER, s_memo.crc);
-      memo_put_u32(item, MEMO_LOG_HEAD + MEMO_HEADER + 4u, s_memo.length);
-      count = MEMO_HEADER + 8u;
-    } else {
-      memo_ring_copy(&s_memo.encoder, s_memo.encoder.consumed, item + MEMO_LOG_HEAD, count);
-    }
-    item[10] = (uint8_t)count;
-    item[11] = (uint8_t)(count >> 8);
-    DataLoggingResult result = data_logging_log(s_memo.log, item, 1u);
-    if (result == DATA_LOGGING_BUSY) break;
-    if (result != DATA_LOGGING_SUCCESS) {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "Memo log failed: %d", (int)result);
-      memo_send_failed("Watch storage refused the memo. What was saved so far still reaches the phone.");
-      memo_release();
-      return;
-    }
-    if (end) {
-      memo_release(); // Finishes the session; the system uploads it from flash.
-      s_memo.state = MEMO_SENT;
-      vibes_short_pulse();
-      memo_set_status("Saved in watch storage. It reaches your phone on its own, even if you close Hermes.");
-      return;
-    }
-    s_memo.encoder.consumed += count;
-    s_memo.offset = s_memo.encoder.consumed;
-  }
-  if (done) memo_schedule(MEMO_LOG_DRAIN_MS);
+#define MEMO_SEND_OK 0u
+#define MEMO_SEND_BUSY 1u
+#define MEMO_SEND_TOO_BIG 2u
+
+/* One memo AppMessage (kind 11 or 12), shared with memo_store.h. */
+static uint8_t memo_send_message(uint8_t kind, uint32_t transfer_id, uint32_t capture, uint32_t offset, uint32_t total,
+                                 uint32_t crc, uint8_t flags, const uint8_t *data, uint32_t count) {
+  DictionaryIterator *iter = NULL;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK || iter == NULL) return MEMO_SEND_BUSY;
+  if (dict_write_uint8(iter, HERMES_KEY_PROTOCOL_VERSION, (uint8_t)HERMES_PROTOCOL_VERSION) != DICT_OK ||
+      dict_write_uint8(iter, HERMES_KEY_MESSAGE_KIND, kind) != DICT_OK ||
+      dict_write_uint32(iter, HERMES_KEY_TRANSFER_ID, transfer_id) != DICT_OK ||
+      dict_write_uint32(iter, HERMES_KEY_CAPTURE_ID, capture) != DICT_OK ||
+      dict_write_uint32(iter, HERMES_KEY_PAGE_OFFSET, offset) != DICT_OK ||
+      dict_write_uint32(iter, HERMES_KEY_TOTAL_BYTES, total) != DICT_OK ||
+      dict_write_uint32(iter, HERMES_KEY_CONVERSATION_GENERATION, crc) != DICT_OK ||
+      dict_write_uint8(iter, HERMES_KEY_FLAGS, flags) != DICT_OK ||
+      dict_write_data(iter, HERMES_KEY_PAYLOAD, data, (uint16_t)count) != DICT_OK) return MEMO_SEND_TOO_BIG;
+  return app_message_outbox_send() == APP_MSG_OK ? MEMO_SEND_OK : MEMO_SEND_BUSY;
 }
 
 static void memo_pump(void) {
-  DictionaryIterator *iter = NULL;
   bool recording = s_memo.state == MEMO_RECORDING;
-  if (!memo_transferring() && !(recording && s_memo.mode == MEMO_MODE_LOG)) return;
-  if (s_memo.mode == MEMO_MODE_LOG) { memo_log_drain(); return; }
+  if (!memo_transferring()) return;
   if (s_memo.in_flight || s_exiting) return;
   if (!s_app_message_open || !connection_service_peek_pebble_app_connection()) {
     // While streaming, keep recording into the buffer and try again shortly.
     if (recording) { memo_schedule(MEMO_OFFLINE_RETRY_MS); return; }
-    memo_send_failed(s_app_message_open ? "Phone not connected. The recording is kept; press SELECT to send once connected." :
+    memo_send_failed(s_app_message_open ? "Phone not connected. Press SELECT to send once connected." :
                                           "The phone channel is closed. Reopen Hermes and try again.");
     return;
   }
@@ -450,22 +398,15 @@ static void memo_pump(void) {
     data = s_memo.buffer + offset;
     flags = offset + count < s_memo.length ? HERMES_FLAG_MORE : 0u;
   }
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK || iter == NULL) { memo_schedule(MEMO_YIELD_MS); return; }
   s_memo.transfer_id = next_transfer_id();
-  if (dict_write_uint8(iter, HERMES_KEY_PROTOCOL_VERSION, (uint8_t)HERMES_PROTOCOL_VERSION) != DICT_OK ||
-      dict_write_uint8(iter, HERMES_KEY_MESSAGE_KIND, kind) != DICT_OK ||
-      dict_write_uint32(iter, HERMES_KEY_TRANSFER_ID, s_memo.transfer_id) != DICT_OK ||
-      dict_write_uint32(iter, HERMES_KEY_CAPTURE_ID, s_memo.capture) != DICT_OK ||
-      dict_write_uint32(iter, HERMES_KEY_PAGE_OFFSET, offset) != DICT_OK ||
-      dict_write_uint32(iter, HERMES_KEY_TOTAL_BYTES, total) != DICT_OK ||
-      dict_write_uint32(iter, HERMES_KEY_CONVERSATION_GENERATION, crc) != DICT_OK ||
-      dict_write_uint8(iter, HERMES_KEY_FLAGS, flags) != DICT_OK ||
-      dict_write_data(iter, HERMES_KEY_PAYLOAD, data, (uint16_t)count) != DICT_OK) {
-    if (s_memo.block > MEMO_MIN_BLOCK_BYTES) { s_memo.block /= 2u; memo_schedule(MEMO_YIELD_MS); }
-    else memo_send_failed("Could not encode the memo message.");
-    return;
+  switch (memo_send_message(kind, s_memo.transfer_id, s_memo.capture, offset, total, crc, flags, data, count)) {
+    case MEMO_SEND_BUSY: memo_schedule(MEMO_YIELD_MS); return;
+    case MEMO_SEND_TOO_BIG:
+      if (s_memo.block > MEMO_MIN_BLOCK_BYTES) { s_memo.block /= 2u; memo_schedule(MEMO_YIELD_MS); }
+      else memo_send_failed("Could not encode the memo message.");
+      return;
+    default: break;
   }
-  if (app_message_outbox_send() != APP_MSG_OK) { memo_schedule(MEMO_YIELD_MS); return; }
   s_memo.in_flight = true;
   s_memo.flight_end = end;
   s_memo.flight_length = end ? 0u : count;
@@ -509,7 +450,7 @@ static bool memo_on_failed(DictionaryIterator *iterator) {
     // While streaming, keep the microphone running and retry slowly until the buffer fills.
     if (s_memo.state == MEMO_RECORDING) s_memo.retries = MEMO_MAX_RETRIES;
     else {
-      memo_send_failed("The phone did not accept the memo. Update Hermes Pebble on Android, then press SELECT to retry.");
+      memo_send_failed("The phone refused the memo. Update the Android app, then press SELECT.");
       return true;
     }
   }
@@ -529,7 +470,7 @@ static void memo_receipt(const InboundTransfer *message) {
     s_memo.state = MEMO_SENT;
     memo_release();
     vibes_short_pulse();
-    memo_set_status("Saved on phone. Open Notes in Hermes Pebble on Android to listen or delete it.");
+    memo_set_status("Saved on phone, under Notes in Hermes Pebble.");
   } else if (s_memo.mode == MEMO_MODE_STREAM) {
     // The streamed audio has left the watch, so there is nothing to resend.
     memo_send_failed("The phone could not verify the streamed memo, so it was not saved.");
@@ -539,17 +480,31 @@ static void memo_receipt(const InboundTransfer *message) {
   }
 }
 
-static void memo_draw(Layer *layer, GContext *ctx) {
-  GRect b = layer_get_bounds(layer);
-  char big[16], info[24];
-  const char *hint;
+/* Blank screen with the title bar; also used by memo_store.h. Leaves the text color white. */
+static void memo_draw_header(GContext *ctx, GRect b, const char *title) {
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, b, 0, GCornerNone);
   graphics_context_set_fill_color(ctx, UI_ACCENT);
   graphics_fill_rect(ctx, GRect(0, 0, b.size.w, UI_HEADER_HEIGHT), 0, GCornerNone);
   graphics_context_set_text_color(ctx, GColorWhite);
-  graphics_draw_text(ctx, "Voice memo", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
       GRect(UI_MARGIN, -1, b.size.w - 90, 22), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+}
+
+static void memo_draw_hint(GContext *ctx, GRect b, const char *hint) {
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, GRect(0, b.size.h - UI_HINT_HEIGHT, b.size.w, UI_HINT_HEIGHT), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, hint, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+      GRect(0, b.size.h - UI_HINT_HEIGHT, b.size.w, UI_HINT_HEIGHT),
+      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+static void memo_draw(Layer *layer, GContext *ctx) {
+  GRect b = layer_get_bounds(layer);
+  char big[16], info[24];
+  const char *hint;
+  memo_draw_header(ctx, b, "Voice memo");
 
   uint32_t seconds = memo_encoder_seconds(&s_memo.encoder);
   bool have_clip = s_memo.state == MEMO_RECORDING || (s_memo.buffer != NULL && s_memo.state != MEMO_IDLE);
@@ -585,7 +540,7 @@ static void memo_draw(Layer *layer, GContext *ctx) {
     fill = bar_w * s_memo.level / 12;
     if (s_memo.level >= 11u) bar_color = GColorRed;
   } else if ((s_memo.state == MEMO_SENDING || s_memo.state == MEMO_WAIT_RECEIPT) && s_memo.length) {
-    fill = (int)((uint64_t)bar_w * s_memo.offset / s_memo.length);
+    fill = (int)((uint32_t)bar_w * s_memo.offset / s_memo.length); // A 10-minute memo fits 32 bits.
     bar_color = UI_ACCENT;
   }
   if (fill >= 0) {
@@ -606,26 +561,24 @@ static void memo_draw(Layer *layer, GContext *ctx) {
               (unsigned long)(memo_ring_pending(&s_memo.encoder) / 1024u));
           text = line;
         } else {
-          text = s_memo.mode == MEMO_MODE_LOG ? "Recording into watch storage…" : "Recording…";
+          text = "Recording…";
         }
         break;
       case MEMO_READY: text = "Recorded. Send it to your phone or delete it."; break;
       case MEMO_SENDING:
       case MEMO_WAIT_RECEIPT:
-        snprintf(line, sizeof(line), s_memo.mode == MEMO_MODE_LOG ? "Saving to watch storage… %lu%%" : "Sending to phone… %lu%%",
-            (unsigned long)(s_memo.length ? (uint64_t)s_memo.offset * 100u / s_memo.length : 0u));
+        snprintf(line, sizeof(line), "Sending to phone… %lu%%",
+            (unsigned long)(s_memo.length ? s_memo.offset * 100u / s_memo.length : 0u));
         text = line;
         break;
       default: {
         if (!memo_mic_available()) { text = "Voice memos need watch firmware 4.43 or newer."; break; }
         memo_load_mode();
         if (s_memo.mode == MEMO_MODE_STREAM) {
-          text = "Stream: sent while you record, up to 10 min, and played live if the phone allows. Needs the phone nearby.";
-        } else if (s_memo.mode == MEMO_MODE_LOG) {
-          text = "Watch flash: saved to watch storage while you record, up to 2 min. Syncs to the phone on its own.";
+          text = "Stream: sent while you record, up to 10 min. Needs the phone nearby.";
         } else {
           uint32_t capacity = memo_capacity_for(heap_bytes_free());
-          snprintf(line, sizeof(line), "RAM: up to %lu s with free memory. Leaving Hermes before sending discards it.",
+          snprintf(line, sizeof(line), "RAM: up to %lu s. Leaving Hermes before sending discards it.",
               (unsigned long)memo_max_seconds(capacity));
           text = line;
         }
@@ -650,12 +603,7 @@ static void memo_draw(Layer *layer, GContext *ctx) {
     case MEMO_SENT: hint = "SELECT: new · UP: mode"; break;
     default: hint = "SELECT: record · UP: mode"; break;
   }
-  graphics_context_set_fill_color(ctx, GColorLightGray);
-  graphics_fill_rect(ctx, GRect(0, b.size.h - UI_HINT_HEIGHT, b.size.w, UI_HINT_HEIGHT), 0, GCornerNone);
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, hint, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-      GRect(0, b.size.h - UI_HINT_HEIGHT, b.size.w, UI_HINT_HEIGHT),
-      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  memo_draw_hint(ctx, b, hint);
 }
 
 static void memo_select(ClickRecognizerRef recognizer, void *context) {
@@ -770,12 +718,17 @@ static const char *memo_subtitle(void) {
       return s_memo.buffer ? "Not sent yet · open to send" : "Record & send to phone";
     case MEMO_SENDING:
     case MEMO_WAIT_RECEIPT:
-      snprintf(text, sizeof(text), s_memo.mode == MEMO_MODE_LOG ? "Saving… %lu%%" : "Sending… %lu%%",
-          (unsigned long)(s_memo.length ? (uint64_t)s_memo.offset * 100u / s_memo.length : 0u));
+      snprintf(text, sizeof(text), "Sending… %lu%%",
+          (unsigned long)(s_memo.length ? s_memo.offset * 100u / s_memo.length : 0u));
       return text;
     default:
       return "Record & send to phone";
   }
+}
+
+static bool memo_init(void) {
+  s_memo.status = calloc(1u, MEMO_STATUS_SIZE);
+  return s_memo.status != NULL;
 }
 
 static void memo_shutdown(void) {
@@ -785,5 +738,7 @@ static void memo_shutdown(void) {
   s_memo.state = MEMO_IDLE;
   if (s_memo_window) window_destroy(s_memo_window);
   s_memo_window = NULL;
+  free(s_memo.status);
+  s_memo.status = NULL;
 }
 #endif

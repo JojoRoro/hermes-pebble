@@ -46,6 +46,7 @@
 
 #define HERMES_FLAG_VOICE_REPLY 0x10u
 #define HERMES_FLAG_MEMO_END 0x20u
+#define HERMES_FLAG_MEMO_STORED 0x40u /* Kind 12: a memo kept on the watch, not a live recording. */
 #define HERMES_FLAG_MORE 0x01u
 #define HERMES_FLAG_STOP_REQUESTED 0x02u
 #define HERMES_FLAG_REPLAYED 0x04u

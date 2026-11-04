@@ -47,6 +47,7 @@ typedef enum { APP_MSG_OK = 0, APP_MSG_BUSY = 64 } AppMessageResult;
 #define FONT_KEY_GOTHIC_14_BOLD "g14b"
 #define FONT_KEY_GOTHIC_18 "g18"
 #define FONT_KEY_GOTHIC_18_BOLD "g18b"
+#define FONT_KEY_GOTHIC_24_BOLD "g24b"
 #define FONT_KEY_BITHAM_42_BOLD "b42"
 
 #define APP_LOG_LEVEL_INFO 100
@@ -77,15 +78,24 @@ size_t heap_bytes_free(void);
 uint16_t time_ms(time_t *tloc, uint16_t *out_ms);
 int32_t persist_read_int(uint32_t key);
 int persist_write_int(uint32_t key, int32_t value);
-typedef struct DataLoggingSession *DataLoggingSessionRef;
-typedef enum { DATA_LOGGING_BYTE_ARRAY = 0, DATA_LOGGING_UINT = 2, DATA_LOGGING_INT = 3 } DataLoggingItemType;
-typedef enum {
-  DATA_LOGGING_SUCCESS = 0, DATA_LOGGING_BUSY, DATA_LOGGING_FULL, DATA_LOGGING_NOT_FOUND,
-  DATA_LOGGING_CLOSED, DATA_LOGGING_INVALID_PARAMS, DATA_LOGGING_INTERNAL_ERR,
-} DataLoggingResult;
-DataLoggingSessionRef data_logging_create(uint32_t tag, DataLoggingItemType item_type, uint16_t item_length, bool resume);
-DataLoggingResult data_logging_log(DataLoggingSessionRef session, const void *data, uint32_t num_items);
-void data_logging_finish(DataLoggingSessionRef session);
+bool persist_exists(uint32_t key);
+int persist_read_data(uint32_t key, void *buffer, size_t size);
+int persist_write_data(uint32_t key, const void *data, size_t size);
+int persist_delete(uint32_t key);
+size_t persist_get_max_size(void);
+typedef enum { SpeakerPcmFormat_8kHz_8bit = 0 } SpeakerPcmFormat;
+typedef enum { SpeakerStatusIdle = 0, SpeakerStatusPlaying } SpeakerStatus;
+typedef enum { SpeakerFinishReasonDone = 0, SpeakerFinishReasonStopped, SpeakerFinishReasonPreempted, SpeakerFinishReasonError } SpeakerFinishReason;
+typedef void (*SpeakerFinishedCallback)(SpeakerFinishReason reason, void *ctx);
+bool speaker_stream_open(SpeakerPcmFormat format, uint8_t volume);
+uint32_t speaker_stream_write(const void *data, uint32_t num_bytes);
+void speaker_stream_close(void);
+void speaker_stop(void);
+SpeakerStatus speaker_get_status(void);
+void speaker_set_finish_callback(SpeakerFinishedCallback cb, void *ctx);
+bool speaker_is_muted(void);
+bool quiet_time_is_active(void);
+void window_single_repeating_click_subscribe(ButtonId button, uint16_t ms, ClickHandler handler);
 void vibes_short_pulse(void);
 bool connection_service_peek_pebble_app_connection(void);
 AppMessageResult app_message_outbox_begin(DictionaryIterator **iterator);

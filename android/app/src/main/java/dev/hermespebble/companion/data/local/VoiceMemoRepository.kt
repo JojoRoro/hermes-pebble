@@ -88,7 +88,9 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
     /**
      * A piece of a memo sent while recording (stream) or logged to watch flash. Pieces are written
      * at their offset, so repeats are harmless; a gap left by lost Data Logging items stays zero.
-     * The end piece checks length and CRC, then saves the memo as for [accept].
+     * The end piece checks length and CRC, then saves the memo as for [accept]. A memo sent from
+     * watch storage ([VoiceMemoPart.stored]) keeps its own partial file: the watch still holds it and
+     * sends it again, so unlike the others it is never saved incomplete.
      */
     @Synchronized
     fun acceptPart(watch: String, part: VoiceMemoPart, logged: Boolean = false): MemoAcceptResult {
@@ -99,7 +101,7 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
             return if (part.end != null) MemoAcceptResult.Complete(memo, duplicate = true) else MemoAcceptResult.Accepted
         }
         partials.mkdirs()
-        val live = File(partials, "$prefix.${if (logged) "log" else "live"}")
+        val live = File(partials, "$prefix.${if (part.stored) "stored" else if (logged) "log" else "live"}")
         val end = part.end
         if (end == null) {
             if (!live.exists()) removeAbandoned()

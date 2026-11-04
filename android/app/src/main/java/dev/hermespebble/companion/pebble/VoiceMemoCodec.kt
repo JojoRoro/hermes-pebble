@@ -26,7 +26,8 @@ data class VoiceMemoBlock(
  * watch-flash mode through Data Logging): [payload] belongs at data [offset], counted from the
  * first ADPCM byte. The last piece carries [end] instead: the HVM1 header, data length and CRC.
  */
-class VoiceMemoPart(val captureId: Long, val offset: Long, val payload: ByteArray, val end: MemoPartEnd? = null)
+/** [stored]: a memo kept on the watch and sent later, not a live recording. */
+class VoiceMemoPart(val captureId: Long, val offset: Long, val payload: ByteArray, val end: MemoPartEnd? = null, val stored: Boolean = false)
 
 class MemoPartEnd(val header: ByteArray, val total: Long, val checksum: Long)
 

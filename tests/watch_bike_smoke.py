@@ -56,7 +56,7 @@ try:
     fields.update({0: Uint32(1), 1: Uint32(101), 2: Uint32(8001), 5: Uint32(1), 6: ByteArray(b''), 17: Uint32(startup[2])})
     service.send_message(app_id, fields)
     time.sleep(.4)
-    for _ in range(6): click(QemuButton.Button.Down)
+    for _ in range(8): click(QemuButton.Button.Down)
     click(QemuButton.Button.Select)  # Settings
     for _ in range(2): click(QemuButton.Button.Down)
     capture('bike-menu')

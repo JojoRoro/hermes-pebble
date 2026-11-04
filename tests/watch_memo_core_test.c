@@ -156,6 +156,43 @@ int main(int argc, char **argv) {
     FILE *file = fopen(argv[1], "wb");
     assert(file != NULL && fwrite(fixture, 1, fixture_length, file) == fixture_length && fclose(file) == 0);
   }
+  // Watch speaker chain: quiet speech with DC and a loud click comes out loud, centered, unclipped.
+  {
+    enum { SECONDS = 4, PCM = 8000 * SECONDS, RAW = 2 * PCM };
+    static int16_t raw[RAW];
+    static uint8_t adpcm[MEMO_HEADER + PCM];
+    static int8_t out[PCM + 200];
+    for (int i = 0; i < RAW; i++) {
+      double speech = 60.0 * sin(i * 2.0 * 3.14159265 * 220.0 / 16000.0);
+      raw[i] = (int16_t)(50.0 + speech + (i > 32000 && i < 32040 ? (i % 2 ? 7000.0 : -7000.0) : 0.0));
+    }
+    MemoEncoder encoder;
+    assert(memo_encoder_begin(&encoder, adpcm, sizeof(adpcm)));
+    assert(memo_encoder_push(&encoder, raw, RAW));
+    uint32_t file = memo_encoder_finish(&encoder, 1u);
+    MemoPlayback playback;
+    memset(&playback, 0, sizeof(playback));
+    uint32_t head = 0u;
+    for (uint32_t at = MEMO_HEADER; at < file; at += 256u) {
+      memo_playback_feed(&playback, adpcm + at, file - at < 256u ? file - at : 256u, out, sizeof(out), &head);
+    }
+    memo_playback_flush(&playback, out, sizeof(out), &head);
+    assert(head == (file - MEMO_HEADER) * 2u && head <= sizeof(out));
+    for (uint32_t i = 0u; i < MEMO_PLAY_LEAD_MUTE; i++) assert(out[i] == 0); // Button press muted.
+    int peak = 0, peak_after_click = 0;
+    long sum = 0;
+    for (uint32_t i = MEMO_PLAY_LEAD_MUTE; i < head; i++) {
+      int v = out[i];
+      sum += v;
+      assert(v > -128 && v < 127); // The peak limit leaves headroom: nothing clips.
+      if (abs(v) > peak) peak = abs(v);
+      if (i > 16000u + 4000u && abs(v) > peak_after_click) peak_after_click = abs(v);
+    }
+    assert(peak >= 20);                                   // Raised well above the raw quarter-LSB.
+    assert(peak_after_click >= 20);                       // A click does not duck the speech after it.
+    assert(labs(sum) < (long)(head - MEMO_PLAY_LEAD_MUTE)); // DC removed.
+  }
+
   printf("Voice memo codec: CRC-32, header, bounds, 440 Hz SNR %.1f dB, 7 kHz suppressed to %.0f RMS, ring mode, fixture %u bytes passed\n",
          snr, rms, (unsigned)fixture_length);
   return 0;

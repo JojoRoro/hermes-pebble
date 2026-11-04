@@ -96,49 +96,6 @@ static int32_t persisted_mode = -1;
 int32_t persist_read_int(uint32_t key) { assert(key == HERMES_STORAGE_KEY_MEMO_MODE); return persisted_mode < 0 ? 0 : persisted_mode; }
 int persist_write_int(uint32_t key, int32_t value) { assert(key == HERMES_STORAGE_KEY_MEMO_MODE); persisted_mode = value; return 4; }
 
-// Data Logging: one session, items checked and stored like the phone would get them.
-static bool log_open, log_create_fails;
-static uint32_t log_calls, log_busy_every, log_finishes, log_capture;
-static DataLoggingResult log_result = DATA_LOGGING_SUCCESS;
-static uint8_t log_data[600000];
-static uint32_t log_length;
-static uint8_t log_end[MEMO_LOG_ITEM];
-static bool log_end_seen;
-DataLoggingSessionRef data_logging_create(uint32_t tag, DataLoggingItemType item_type, uint16_t item_length, bool resume) {
-  assert(tag == MEMO_LOG_TAG && item_type == DATA_LOGGING_BYTE_ARRAY && item_length == MEMO_LOG_ITEM && !resume && !log_open);
-  if (log_create_fails) return NULL;
-  log_open = true;
-  log_length = 0u;
-  log_end_seen = false;
-  return (DataLoggingSessionRef)&log_open;
-}
-DataLoggingResult data_logging_log(DataLoggingSessionRef session, const void *data, uint32_t num_items) {
-  assert(session == (DataLoggingSessionRef)&log_open && log_open && num_items == 1u && !log_end_seen);
-  log_calls++;
-  if (log_result != DATA_LOGGING_SUCCESS) return log_result;
-  if (log_busy_every && log_calls % log_busy_every == 0u) return DATA_LOGGING_BUSY; // Flash write pending.
-  const uint8_t *item = data;
-  uint32_t capture = read_le32(item, 0u), offset = read_le32(item, 4u);
-  uint16_t length = (uint16_t)(item[10] | item[11] << 8);
-  log_capture = capture;
-  assert(offset == log_length && length <= MEMO_LOG_PAYLOAD);
-  if (item[8] == 1u) {
-    assert(length == MEMO_HEADER + 8u);
-    memcpy(log_end, item, MEMO_LOG_ITEM);
-    log_end_seen = true;
-  } else {
-    assert(item[8] == 0u && length > 0u);
-    memcpy(log_data + offset, item + MEMO_LOG_HEAD, length);
-    log_length += length;
-  }
-  return DATA_LOGGING_SUCCESS;
-}
-void data_logging_finish(DataLoggingSessionRef session) {
-  assert(session == (DataLoggingSessionRef)&log_open && log_open);
-  log_open = false;
-  log_finishes++;
-}
-
 // Wall clock for coverage: speak() advances it by each frame's 20 ms (or more when frames drop).
 static uint64_t clock_ms = 1700000000000ull;
 uint16_t time_ms(time_t *tloc, uint16_t *out_ms) {
@@ -291,6 +248,7 @@ static void record(uint32_t frames) {
 }
 
 int main(void) {
+  assert(memo_init());
   firmware_table[MEMO_MIC_SLOT_START] = (void *)firmware_mic_start;
   firmware_table[MEMO_MIC_SLOT_STOP] = (void *)firmware_mic_stop;
 #ifdef MEMO_TEST_OLD_FIRMWARE
@@ -456,7 +414,7 @@ int main(void) {
   // Microphone refusals leave nothing allocated and explain why.
   mic_result = MicCaptureStartErrPermissionDenied;
   memo_select(NULL, NULL);
-  assert(s_memo.state == MEMO_IDLE && !s_memo.buffer && strstr(s_memo.status, "Microphone not allowed"));
+  assert(s_memo.state == MEMO_IDLE && !s_memo.buffer && strstr(s_memo.status, "Allow Microphone"));
   mic_result = MicCaptureStartOk;
 
   // Memory: the buffer follows free heap; too little refuses; a full buffer stops itself.
@@ -500,7 +458,7 @@ int main(void) {
   memo_down(NULL, NULL);
   static uint8_t expect[600000];
 
-  // UP cycles RAM -> Stream -> Watch flash -> RAM and remembers the choice.
+  // UP cycles RAM -> Stream -> RAM and remembers the choice.
   assert(s_memo.mode == MEMO_MODE_RAM && s_memo.state == MEMO_IDLE);
   memo_up(NULL, NULL);
   assert(s_memo.mode == MEMO_MODE_STREAM && persisted_mode == (int32_t)MEMO_MODE_STREAM);
@@ -576,53 +534,20 @@ int main(void) {
   assert(s_memo.state == MEMO_FAILED && !s_memo.buffer && strstr(s_memo.status, "could not verify"));
   free_heap = 100000u;
 
-  // Watch flash: items go into Data Logging while recording, BUSY every third call.
+  // UP wraps back to RAM (a stored Watch flash choice from older versions also reads as RAM).
   memo_up(NULL, NULL);
-  assert(s_memo.mode == MEMO_MODE_LOG && persisted_mode == (int32_t)MEMO_MODE_LOG);
-  draw();
-  log_busy_every = 3u;
-  start = phase;
-  memo_select(NULL, NULL);
-  assert(s_memo.state == MEMO_RECORDING && log_open && s_memo.capacity == MEMO_LOG_RING);
-  uint32_t log_capture_id = s_memo.capture;
-  speak_live(1500u, false); // 30 s, more than the 16 KiB ring holds at once.
-  draw();
-  memo_select(NULL, NULL);
-  assert(s_memo.state == MEMO_SENDING || s_memo.state == MEMO_SENT);
-  uint32_t log_samples = s_memo.encoder.samples, log_crc = s_memo.crc, log_total = s_memo.length;
-  for (int i = 0; i < 1000 && s_memo.state == MEMO_SENDING; i++) fire_timer();
-  assert(s_memo.state == MEMO_SENT && !log_open && log_finishes == 1u && log_end_seen && !s_memo.buffer);
-  data_length = reference(start, 1500u, expect, sizeof(expect));
-  assert(log_length == data_length && log_total == data_length && memcmp(log_data, expect + MEMO_HEADER, data_length) == 0);
-  assert(log_capture == log_capture_id && memo_crc32(log_data, log_length) == log_crc);
-  assert(memcmp(log_end + MEMO_LOG_HEAD, "HVM1", 4) == 0 && read_le32(log_end, MEMO_LOG_HEAD + 8u) == log_samples);
-  assert(read_le32(log_end, MEMO_LOG_HEAD + 16u) == log_crc && read_le32(log_end, MEMO_LOG_HEAD + 20u) == log_total);
-  assert(strstr(s_memo.status, "watch storage"));
-
-  // Watch flash full mid-recording: stop, keep what was logged (session finished), explain.
-  memo_select(NULL, NULL);
-  speak_live(100u, false);
-  log_result = DATA_LOGGING_FULL;
-  speak_live(10u, false);
-  assert(s_memo.state == MEMO_FAILED && !mic_active && !log_open && log_finishes == 2u && !s_memo.buffer);
-  assert(strstr(s_memo.status, "refused"));
-  log_result = DATA_LOGGING_SUCCESS;
-  log_create_fails = true;
-  memo_select(NULL, NULL);
-  assert(s_memo.state == MEMO_IDLE && !mic_active && !s_memo.buffer && strstr(s_memo.status, "not available"));
-  log_create_fails = false;
-  // Leaving Hermes while saving finishes the session, so the phone keeps what arrived.
+  assert(s_memo.mode == MEMO_MODE_RAM && persisted_mode == (int32_t)MEMO_MODE_RAM);
+  memo_up(NULL, NULL);
   memo_select(NULL, NULL);
   speak_live(100u, false);
   memo_up(NULL, NULL);
-  assert(s_memo.mode == MEMO_MODE_LOG); // UP does not switch mode while recording.
+  assert(s_memo.mode == MEMO_MODE_STREAM); // UP does not switch mode while recording.
 
   memo_unload(NULL);
   memo_shutdown();
-  assert(!log_open && log_finishes == 3u);
   assert(s_memo.buffer == NULL && s_memo_window == NULL);
   printf("Voice memo watch flow: record, ACK-paced %u-byte blocks, receipts, resend, backoff, "
          "block shrink, priority, memory bounds, mic refusals, interruptions, coverage, DC-free meter, "
-         "mode cycling, stream (ring wrap, lag, outage, rejection) and watch flash (busy, full, exit) passed\n", MEMO_BLOCK_BYTES);
+         "mode cycling, stream (ring wrap, lag, outage, rejection) passed\n", MEMO_BLOCK_BYTES);
   return 0;
 }

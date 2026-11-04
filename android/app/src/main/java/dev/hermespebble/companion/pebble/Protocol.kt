@@ -41,6 +41,7 @@ object WireProtocol {
     const val FLAG_REPLAYED = 0x04
     const val FLAG_DURABLE_COMMIT = 0x08
     const val FLAG_MEMO_END = 0x20
+    const val FLAG_MEMO_STORED = 0x40
 }
 
 enum class WireMessageKind(val value: Int) {
@@ -433,7 +434,10 @@ sealed interface MemoStreamDecode {
     data class Part(val transferId: Long, val part: VoiceMemoPart) : MemoStreamDecode
 }
 
-/** Kind 12: one AppMessage of ADPCM sent while recording, or (flag 0x20) the HVM1 header at the end. */
+/**
+ * Kind 12: one AppMessage of ADPCM sent while recording, or (flag 0x20) the HVM1 header at the end.
+ * Flag 0x40 marks a memo sent later from watch storage.
+ */
 fun decodeMemoStream(data: PebbleDictionary): MemoStreamDecode {
     if (data.uint8(WireProtocol.KEY_MESSAGE_KIND) != WireMessageKind.MEMO_STREAM.value) return MemoStreamDecode.NotStream
     if (data.uint8(WireProtocol.KEY_PROTOCOL_VERSION) != WireProtocol.VERSION) return MemoStreamDecode.Invalid("Protocol version differs")
@@ -447,7 +451,7 @@ fun decodeMemoStream(data: PebbleDictionary): MemoStreamDecode {
             total = data.uint32(WireProtocol.KEY_TOTAL_BYTES) ?: return MemoStreamDecode.Invalid("Total size is missing"),
             checksum = data.uint32(WireProtocol.KEY_CONVERSATION_GENERATION) ?: return MemoStreamDecode.Invalid("Checksum is missing"))
     } else null
-    val part = VoiceMemoPart(captureId, offset, if (end != null) ByteArray(0) else payload, end)
+    val part = VoiceMemoPart(captureId, offset, if (end != null) ByteArray(0) else payload, end, stored = flags and WireProtocol.FLAG_MEMO_STORED != 0)
     return try {
         VoiceMemoCodec.validatePart(part)
         MemoStreamDecode.Part(transferId, part)
