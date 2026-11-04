@@ -112,6 +112,40 @@ int main(int argc, char **argv) {
   decode(buffer, click_samples, pcm);
   for (uint32_t i = 200; i < click_samples; i++) assert(pcm[i] > 30000);
 
+  // Ring mode: a 1,000-byte ring drained in 300-byte pieces yields the same ADPCM as linear
+  // mode, with a running CRC over the data and no header in the buffer.
+  static uint8_t ring[1000], drained[MEMO_HEADER + 2u * MEMO_BYTES_PER_SECOND];
+  MemoEncoder ringed;
+  assert(!memo_encoder_begin_ring(&ringed, ring, 0u));
+  assert(memo_encoder_begin_ring(&ringed, ring, sizeof(ring)) && ringed.length == 0u);
+  assert(memo_encoder_begin(&encoder, buffer, sizeof(buffer)));
+  phase = 0;
+  uint32_t ring_phase = 0, out = 0;
+  for (uint32_t f = 0; f < 50u; f++) {
+    feed_tone(&encoder, 440.0, 3000.0, 321u, &phase);
+    feed_tone(&ringed, 440.0, 3000.0, 321u, &ring_phase);
+    while (memo_ring_pending(&ringed) >= 300u) {
+      memo_ring_copy(&ringed, ringed.consumed, drained + out, 300u);
+      out += 300u; ringed.consumed += 300u;
+    }
+  }
+  assert(!ringed.full);
+  uint32_t linear_length = memo_encoder_finish(&encoder, 0u);
+  uint32_t ring_length = memo_encoder_finish(&ringed, 0u);
+  uint32_t rest = memo_ring_pending(&ringed);
+  memo_ring_copy(&ringed, ringed.consumed, drained + out, rest);
+  out += rest;
+  assert(ring_length == linear_length - MEMO_HEADER && out == ring_length && ring_length > 3u * sizeof(ring));
+  assert(memcmp(drained, buffer + MEMO_HEADER, ring_length) == 0);
+  assert(~ringed.crc == memo_crc32(drained, ring_length));
+  uint8_t header[MEMO_HEADER];
+  memo_write_header(&ringed, header, 0u);
+  assert(memcmp(header, buffer, MEMO_HEADER) == 0);
+  // A ring nobody drains fills up and stops cleanly.
+  assert(memo_encoder_begin_ring(&ringed, ring, sizeof(ring)));
+  for (int i = 0; i < 20; i++) memo_encoder_push(&ringed, loud, 320u);
+  assert(ringed.full && memo_ring_pending(&ringed) == sizeof(ring));
+
   // Fixture for the Kotlin decoder: 1.5 s of 440 Hz, odd sample count included.
   static uint8_t fixture[MEMO_HEADER + 2u * MEMO_BYTES_PER_SECOND];
   assert(memo_encoder_begin(&encoder, fixture, sizeof(fixture)));
@@ -122,7 +156,7 @@ int main(int argc, char **argv) {
     FILE *file = fopen(argv[1], "wb");
     assert(file != NULL && fwrite(fixture, 1, fixture_length, file) == fixture_length && fclose(file) == 0);
   }
-  printf("Voice memo codec: CRC-32, header, bounds, 440 Hz SNR %.1f dB, 7 kHz suppressed to %.0f RMS, fixture %u bytes passed\n",
+  printf("Voice memo codec: CRC-32, header, bounds, 440 Hz SNR %.1f dB, 7 kHz suppressed to %.0f RMS, ring mode, fixture %u bytes passed\n",
          snr, rms, (unsigned)fixture_length);
   return 0;
 }

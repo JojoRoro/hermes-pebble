@@ -75,6 +75,17 @@ AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, voi
 void app_timer_cancel(AppTimer *timer);
 size_t heap_bytes_free(void);
 uint16_t time_ms(time_t *tloc, uint16_t *out_ms);
+int32_t persist_read_int(uint32_t key);
+int persist_write_int(uint32_t key, int32_t value);
+typedef struct DataLoggingSession *DataLoggingSessionRef;
+typedef enum { DATA_LOGGING_BYTE_ARRAY = 0, DATA_LOGGING_UINT = 2, DATA_LOGGING_INT = 3 } DataLoggingItemType;
+typedef enum {
+  DATA_LOGGING_SUCCESS = 0, DATA_LOGGING_BUSY, DATA_LOGGING_FULL, DATA_LOGGING_NOT_FOUND,
+  DATA_LOGGING_CLOSED, DATA_LOGGING_INVALID_PARAMS, DATA_LOGGING_INTERNAL_ERR,
+} DataLoggingResult;
+DataLoggingSessionRef data_logging_create(uint32_t tag, DataLoggingItemType item_type, uint16_t item_length, bool resume);
+DataLoggingResult data_logging_log(DataLoggingSessionRef session, const void *data, uint32_t num_items);
+void data_logging_finish(DataLoggingSessionRef session);
 void vibes_short_pulse(void);
 bool connection_service_peek_pebble_app_connection(void);
 AppMessageResult app_message_outbox_begin(DictionaryIterator **iterator);

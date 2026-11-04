@@ -198,11 +198,9 @@ static Window *s_window;
 static MenuLayer *s_menu_layer;
 static ScrollLayer *s_scroll_layer;
 static Layer *s_header_layer;
-static char s_header_text[40];
 static Layer *s_content_layer;
 static Layer *s_overlay_layer;
 static TextLayer *s_hint_layer;
-static UiBlock s_blocks[UI_BLOCK_MAX];
 static uint8_t s_block_count;
 static bool s_select_tab;
 static bool s_blocks_centered;
@@ -215,7 +213,6 @@ static uint32_t s_reply_notified_capture_id;
 static uint32_t s_voice_capture_id;
 static bool s_voice_requested;
 static bool s_voice_play_pending;
-static char s_voice_status[64]; // One-line footer; full errors stay in phone Diagnostics.
 static bool s_app_message_open;
 static bool s_handshake_ready;
 static bool s_exiting;
@@ -278,6 +275,13 @@ typedef struct {
   OutboundTransfer outbound;
   InboundTransfer inbound;
   uint8_t ink[INK_CAPACITY];
+  char header_text[40];
+  UiBlock blocks[UI_BLOCK_MAX];
+  char voice_status[64]; // One-line footer; full errors stay in phone Diagnostics.
+  char error_text[UI_ERROR_BUFFER_SIZE];
+  RecentItem recent_items[HERMES_MAX_RECENT_ITEMS];
+  char menu_labels[9][UI_MENU_LABEL_SIZE]; // Only action menus draw these.
+  char ink_status[160];
 } AppBuffers;
 static AppBuffers *s_buffers;
 #define s_capture_text (s_buffers->capture_text)
@@ -288,18 +292,22 @@ static AppBuffers *s_buffers;
 #define s_outbound (s_buffers->outbound)
 #define s_inbound (s_buffers->inbound)
 #define s_ink (s_buffers->ink)
+#define s_header_text (s_buffers->header_text)
+#define s_blocks (s_buffers->blocks)
+#define s_voice_status (s_buffers->voice_status)
+#define s_error_text (s_buffers->error_text)
+#define s_recent_items (s_buffers->recent_items)
+#define s_menu_labels (s_buffers->menu_labels)
+#define s_ink_status (s_buffers->ink_status)
 static bool app_buffers_init(void) {
   if (s_buffers == NULL) s_buffers = calloc(1u, sizeof(*s_buffers));
   return s_buffers != NULL;
 }
-static char s_error_text[UI_ERROR_BUFFER_SIZE];
-static RecentItem s_recent_items[HERMES_MAX_RECENT_ITEMS];
 static uint8_t s_action_options[8];
 static uint8_t s_action_count;
 static DictationSession *s_dictation_session;
 static AppTimer *s_timer;
 // Only action menus draw these; main, settings and recent rows draw from their own state.
-static char s_menu_labels[9][UI_MENU_LABEL_SIZE];
 static uint8_t s_menu_rows[9];
 static uint16_t s_menu_count;
 static uint16_t s_ink_length = INK_HEADER;
@@ -309,7 +317,6 @@ static uint16_t s_ink_offset;
 static bool s_ink_saved;
 static bool s_ink_corrupt;
 static bool s_ink_sync_requested;
-static char s_ink_status[160];
 static void ink_open(void);
 static void ink_show(void);
 static void ink_cleanup(void);

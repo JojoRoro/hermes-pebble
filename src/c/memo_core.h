@@ -11,8 +11,13 @@
  * The microphone delivers 16 kHz signed 16-bit PCM at a low level (dictation boosts it
  * 3x), so the watch applies MEMO_INPUT_GAIN before coding: quiet speech then stays well
  * above ADPCM's smallest step, and only button clicks saturate.
- * A half-band filter drops it to
- * 8 kHz before 4-bit coding, so one second costs 4,000 bytes instead of 32,000. */
+ * A half-band filter drops it to 8 kHz before 4-bit coding, so one second costs 4,000
+ * bytes instead of 32,000.
+ *
+ * Linear mode keeps the whole file (header first) in one buffer. Ring mode, used when the
+ * memo leaves the watch while recording, keeps only ADPCM data in a circular buffer: length
+ * counts every data byte produced, consumed every byte the caller has passed on, and crc is
+ * the running CRC-32 of the data. The header then travels separately at the end. */
 #define MEMO_HEADER 16u
 #define MEMO_RATE 8000u
 #define MEMO_CODEC_IMA_ADPCM 1u
@@ -23,12 +28,13 @@
 typedef struct {
   uint8_t *bytes;
   uint32_t capacity, length, samples;
+  uint32_t consumed, crc; /* Ring mode: bytes passed on, running CRC-32 (pre-inversion). */
   int32_t predictor;
   int16_t history[MEMO_FILTER_TAPS];
   uint8_t filled, index;
   uint8_t coverage; /* Set by the caller before memo_encoder_finish; 0 = not measured. */
   bool odd, high_nibble;
-  bool full;
+  bool full, ring;
 } MemoEncoder;
 
 static const int16_t s_memo_steps[89] = {
@@ -45,12 +51,15 @@ static void memo_put_u32(uint8_t *bytes, uint32_t offset, uint32_t value) {
   for (uint8_t i = 0; i < 4u; i++) bytes[offset + i] = (uint8_t)(value >> (8u * i));
 }
 
+static uint32_t memo_crc_byte(uint32_t crc, uint8_t byte) {
+  crc ^= byte;
+  for (uint8_t b = 0; b < 8u; b++) crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0u);
+  return crc;
+}
+
 static uint32_t memo_crc32(const uint8_t *bytes, uint32_t length) {
   uint32_t crc = 0xffffffffu;
-  for (uint32_t i = 0; i < length; i++) {
-    crc ^= bytes[i];
-    for (uint8_t b = 0; b < 8u; b++) crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0u);
-  }
+  for (uint32_t i = 0; i < length; i++) crc = memo_crc_byte(crc, bytes[i]);
   return ~crc;
 }
 
@@ -59,6 +68,21 @@ static bool memo_encoder_begin(MemoEncoder *encoder, uint8_t *bytes, uint32_t ca
   if (encoder == NULL || bytes == NULL || capacity <= MEMO_HEADER) return false;
   *encoder = (MemoEncoder){ .bytes = bytes, .capacity = capacity, .length = MEMO_HEADER };
   return true;
+}
+
+/* Starts a ring-mode memo: capacity bytes of ADPCM data, no header in the buffer. */
+static bool memo_encoder_begin_ring(MemoEncoder *encoder, uint8_t *bytes, uint32_t capacity) {
+  if (encoder == NULL || bytes == NULL || capacity == 0u) return false;
+  *encoder = (MemoEncoder){ .bytes = bytes, .capacity = capacity, .crc = 0xffffffffu, .ring = true };
+  return true;
+}
+
+/* Ring mode: data bytes produced but not yet passed on. */
+static uint32_t memo_ring_pending(const MemoEncoder *encoder) { return encoder->length - encoder->consumed; }
+
+/* Ring mode: copies count bytes starting at data offset `from` (which must still be held). */
+static void memo_ring_copy(const MemoEncoder *encoder, uint32_t from, uint8_t *out, uint32_t count) {
+  for (uint32_t i = 0; i < count; i++) out[i] = encoder->bytes[(from + i) % encoder->capacity];
 }
 
 static uint8_t memo_adpcm_nibble(MemoEncoder *encoder, int32_t sample) {
@@ -82,19 +106,23 @@ static uint8_t memo_adpcm_nibble(MemoEncoder *encoder, int32_t sample) {
 
 static void memo_emit(MemoEncoder *encoder, int32_t sample) {
   if (encoder->full) return;
-  if (!encoder->high_nibble && encoder->length >= encoder->capacity) {
+  uint32_t used = encoder->ring ? memo_ring_pending(encoder) : encoder->length;
+  if (!encoder->high_nibble && used >= encoder->capacity) {
     encoder->full = true;
     return;
   }
+  uint32_t at = encoder->ring ? encoder->length % encoder->capacity : encoder->length;
   uint8_t code = memo_adpcm_nibble(encoder, sample);
   if (encoder->high_nibble) {
-    encoder->bytes[encoder->length++] |= (uint8_t)(code << 4);
+    encoder->bytes[at] |= (uint8_t)(code << 4);
+    encoder->crc = memo_crc_byte(encoder->crc, encoder->bytes[at]);
+    encoder->length++;
   } else {
-    encoder->bytes[encoder->length] = code;
+    encoder->bytes[at] = code;
   }
   encoder->high_nibble = !encoder->high_nibble;
   encoder->samples++;
-  if (!encoder->high_nibble && encoder->length >= encoder->capacity) encoder->full = true;
+  if (!encoder->ring && !encoder->high_nibble && encoder->length >= encoder->capacity) encoder->full = true;
 }
 
 /* Feeds 16 kHz PCM. Returns false once the buffer is full; later samples are ignored.
@@ -116,19 +144,26 @@ static bool memo_encoder_push(MemoEncoder *encoder, const int16_t *samples, size
   return !encoder->full;
 }
 
-/* Writes the header. Returns the memo length in bytes (header plus ADPCM data). */
-static uint32_t memo_encoder_finish(MemoEncoder *encoder, uint32_t recorded_at) {
-  if (encoder == NULL || encoder->bytes == NULL) return 0u;
-  if (encoder->high_nibble) {
-    encoder->length++; /* Odd sample count: the high nibble of the last byte stays zero. */
-    encoder->high_nibble = false;
-  }
-  uint8_t *b = encoder->bytes;
+static void memo_write_header(const MemoEncoder *encoder, uint8_t *b, uint32_t recorded_at) {
   b[0] = 'H'; b[1] = 'V'; b[2] = 'M'; b[3] = '1';
   b[4] = (uint8_t)(MEMO_RATE & 0xffu); b[5] = (uint8_t)(MEMO_RATE >> 8);
   b[6] = MEMO_CODEC_IMA_ADPCM; b[7] = encoder->coverage;
   memo_put_u32(b, 8u, encoder->samples);
   memo_put_u32(b, 12u, recorded_at);
+}
+
+/* Completes the last byte. Linear mode also writes the header and returns the file length
+ * (header plus data); ring mode returns the data length and leaves the header to the caller. */
+static uint32_t memo_encoder_finish(MemoEncoder *encoder, uint32_t recorded_at) {
+  if (encoder == NULL || encoder->bytes == NULL) return 0u;
+  if (encoder->high_nibble) {
+    /* Odd sample count: the high nibble of the last byte stays zero. */
+    uint32_t at = encoder->ring ? encoder->length % encoder->capacity : encoder->length;
+    encoder->crc = memo_crc_byte(encoder->crc, encoder->bytes[at]);
+    encoder->length++;
+    encoder->high_nibble = false;
+  }
+  if (!encoder->ring) memo_write_header(encoder, encoder->bytes, recorded_at);
   return encoder->length;
 }
 

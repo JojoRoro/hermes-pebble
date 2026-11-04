@@ -5,6 +5,10 @@
 #include <math.h>
 #include "../src/c/protocol.h"
 
+static uint32_t read_le32(const uint8_t *b, uint32_t o) {
+  return (uint32_t)b[o] | ((uint32_t)b[o + 1] << 8) | ((uint32_t)b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24);
+}
+
 #define UI_HEADER_HEIGHT 24
 #define UI_HINT_HEIGHT 20
 #define UI_MARGIN 8
@@ -87,6 +91,54 @@ AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, voi
 }
 void app_timer_cancel(AppTimer *timer) { (void)timer; timer_callback = NULL; }
 size_t heap_bytes_free(void) { return free_heap; }
+// Persisted memo mode.
+static int32_t persisted_mode = -1;
+int32_t persist_read_int(uint32_t key) { assert(key == HERMES_STORAGE_KEY_MEMO_MODE); return persisted_mode < 0 ? 0 : persisted_mode; }
+int persist_write_int(uint32_t key, int32_t value) { assert(key == HERMES_STORAGE_KEY_MEMO_MODE); persisted_mode = value; return 4; }
+
+// Data Logging: one session, items checked and stored like the phone would get them.
+static bool log_open, log_create_fails;
+static uint32_t log_calls, log_busy_every, log_finishes, log_capture;
+static DataLoggingResult log_result = DATA_LOGGING_SUCCESS;
+static uint8_t log_data[600000];
+static uint32_t log_length;
+static uint8_t log_end[MEMO_LOG_ITEM];
+static bool log_end_seen;
+DataLoggingSessionRef data_logging_create(uint32_t tag, DataLoggingItemType item_type, uint16_t item_length, bool resume) {
+  assert(tag == MEMO_LOG_TAG && item_type == DATA_LOGGING_BYTE_ARRAY && item_length == MEMO_LOG_ITEM && !resume && !log_open);
+  if (log_create_fails) return NULL;
+  log_open = true;
+  log_length = 0u;
+  log_end_seen = false;
+  return (DataLoggingSessionRef)&log_open;
+}
+DataLoggingResult data_logging_log(DataLoggingSessionRef session, const void *data, uint32_t num_items) {
+  assert(session == (DataLoggingSessionRef)&log_open && log_open && num_items == 1u && !log_end_seen);
+  log_calls++;
+  if (log_result != DATA_LOGGING_SUCCESS) return log_result;
+  if (log_busy_every && log_calls % log_busy_every == 0u) return DATA_LOGGING_BUSY; // Flash write pending.
+  const uint8_t *item = data;
+  uint32_t capture = read_le32(item, 0u), offset = read_le32(item, 4u);
+  uint16_t length = (uint16_t)(item[10] | item[11] << 8);
+  log_capture = capture;
+  assert(offset == log_length && length <= MEMO_LOG_PAYLOAD);
+  if (item[8] == 1u) {
+    assert(length == MEMO_HEADER + 8u);
+    memcpy(log_end, item, MEMO_LOG_ITEM);
+    log_end_seen = true;
+  } else {
+    assert(item[8] == 0u && length > 0u);
+    memcpy(log_data + offset, item + MEMO_LOG_HEAD, length);
+    log_length += length;
+  }
+  return DATA_LOGGING_SUCCESS;
+}
+void data_logging_finish(DataLoggingSessionRef session) {
+  assert(session == (DataLoggingSessionRef)&log_open && log_open);
+  log_open = false;
+  log_finishes++;
+}
+
 // Wall clock for coverage: speak() advances it by each frame's 20 ms (or more when frames drop).
 static uint64_t clock_ms = 1700000000000ull;
 uint16_t time_ms(time_t *tloc, uint16_t *out_ms) {
@@ -142,13 +194,32 @@ void graphics_draw_text(GContext *ctx, const char *text, GFont font, GRect box, 
 static uint8_t phone[200000];
 static uint32_t phone_length;
 
+static uint8_t stream[600000], stream_header[MEMO_HEADER];
+static uint32_t stream_length, stream_crc, stream_total;
+static bool stream_end;
+
 /* The phone stores the in-flight block and ACKs it; returns the block size. */
 static uint16_t phone_ack(void) {
-  assert(in_flight && dict.kind == HERMES_KIND_MEMO_BLOCK && dict.version == HERMES_PROTOCOL_VERSION);
-  assert(dict.offset <= phone_length);
-  memcpy(phone + dict.offset, dict.payload, dict.length);
-  if (dict.offset + dict.length > phone_length) phone_length = dict.offset + dict.length;
-  assert(((dict.flags & HERMES_FLAG_MORE) != 0) == (dict.offset + dict.length < dict.total));
+  assert(in_flight && dict.version == HERMES_PROTOCOL_VERSION);
+  if (dict.kind == HERMES_KIND_MEMO_STREAM) {
+    assert(dict.offset == stream_length && !stream_end); // In order, nothing skipped or repeated.
+    if (dict.flags & HERMES_FLAG_MEMO_END) {
+      assert(dict.length == MEMO_HEADER && dict.total == stream_length);
+      memcpy(stream_header, dict.payload, MEMO_HEADER);
+      stream_crc = dict.crc;
+      stream_total = dict.total;
+      stream_end = true;
+    } else {
+      assert(dict.flags == HERMES_FLAG_MORE && dict.length > 0u && dict.total == 0u);
+      memcpy(stream + dict.offset, dict.payload, dict.length);
+      stream_length += dict.length;
+    }
+  } else {
+    assert(dict.kind == HERMES_KIND_MEMO_BLOCK && dict.offset <= phone_length);
+    memcpy(phone + dict.offset, dict.payload, dict.length);
+    if (dict.offset + dict.length > phone_length) phone_length = dict.offset + dict.length;
+    assert(((dict.flags & HERMES_FLAG_MORE) != 0) == (dict.offset + dict.length < dict.total));
+  }
   in_flight = false;
   uint16_t length = dict.length;
   assert(memo_on_sent(&dict));
@@ -169,15 +240,40 @@ static void fire_timer(void) {
   callback(NULL);
 }
 
+/* Speech-like test audio; the same phase reproduces the same frames. */
+static uint32_t phase;
+static void make_frame(int16_t *frame, uint32_t *at, int16_t dc) {
+  for (int i = 0; i < 320; i++, (*at)++) frame[i] = (int16_t)(dc + 2000.0 * sin(*at * 0.17) * (1.0 + sin(*at * 0.0011)));
+}
+
 /* Delivers one frame per frame_ms of wall clock: 20 ms is real time, more means drops. */
 static void speak_paced(uint32_t frames, uint32_t frame_ms, int16_t dc) {
   int16_t frame[320];
-  static uint32_t phase;
   for (uint32_t f = 0; f < frames && s_memo.state == MEMO_RECORDING; f++) {
-    for (int i = 0; i < 320; i++, phase++) frame[i] = (int16_t)(dc + 9000.0 * sin(phase * 0.17));
+    make_frame(frame, &phase, dc);
     clock_ms += frame_ms;
     mic.data(frame, 320u, NULL);
   }
+}
+
+/* Live modes: after each frame the phone acknowledges (stream) unless it is lagging. */
+static void speak_live(uint32_t frames, bool acking) {
+  int16_t frame[320];
+  for (uint32_t f = 0; f < frames && s_memo.state == MEMO_RECORDING; f++) {
+    make_frame(frame, &phase, 0);
+    clock_ms += 20u;
+    mic.data(frame, 320u, NULL);
+    if (acking && in_flight) phone_ack();
+  }
+}
+
+/* The ADPCM a RAM-mode memo would hold for the same frames. */
+static uint32_t reference(uint32_t from_phase, uint32_t frames, uint8_t *out, uint32_t capacity) {
+  MemoEncoder ref;
+  int16_t frame[320];
+  assert(memo_encoder_begin(&ref, out, capacity));
+  for (uint32_t f = 0; f < frames; f++) { make_frame(frame, &from_phase, 0); memo_encoder_push(&ref, frame, 320u); }
+  return memo_encoder_finish(&ref, 0u) - MEMO_HEADER;
 }
 static void speak(uint32_t frames) { speak_paced(frames, 20u, 0); }
 
@@ -341,7 +437,7 @@ int main(void) {
   for (int i = 0; i < 20; i++) mic.data(still, 320u, NULL);
   assert(s_memo.level == 0u);
   speak_paced(5u, 20u, 12000);
-  assert(s_memo.level >= 10u);
+  assert(s_memo.level >= 8u);
   memo_down(NULL, NULL); // Ignored while recording.
   memo_select(NULL, NULL);
   memo_down(NULL, NULL);
@@ -400,10 +496,133 @@ int main(void) {
   memo_disappear(NULL);
   assert(s_memo.state == MEMO_READY && !mic_active);
 
+  memo_down(NULL, NULL);
+  memo_down(NULL, NULL);
+  static uint8_t expect[600000];
+
+  // UP cycles RAM -> Stream -> Watch flash -> RAM and remembers the choice.
+  assert(s_memo.mode == MEMO_MODE_RAM && s_memo.state == MEMO_IDLE);
+  memo_up(NULL, NULL);
+  assert(s_memo.mode == MEMO_MODE_STREAM && persisted_mode == (int32_t)MEMO_MODE_STREAM);
+  draw();
+
+  // Stream needs the phone at the start.
+  connected = false;
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_IDLE && !mic_active && !s_memo.buffer && strstr(s_memo.status, "needs the phone"));
+  connected = true;
+
+  // Stream: 20 s through an 8 KiB ring (it wraps five times), acknowledged as it goes.
+  free_heap = MEMO_HEAP_RESERVE + 8192u;
+  uint32_t start = phase;
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_RECORDING && s_memo.capacity == 8192u && s_memo.encoder.ring);
+  uint32_t stream_capture = s_memo.capture;
+  speak_live(1000u, true);
+  draw();
+  assert(stream_length > 0u && stream_length + 2u * MEMO_BLOCK_BYTES >= s_memo.encoder.length);
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_SENDING && !mic_active);
+  while (s_memo.state == MEMO_SENDING) { assert(in_flight); phone_ack(); }
+  assert(s_memo.state == MEMO_WAIT_RECEIPT && stream_end);
+  uint32_t data_length = reference(start, 1000u, expect, sizeof(expect));
+  assert(stream_length == data_length && stream_total == data_length && data_length > 8u * 8192u);
+  assert(memcmp(stream, expect + MEMO_HEADER, data_length) == 0);
+  assert(stream_crc == memo_crc32(stream, stream_length) && stream_crc == s_memo.crc);
+  assert(memcmp(stream_header, "HVM1", 4) == 0 && (read_le32(stream_header, 8) + 1u) / 2u == stream_length);
+  assert(stream_header[7] >= 99u); // Coverage measured.
+  InboundTransfer streamed = { .capture_id = stream_capture, .generation = stream_crc, .total_bytes = stream_length,
+    .status = HERMES_STATUS_NOTE_SAVED };
+  memo_receipt(&streamed);
+  assert(s_memo.state == MEMO_SENT && !s_memo.buffer);
+
+  // Stream while the phone lags: nothing is acknowledged, the ring fills, recording stops,
+  // and the rest still goes out, in order, once the phone catches up.
+  stream_length = 0u; stream_end = false;
+  start = phase;
+  memo_select(NULL, NULL);
+  speak_live(1000u, false);
+  assert(s_memo.state == MEMO_SENDING && !mic_active && strstr(s_memo.status, "fell behind"));
+  // The ring filled part-way through a frame: compare all but the last (half-filled) byte.
+  uint32_t lag_frames = (s_memo.encoder.samples + 3u + 159u) / 160u;
+  assert(s_memo.length >= 8192u && s_memo.length <= 8192u + MEMO_BLOCK_BYTES);
+  while (s_memo.state == MEMO_SENDING) { if (!in_flight) fire_timer(); else phone_ack(); }
+  data_length = reference(start, lag_frames, expect, sizeof(expect));
+  assert(stream_length == s_memo.length && data_length >= stream_length);
+  assert(memcmp(stream, expect + MEMO_HEADER, stream_length - 1u) == 0 && stream_crc == memo_crc32(stream, stream_length));
+  streamed = (InboundTransfer){ .capture_id = s_memo.capture, .generation = s_memo.crc, .total_bytes = s_memo.length,
+    .status = HERMES_STATUS_NOTE_SAVED };
+  memo_receipt(&streamed);
+  assert(s_memo.state == MEMO_SENT);
+
+  // Stream through a short Bluetooth outage: recording continues and catches up afterwards.
+  stream_length = 0u; stream_end = false;
+  start = phase;
+  memo_select(NULL, NULL);
+  speak_live(50u, true);
+  connected = false;
+  speak_live(50u, true);
+  assert(s_memo.state == MEMO_RECORDING);
+  connected = true;
+  fire_timer(); // The 1 s retry.
+  speak_live(50u, true);
+  memo_select(NULL, NULL);
+  while (s_memo.state == MEMO_SENDING) phone_ack();
+  data_length = reference(start, 150u, expect, sizeof(expect));
+  assert(stream_length == data_length && memcmp(stream, expect + MEMO_HEADER, data_length) == 0);
+  streamed = (InboundTransfer){ .capture_id = s_memo.capture, .generation = s_memo.crc, .total_bytes = s_memo.length,
+    .status = HERMES_STATUS_FAILED, .error_code = HERMES_ERROR_MALFORMED };
+  memo_receipt(&streamed);
+  assert(s_memo.state == MEMO_FAILED && !s_memo.buffer && strstr(s_memo.status, "could not verify"));
+  free_heap = 100000u;
+
+  // Watch flash: items go into Data Logging while recording, BUSY every third call.
+  memo_up(NULL, NULL);
+  assert(s_memo.mode == MEMO_MODE_LOG && persisted_mode == (int32_t)MEMO_MODE_LOG);
+  draw();
+  log_busy_every = 3u;
+  start = phase;
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_RECORDING && log_open && s_memo.capacity == MEMO_LOG_RING);
+  uint32_t log_capture_id = s_memo.capture;
+  speak_live(1500u, false); // 30 s, more than the 16 KiB ring holds at once.
+  draw();
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_SENDING || s_memo.state == MEMO_SENT);
+  uint32_t log_samples = s_memo.encoder.samples, log_crc = s_memo.crc, log_total = s_memo.length;
+  for (int i = 0; i < 1000 && s_memo.state == MEMO_SENDING; i++) fire_timer();
+  assert(s_memo.state == MEMO_SENT && !log_open && log_finishes == 1u && log_end_seen && !s_memo.buffer);
+  data_length = reference(start, 1500u, expect, sizeof(expect));
+  assert(log_length == data_length && log_total == data_length && memcmp(log_data, expect + MEMO_HEADER, data_length) == 0);
+  assert(log_capture == log_capture_id && memo_crc32(log_data, log_length) == log_crc);
+  assert(memcmp(log_end + MEMO_LOG_HEAD, "HVM1", 4) == 0 && read_le32(log_end, MEMO_LOG_HEAD + 8u) == log_samples);
+  assert(read_le32(log_end, MEMO_LOG_HEAD + 16u) == log_crc && read_le32(log_end, MEMO_LOG_HEAD + 20u) == log_total);
+  assert(strstr(s_memo.status, "watch storage"));
+
+  // Watch flash full mid-recording: stop, keep what was logged (session finished), explain.
+  memo_select(NULL, NULL);
+  speak_live(100u, false);
+  log_result = DATA_LOGGING_FULL;
+  speak_live(10u, false);
+  assert(s_memo.state == MEMO_FAILED && !mic_active && !log_open && log_finishes == 2u && !s_memo.buffer);
+  assert(strstr(s_memo.status, "refused"));
+  log_result = DATA_LOGGING_SUCCESS;
+  log_create_fails = true;
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_IDLE && !mic_active && !s_memo.buffer && strstr(s_memo.status, "not available"));
+  log_create_fails = false;
+  // Leaving Hermes while saving finishes the session, so the phone keeps what arrived.
+  memo_select(NULL, NULL);
+  speak_live(100u, false);
+  memo_up(NULL, NULL);
+  assert(s_memo.mode == MEMO_MODE_LOG); // UP does not switch mode while recording.
+
   memo_unload(NULL);
   memo_shutdown();
+  assert(!log_open && log_finishes == 3u);
   assert(s_memo.buffer == NULL && s_memo_window == NULL);
   printf("Voice memo watch flow: record, ACK-paced %u-byte blocks, receipts, resend, backoff, "
-         "block shrink, priority, memory bounds, mic refusals, interruptions, coverage and DC-free meter passed\n", MEMO_BLOCK_BYTES);
+         "block shrink, priority, memory bounds, mic refusals, interruptions, coverage, DC-free meter, "
+         "mode cycling, stream (ring wrap, lag, outage, rejection) and watch flash (busy, full, exit) passed\n", MEMO_BLOCK_BYTES);
   return 0;
 }
