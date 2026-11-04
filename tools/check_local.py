@@ -91,7 +91,7 @@ def main():
                 SOURCES / 'network/HermesModels.kt', SOURCES / 'network/HermesClient.kt',
                 SOURCES / 'network/RunConversationContext.kt',
                 SOURCES / 'pebble/Protocol.kt', SOURCES / 'pebble/InkCodec.kt', SOURCES / 'pebble/WatchAudioTransfer.kt', SOURCES / 'pebble/VoicePcm.kt', SOURCES / 'pebble/VoiceAdpcm.kt', SOURCES / 'pebble/VoiceReplyRequests.kt',
-                SOURCES / 'pebble/VoiceMemoCodec.kt', SOURCES / 'data/local/VoiceMemoRepository.kt', args.pebble_model.resolve(),
+                SOURCES / 'pebble/VoiceMemoCodec.kt', SOURCES / 'pebble/LiveMemoStream.kt', SOURCES / 'data/local/VoiceMemoRepository.kt', args.pebble_model.resolve(),
                 'tests/ProtocolCheck.kt', 'tests/NetworkCheck.kt', 'tests/InkCheck.kt', 'tests/ReplyContextCheck.kt', 'tests/AudioCheck.kt',
                 'tests/VoiceMemoCheck.kt')
             for entry in ['pebble.ProtocolCheckKt', 'network.NetworkCheckKt', 'network.ReplyContextCheckKt', 'pebble.AudioCheckKt']:

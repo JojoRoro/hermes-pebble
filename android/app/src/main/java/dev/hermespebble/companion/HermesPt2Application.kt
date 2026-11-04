@@ -59,6 +59,11 @@ class AppContainer(context: Context) {
     val voiceMemoRepository = dev.hermespebble.companion.data.local.VoiceMemoRepository(
         java.io.File(applicationContext.filesDir, "voice-memos"),
     )
+    val liveMemoPlayer by lazy {
+        dev.hermespebble.companion.pebble.LiveMemoPlayer(applicationScope) {
+            runCatching { settingsRepository.current().liveMemoPlaybackEnabled }.getOrDefault(true)
+        }
+    }
     val secretStore = SecretStore(applicationContext)
     val commandRepository = CommandRepository(database)
     val conversationRepository = ConversationRepository(database)

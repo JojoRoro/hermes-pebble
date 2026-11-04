@@ -535,6 +535,16 @@ private fun DiagnosticsScreen(
         }
         Text("Messages from the watch ask Hermes for short sentences without Markdown, lists, or tables. This reads better on the watch and sounds better with voice playback.")
         HorizontalDivider()
+        Text("Voice memos", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = state.settings?.liveMemoPlaybackEnabled != false,
+                onCheckedChange = viewModel::setLiveMemoPlaybackEnabled,
+            )
+            Text("Play streamed memos live on this phone", modifier = Modifier.padding(start = 8.dp))
+        }
+        Text("When the watch's Voice memo is in Stream mode (press UP on the watch to change mode), you hear it here while you record, about a second behind. The memo is saved either way.")
+        HorizontalDivider()
         Text("New conversation after inactivity", style = MaterialTheme.typography.titleMedium)
         val idleHours = state.settings?.autoNewConversationHours ?: DEFAULT_AUTO_NEW_CONVERSATION_HOURS
         AUTO_NEW_CONVERSATION_HOUR_CHOICES.forEach { hours ->

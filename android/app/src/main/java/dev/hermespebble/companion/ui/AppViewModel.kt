@@ -408,6 +408,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchBusy { container.settingsRepository.setResultNotificationsEnabled(enabled) }
     }
 
+    fun setLiveMemoPlaybackEnabled(enabled: Boolean) {
+        launchBusy { container.settingsRepository.setLiveMemoPlaybackEnabled(enabled) }
+    }
+
     fun setBriefWatchRepliesEnabled(enabled: Boolean) {
         launchBusy { container.settingsRepository.setBriefWatchRepliesEnabled(enabled) }
     }

@@ -282,6 +282,8 @@ typedef struct {
   RecentItem recent_items[HERMES_MAX_RECENT_ITEMS];
   char menu_labels[9][UI_MENU_LABEL_SIZE]; // Only action menus draw these.
   char ink_status[160];
+  char parse_input[HERMES_MAX_DICTATION_BYTES + 1u];
+  char parse_output[UI_RESULT_BUFFER_SIZE + 1u];
 } AppBuffers;
 static AppBuffers *s_buffers;
 #define s_capture_text (s_buffers->capture_text)
@@ -3985,8 +3987,9 @@ static bool parse_result_payload(const char *json, uint16_t length) {
   uint32_t item_id;
   uint32_t state;
   bool more = false;
-  static char input[HERMES_MAX_DICTATION_BYTES + 1u];
-  static char output[UI_RESULT_BUFFER_SIZE + 1u];
+  // Scratch for the decoded strings; in the heap block to keep the image small.
+#define input (s_buffers->parse_input)
+#define output (s_buffers->parse_output)
   if (!json_object_span(json, length, 0u, &begin, &end)) {
     return false;
   }
@@ -4023,6 +4026,8 @@ static bool parse_result_payload(const char *json, uint16_t length) {
   memcpy(s_result_page, output, strlen(output) + 1u);
   return true;
 }
+#undef input
+#undef output
 
 #include "ink_watch.h"
 

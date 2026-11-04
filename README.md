@@ -148,7 +148,15 @@ Touch capture requires compatible PT2 firmware exposing the SDK 4.33.1 touch API
 
 ## Voice memo (experimental)
 
-Open **Voice memo** in the watch menu. **Select** starts recording and **Select** (or Back) stops it. Then **Select** sends it to the phone, or **Down** twice deletes it. The phone app lists received memos under **Notes › Voice memos** with **Play** and **Delete**.
+Open **Voice memo** in the watch menu. **Up** chooses where the audio goes (the watch remembers it), **Select** starts recording and **Select** (or Back) stops it. The phone app lists received memos under **Notes › Voice memos** with **Play** and **Delete**.
+
+| Mode | Where the audio goes | Length | Phone needed while recording |
+| --- | --- | --- | --- |
+| **RAM** | Watch memory; after recording, **Select** sends it or **Down** twice deletes it | About 9 s (free memory, at most 30 s) | No, but Hermes must stay open until **Saved on phone** |
+| **Stream** | To the phone while you record; RAM is only a 12-second buffer | Up to 10 min | Yes. Recording stops if the buffer fills because Bluetooth fell behind |
+| **Watch flash** | Into the watch's Data Logging storage while you record; the system uploads it on its own, even after Hermes closes | Up to 2 min (640 KB shared storage) | No |
+
+With **Settings › Voice memos › Play streamed memos live on this phone** (on by default), a Stream-mode memo also plays on the phone speaker while you record, about a second behind. Its level is adjusted as it goes; the saved copy gets the full treatment below.
 
 Requirements:
 
@@ -157,10 +165,10 @@ Requirements:
 
 Limits in this first version:
 
-- **Length:** the clip is held in watch RAM, so length depends on free memory, not a bit-rate cap. Expect roughly 9 seconds; the idle screen shows the current maximum and recording stops with a buzz when memory is full. It is capped at 30 seconds.
+- **Length:** see the table. In RAM mode the idle screen shows the current maximum; every mode stops with a buzz at its limit.
 - **Quality:** the microphone delivers 16 kHz 16-bit PCM (256 kbit/s). The watch boosts it 4× (dictation uses 3×), filters it to 8 kHz and compresses it to 4-bit IMA ADPCM (32 kbit/s, 4 KB per second). That is telephone-band quality, fine for speech. The phone raises the speech to a consistent level, turns down anything much louder than speech (button clicks), and mutes the first 300 ms and last 200 ms, where pressing and releasing the button is loudest. Start speaking a moment after pressing Select. If the watch receives audio for less than 80% of the recording time it says so, because the memo then has gaps.
-- **Transfer:** memos go over Bluetooth in 768-byte AppMessages, each acknowledged only after the phone has written it to disk. Expect a few seconds per memo; Hermes must stay open on the watch until **Saved on phone** appears.
-- **Not durable on the watch:** leaving Hermes or a watch restart discards an unsent memo. Nothing is sent to Hermes or transcribed; memos stay on the phone until you delete them.
+- **Transfer:** RAM and Stream memos go over Bluetooth in AppMessages of up to 768 bytes, each acknowledged only after the phone has written it to disk. Watch-flash memos travel by Data Logging, which can take a while after recording; they appear in Notes when the last item arrives.
+- **Durability:** a RAM memo is lost if you leave Hermes before sending. A Stream memo cut off by closing Hermes keeps what reached the phone. A Watch-flash memo survives closing Hermes; what was saved before a restart or a full storage still arrives. Nothing is sent to Hermes or transcribed; memos stay on the phone until you delete them.
 
 See [the memo format and transfer](protocol/README.md#voice-memos).
 

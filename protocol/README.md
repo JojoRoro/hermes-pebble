@@ -65,6 +65,7 @@ Every numeric key has one fixed type. Android receives every numeric tuple norma
 | 9 | Watch → phone | `INK_BLOCK` | Capture, one binary block, byte offset, total ink bytes, whole-file CRC in generation |
 | 10 | Watch → phone | `AUDIO_STATUS` | Correlation, audio session in capture, audio status, confirmed byte offset, total audio bytes, checksum in generation |
 | 11 | Watch → phone | `MEMO_BLOCK` | Capture, one binary block of up to 1,024 bytes, byte offset, total memo bytes, whole-file CRC in generation, flags `0x01` while more follows |
+| 12 | Watch → phone | `MEMO_STREAM` | Capture, ADPCM sent while recording at data offset `PageOffset`, flags `0x01`; the end message has flags `0x20`, the 16-byte HVM1 header as payload, data length in total and offset, data CRC in generation |
 | 101 | Phone → watch | `HANDSHAKE_ACK` | Transfer, correlation, protocol version, conversation generation |
 | 102 | Phone → watch | `DURABLE_RECEIPT` | Transfer, correlation, capture, item kind, item ID when assigned, status |
 | 103 | Phone → watch | `STATUS_UPDATE` | Transfer, correlation zero, capture, item ID, status, error code, flags |
@@ -331,3 +332,23 @@ Each kind-11 message is one AppMessage, not chunked: it carries only `ProtocolVe
 Flow control is the AppMessage ACK. Android returns ACK only after the block is appended to `partial/<watch>-<capture>-<crc>.part` in app storage, so the watch sends the next block from its outbox-sent callback without waiting for a separate receipt. Blocks that repeat stored bytes are acknowledged without writing; a block at offset 0 restarts the partial file; a gap or conflicting bytes gets NACK. The watch yields to the main transport whenever it has a transfer in progress. After NACKs it backs off (0.5–4 s), halves the block size after two consecutive refusals (minimum 192 bytes), and gives up after six. A manual retry restarts at offset 0 with 768-byte blocks.
 
 When the last byte arrives, Android checks the length and CRC, decodes the ADPCM, mutes the first 300 ms (start press and release) and last 200 ms (stop press) with 30 ms fades, removes DC and rumble below about 75 Hz, and sets one gain from the speech level (90th percentile of 20 ms window RMS, at least a third of the 98th) towards an RMS of 6,000, at most 128×. Windows still louder than RMS 9,000, such as a click, are turned down to it (a window's neighbours share the reduction); pauses below a tenth of the speech level are lowered by up to 9 dB; peaks above 24,000 are soft-limited. It then saves a 16-bit 8 kHz WAV as `<receivedAt>-<watch>-<capture>-<crc>.wav`. It then sends kind 115 with status 13 (or status 8, error 3, discarding the partial file when the checksum or header is wrong). The watch frees the clip only on a matching status-13 receipt. If no receipt arrives within 15 seconds, it resends the final block, up to three times; Android repeats the receipt for a memo it already saved. A receipt that overtakes the final ACK is accepted. Partial files older than a day are deleted when a new memo starts. Deleting a memo in the Android app removes its WAV file; app backups exclude these files.
+
+### Stream and watch-flash modes (v0.1.24)
+
+The watch's **Up** button cycles RAM → Stream → Watch flash (persist key 6). In both new modes the encoder runs in ring mode: only ADPCM data is buffered, the header is written at the end, and lengths, offsets and CRC-32 cover the data bytes alone (the HVM1 file is header + data). Capture IDs are assigned when recording starts.
+
+**Stream (kind 12).** While recording, the watch sends whatever ADPCM is waiting (at least 240 bytes, at most 768 or up to the ring's end) each time the previous message is acknowledged. The ring is all free heap above the 8 KiB reserve, at most 48 KiB (about 12 s). If the phone is out of reach, recording continues into the ring and sending resumes; NACKs back off as for kind 11 but never give up while recording. If the ring fills, recording stops and the rest is sent. After the data, an end message (flags `0x20`) carries the header, with the data length in `TotalBytes` and `PageOffset` and the data CRC in `ConversationGeneration`. Android writes each piece at its offset in `partial/<watch>-<capture>.live` before acknowledging. On the end message it checks length and CRC, saves the memo as for kind 11, and sends the kind-115 receipt for the data length and CRC. Pieces repeated after completion are acknowledged. If the watch app closes first, Android saves what arrived with a header it builds (coverage 0). With live playback on, each acknowledged piece is also decoded incrementally and played through an `AudioTrack` (8 kHz, 4 s buffer, starting after 0.5 s). The live level control mutes 300 ms, removes DC and rumble, and takes its gain from the last 5 s of 20 ms windows, with the same targets as the saved copy and a per-window peak cap of 16,000.
+
+**Watch flash (Data Logging, tag `0x48564C31` "HVL1", 240-byte byte-array items, no resume).** Each item:
+
+| Offset | Bytes | Meaning |
+| ---: | ---: | --- |
+| 0 | 4 | Capture ID |
+| 4 | 4 | Data offset of the payload (end item: data length) |
+| 8 | 1 | 0 = data, 1 = end |
+| 9 | 1 | 0 |
+| 10 | 2 | Payload length (data: 1–224; end: 24) |
+| 12 | 4 | 0 |
+| 16 | 224 | Payload. End item: HVM1 header (16), data CRC-32 (4), data length (4) |
+
+A buffered Data Logging session holds one item until the system task writes it to flash, so `data_logging_log` returns BUSY in between. The watch keeps a 16 KiB ring and offers up to four items per 20 ms audio frame (every 40 ms after recording) until the end item is accepted, then finishes the session. Recording stops after 2 minutes, or when the ring fills or logging fails; a failed or closed session is finished so what was logged still uploads. Android writes items to `partial/<watch>-<capture>.log` (a gap from a lost item stays zero) and saves the memo when the end item arrives, after checking length and CRC. When a session finishes without its end item, Android saves what arrived; if the process restarted and lost the session's capture, it does so only for partial files idle for 2 minutes. Watch-flash partial files are not finished when the watch app closes, because Data Logging keeps uploading.

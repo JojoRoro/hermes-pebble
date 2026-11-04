@@ -236,6 +236,15 @@ class SettingsRepository internal constructor(
         }
     }
 
+    suspend fun setLiveMemoPlaybackEnabled(enabled: Boolean) {
+        updateMutex.withLock {
+            ensureInitialized()
+            dataStore.edit { preferences ->
+                preferences[LIVE_MEMO_PLAYBACK_ENABLED] = enabled
+            }
+        }
+    }
+
     suspend fun setAutoNewConversationHours(hours: Int) {
         require(hours in AUTO_NEW_CONVERSATION_HOUR_CHOICES) { "Unsupported idle period" }
         updateMutex.withLock {
@@ -299,6 +308,7 @@ class SettingsRepository internal constructor(
             capabilitiesCheckedAtMillis = storedCapabilities?.checkedAtMillis,
             resultNotificationsEnabled = preferences[RESULT_NOTIFICATIONS_ENABLED] ?: false,
             briefWatchRepliesEnabled = preferences[BRIEF_WATCH_REPLIES_ENABLED] ?: false,
+            liveMemoPlaybackEnabled = preferences[LIVE_MEMO_PLAYBACK_ENABLED] ?: true,
             autoNewConversationHours = preferences[AUTO_NEW_CONVERSATION_HOURS] ?: DEFAULT_AUTO_NEW_CONVERSATION_HOURS,
         )
     }
@@ -316,6 +326,7 @@ class SettingsRepository internal constructor(
         val CAPABILITIES_CHECKED_AT = longPreferencesKey("capabilities_checked_at")
         val RESULT_NOTIFICATIONS_ENABLED = booleanPreferencesKey("result_notifications_enabled")
         val BRIEF_WATCH_REPLIES_ENABLED = booleanPreferencesKey("brief_watch_replies_enabled")
+        val LIVE_MEMO_PLAYBACK_ENABLED = booleanPreferencesKey("live_memo_playback_enabled")
         val AUTO_NEW_CONVERSATION_HOURS = intPreferencesKey("auto_new_conversation_hours")
     }
 }
@@ -337,6 +348,8 @@ data class HermesSettings(
     val capabilitiesCheckedAtMillis: Long?,
     val resultNotificationsEnabled: Boolean = false,
     val briefWatchRepliesEnabled: Boolean = false,
+    /** Play stream-mode voice memos on the phone speaker while they are recorded. */
+    val liveMemoPlaybackEnabled: Boolean = true,
     val autoNewConversationHours: Int = DEFAULT_AUTO_NEW_CONVERSATION_HOURS,
 ) {
     val hasHermesKey: Boolean

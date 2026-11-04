@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class PebbleListenerService : BasePebbleListenerService() {
@@ -54,6 +55,14 @@ class PebbleListenerService : BasePebbleListenerService() {
             return ReceiveResult.Ack
         }
         bridge.markActive(watch.value)
+        when (val stream = decodeMemoStream(data)) {
+            MemoStreamDecode.NotStream -> Unit
+            is MemoStreamDecode.Invalid -> {
+                DiagnosticLog.record("Memo", "Stream RX rejected: ${stream.reason}")
+                return ReceiveResult.Nack
+            }
+            is MemoStreamDecode.Part -> return handleMemoPart(watch.value, stream.transferId, stream.part)
+        }
         when (val memo = decodeMemoBlock(data)) {
             MemoBlockDecode.NotMemo -> Unit
             is MemoBlockDecode.Invalid -> {
@@ -91,6 +100,7 @@ class PebbleListenerService : BasePebbleListenerService() {
         itemsLeft: Long,
         watch: WatchIdentifier,
     ): ReceiveResult {
+        if (watchappUUID == WireProtocol.APP_UUID && session.tag == VoiceMemoCodec.LOG_TAG) return handleMemoLog(watch.value, session, data)
         if (watchappUUID != WireProtocol.APP_UUID || session.tag != InkCodec.LOG_TAG ||
             session.itemSize != InkCodec.LOG_ITEM_BYTES || data.isEmpty() || data.size % session.itemSize != 0) return ReceiveResult.Nack
         return try {
@@ -107,13 +117,33 @@ class PebbleListenerService : BasePebbleListenerService() {
         watchappUUID: UUID,
         session: io.rebble.pebblekit2.common.model.DataLogSession,
         watch: WatchIdentifier,
-    ): ReceiveResult = if (watchappUUID == WireProtocol.APP_UUID && session.tag == InkCodec.LOG_TAG &&
-        session.itemSize == InkCodec.LOG_ITEM_BYTES) ReceiveResult.Ack else ReceiveResult.Nack
+    ): ReceiveResult {
+        if (watchappUUID == WireProtocol.APP_UUID && session.tag == VoiceMemoCodec.LOG_TAG) {
+            // A session that finished without its end item (Hermes closed while saving): keep what
+            // arrived. Without the session's capture (process restarted), take idle partial files.
+            val capture = memoLogSessions.remove(session.timestamp.toString())
+            try {
+                withContext(Dispatchers.IO) {
+                    container.voiceMemoRepository.finishIncomplete(watch.value, logged = true, captureId = capture,
+                        idleMillis = if (capture == null) 120_000L else 0L)
+                }.forEach { DiagnosticLog.record("Memo", "Saved an incomplete watch-flash memo: ${it.memo.durationMillis / 1000.0}s") }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { DiagnosticLog.record("Memo", "Incomplete memo not saved: ${error.javaClass.simpleName}") }
+            return ReceiveResult.Ack
+        }
+        return if (watchappUUID == WireProtocol.APP_UUID && session.tag == InkCodec.LOG_TAG &&
+            session.itemSize == InkCodec.LOG_ITEM_BYTES) ReceiveResult.Ack else ReceiveResult.Nack
+    }
 
     override fun onAppClosed(watchappUUID: UUID, watch: WatchIdentifier) {
         if (watchappUUID == WireProtocol.APP_UUID) {
             assemblers.remove(watch.value)
             bridge.onAppClosed(watch.value)
+            // A stream cut off by closing Hermes keeps what arrived (watch flash keeps uploading).
+            coroutineScope.launch {
+                runCatching { container.voiceMemoRepository.finishIncomplete(watch.value, logged = false) }
+                    .getOrNull()?.forEach { DiagnosticLog.record("Memo", "Saved an incomplete streamed memo: ${it.memo.durationMillis / 1000.0}s") }
+            }
         }
     }
 
@@ -216,17 +246,88 @@ class PebbleListenerService : BasePebbleListenerService() {
         }
     }
 
+    private val memoLogSessions = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Stream mode: written before the ACK (the watch's flow control), then played live if enabled. */
+    private suspend fun handleMemoPart(watch: String, transferId: Long, part: VoiceMemoPart): ReceiveResult = try {
+        val result = withContext(Dispatchers.IO) { container.voiceMemoRepository.acceptPart(watch, part) }
+        if (result !is MemoAcceptResult.Rejected) {
+            try { container.liveMemoPlayer.onPart(watch, part) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Exception) { DiagnosticLog.record("Memo", "Live playback error: ${error.javaClass.simpleName}") }
+        }
+        val end = part.end
+        fun receipt(saved: Boolean) {
+            if (end == null) return
+            val block = VoiceMemoBlock(transferId, part.captureId, end.total, end.total, end.checksum, ByteArray(0))
+            bridge.launch { bridge.sendMemoReceipt(watch, block, saved) }
+        }
+        when (result) {
+            MemoAcceptResult.Accepted -> ReceiveResult.Ack
+            is MemoAcceptResult.Complete -> {
+                if (!result.duplicate) logSaved("streamed", result, end?.total ?: 0L)
+                receipt(saved = true)
+                ReceiveResult.Ack
+            }
+            is MemoAcceptResult.Corrupt -> {
+                DiagnosticLog.record("Memo", "Discarded streamed memo: ${result.reason}")
+                receipt(saved = false)
+                ReceiveResult.Ack
+            }
+            is MemoAcceptResult.Rejected -> ReceiveResult.Nack
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        DiagnosticLog.record("Memo", "Stream piece at ${part.offset} failed; NACK: ${error.javaClass.simpleName}")
+        ReceiveResult.Nack
+    }
+
+    /** Watch flash: Data Logging items, in order, possibly long after recording. */
+    private suspend fun handleMemoLog(
+        watch: String,
+        session: io.rebble.pebblekit2.common.model.DataLogSession,
+        data: ByteArray,
+    ): ReceiveResult {
+        if (session.itemSize != VoiceMemoCodec.LOG_ITEM_BYTES || data.isEmpty() || data.size % session.itemSize != 0) return ReceiveResult.Nack
+        return try {
+            for (offset in data.indices step session.itemSize) {
+                val part = try {
+                    VoiceMemoCodec.logPart(data.copyOfRange(offset, offset + session.itemSize))
+                } catch (error: IllegalArgumentException) {
+                    DiagnosticLog.record("Memo", "Skipped a bad watch-flash item: ${error.message}")
+                    continue
+                }
+                memoLogSessions[session.timestamp.toString()] = part.captureId
+                when (val result = withContext(Dispatchers.IO) { container.voiceMemoRepository.acceptPart(watch, part, logged = true) }) {
+                    is MemoAcceptResult.Complete -> if (!result.duplicate) logSaved("watch-flash", result, part.end?.total ?: 0L)
+                    is MemoAcceptResult.Corrupt -> DiagnosticLog.record("Memo", "Discarded watch-flash memo: ${result.reason}")
+                    else -> Unit
+                }
+            }
+            ReceiveResult.Ack
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            DiagnosticLog.record("Memo", "Watch-flash items failed; NACK: ${error.javaClass.simpleName}")
+            ReceiveResult.Nack
+        }
+    }
+
+    private fun logSaved(kind: String, result: MemoAcceptResult.Complete, bytes: Long) {
+        val levels = result.levels?.let {
+            ", speech %.0f dBFS, peak %.0f dBFS, gain %.1fx, DC %d".format(it.speechDbfs, it.peakDbfs, it.gain, it.dcOffset)
+        }.orEmpty()
+        val coverage = result.coveragePercent?.let { ", watch heard $it% of the recording time" }.orEmpty()
+        DiagnosticLog.record("Memo", "Saved $kind voice memo: ${result.memo.durationMillis / 1000.0}s, $bytes bytes from watch$coverage$levels")
+    }
+
     /** The ACK is the watch's flow control: it is returned only once the block is on disk. */
     private suspend fun handleMemoBlock(watch: String, block: VoiceMemoBlock): ReceiveResult = try {
         when (val result = withContext(Dispatchers.IO) { container.voiceMemoRepository.accept(watch, block) }) {
             MemoAcceptResult.Accepted -> ReceiveResult.Ack
             is MemoAcceptResult.Complete -> {
                 if (!result.duplicate) {
-                    val levels = result.levels?.let {
-                        ", speech %.0f dBFS, peak %.0f dBFS, gain %.1fx, DC %d".format(it.speechDbfs, it.peakDbfs, it.gain, it.dcOffset)
-                    }.orEmpty()
-                    val coverage = result.coveragePercent?.let { ", watch heard $it% of the recording time" }.orEmpty()
-                    DiagnosticLog.record("Memo", "Saved voice memo: ${result.memo.durationMillis / 1000.0}s, ${block.total} bytes from watch$coverage$levels")
+                    logSaved("RAM", result, block.total)
                 }
                 bridge.launch { bridge.sendMemoReceipt(watch, block, saved = true) }
                 ReceiveResult.Ack

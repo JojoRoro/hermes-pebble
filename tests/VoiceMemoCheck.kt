@@ -208,5 +208,135 @@ fun main(args: Array<String>) {
     } finally {
         directory.deleteRecursively()
     }
-    println("Voice memo phone checks: C fixture decode, ADPCM/WAV, validation, dictionary decode, repository append/duplicate/gap/conflict/corrupt/cleanup/delete passed")
+    liveModes(memo)
+    println("Voice memo phone checks: C fixture decode, ADPCM/WAV, validation, dictionary decode, repository append/duplicate/gap/conflict/corrupt/cleanup/delete, " +
+        "stream decode, watch-flash items, piece reassembly, incomplete recovery and live level passed")
+}
+
+private fun le32(value: Long) = ByteArray(4) { (value shr (8 * it)).toByte() }
+
+/** A watch-flash item laid out like memo_log_drain() in memo_watch.h. */
+private fun logItem(capture: Long, offset: Long, payload: ByteArray, end: Boolean = false): ByteArray {
+    val item = ByteArray(VoiceMemoCodec.LOG_ITEM_BYTES)
+    le32(capture).copyInto(item, 0); le32(offset).copyInto(item, 4)
+    item[8] = if (end) 1 else 0
+    item[10] = payload.size.toByte(); item[11] = (payload.size shr 8).toByte()
+    payload.copyInto(item, 16)
+    return item
+}
+
+private fun liveModes(memo: ByteArray) {
+    val header = memo.copyOfRange(0, 16)
+    val data = memo.copyOfRange(16, memo.size)
+    val crc = VoiceMemoCodec.crc32(data)
+
+    // Kind 12 dictionaries: data pieces and the end message.
+    fun stream(offset: Long, payload: ByteArray, end: Boolean) = mapOf(
+        WireProtocol.KEY_PROTOCOL_VERSION to PebbleDictionaryItem.UInt8(1u),
+        WireProtocol.KEY_MESSAGE_KIND to PebbleDictionaryItem.UInt8(WireMessageKind.MEMO_STREAM.value.toUByte()),
+        WireProtocol.KEY_TRANSFER_ID to PebbleDictionaryItem.UInt32(9u),
+        WireProtocol.KEY_CAPTURE_ID to PebbleDictionaryItem.UInt32(500u),
+        WireProtocol.KEY_PAGE_OFFSET to PebbleDictionaryItem.UInt32(offset.toUInt()),
+        WireProtocol.KEY_TOTAL_BYTES to PebbleDictionaryItem.UInt32(if (end) data.size.toUInt() else 0u),
+        WireProtocol.KEY_CONVERSATION_GENERATION to PebbleDictionaryItem.UInt32(if (end) crc.toUInt() else 0u),
+        WireProtocol.KEY_FLAGS to PebbleDictionaryItem.UInt8(if (end) 0x20u else 1u),
+        WireProtocol.KEY_PAYLOAD to PebbleDictionaryItem.Bytes(payload),
+    )
+    val first = (decodeMemoStream(stream(0, data.copyOfRange(0, 700), false)) as MemoStreamDecode.Part).part
+    check(first.captureId == 500L && first.offset == 0L && first.payload.size == 700 && first.end == null)
+    val endPart = (decodeMemoStream(stream(data.size.toLong(), header, true)) as MemoStreamDecode.Part).part
+    check(endPart.end!!.total == data.size.toLong() && endPart.end!!.checksum == crc && endPart.payload.isEmpty())
+    check(decodeMemoStream(stream(0, header, true)) is MemoStreamDecode.Invalid) // End offset must equal total.
+    check(decodeMemoBlock(stream(0, header, false)) == MemoBlockDecode.NotMemo)
+
+    // Watch-flash items.
+    val logFirst = VoiceMemoCodec.logPart(logItem(501, 0, data.copyOfRange(0, 224)))
+    check(logFirst.captureId == 501L && logFirst.payload.contentEquals(data.copyOfRange(0, 224)))
+    val logEnd = VoiceMemoCodec.logPart(logItem(501, data.size.toLong(), header + le32(crc) + le32(data.size.toLong()), end = true))
+    check(logEnd.end!!.header.contentEquals(header) && logEnd.end!!.checksum == crc && logEnd.end!!.total == data.size.toLong())
+    rejected { VoiceMemoCodec.logPart(ByteArray(239)) }
+    rejected { VoiceMemoCodec.logPart(logItem(501, 0, ByteArray(0))) }
+    rejected { VoiceMemoCodec.logPart(logItem(501, 0, ByteArray(30), end = true)) }
+    rejected { VoiceMemoCodec.logPart(logItem(0, 0, ByteArray(10))) }
+    rejected { VoiceMemoCodec.logPart(logItem(501, 0, ByteArray(10)).also { it[8] = 7 }) }
+
+    val directory = java.nio.file.Files.createTempDirectory("live-memo-check").toFile()
+    try {
+        var now = 1_700_000_000_000L
+        val repository = VoiceMemoRepository(directory) { now }
+        // Stream pieces in order, with one repeat: the saved WAV matches the RAM-mode memo exactly.
+        val pieces = (data.indices step 300).map { VoiceMemoPart(500, it.toLong(), data.copyOfRange(it, minOf(it + 300, data.size))) }
+        pieces.forEach { check(repository.acceptPart("watch", it) == MemoAcceptResult.Accepted) }
+        check(repository.acceptPart("watch", pieces[1]) == MemoAcceptResult.Accepted)
+        val streamed = repository.acceptPart("watch", endPart) as MemoAcceptResult.Complete
+        check(!streamed.duplicate && streamed.memo.file.readBytes().contentEquals(VoiceMemoCodec.toWav(VoiceMemoCodec.decode(memo))))
+        check((repository.acceptPart("watch", endPart) as MemoAcceptResult.Complete).duplicate) // Repeated end.
+        check(repository.acceptPart("watch", pieces[2]) == MemoAcceptResult.Accepted) // Late repeat: nothing new.
+        check(repository.memos.value.size == 1)
+
+        // Watch flash: the same memo as 224-byte items, saved under its own capture.
+        (data.indices step 224).forEach {
+            val item = logItem(501, it.toLong(), data.copyOfRange(it, minOf(it + 224, data.size)))
+            check(repository.acceptPart("watch", VoiceMemoCodec.logPart(item), logged = true) == MemoAcceptResult.Accepted)
+        }
+        val logged = repository.acceptPart("watch", logEnd, logged = true) as MemoAcceptResult.Complete
+        check(logged.memo.file.readBytes().contentEquals(streamed.memo.file.readBytes()) && repository.memos.value.size == 2)
+
+        // Wrong CRC at the end: discarded.
+        pieces.forEach { repository.acceptPart("watch", VoiceMemoPart(502, it.offset, it.payload)) }
+        val badEnd = VoiceMemoPart(502, data.size.toLong(), ByteArray(0), MemoPartEnd(header, data.size.toLong(), crc xor 1))
+        check(repository.acceptPart("watch", badEnd) is MemoAcceptResult.Corrupt)
+        check(repository.acceptPart("watch", VoiceMemoPart(503, 4, ByteArray(0), MemoPartEnd(header, 4, 0))) is MemoAcceptResult.Corrupt)
+
+        // A lost item leaves silence-sized zeros, not a failure; the length still has to match.
+        (data.indices step 224).filter { it != 448 }.forEach {
+            repository.acceptPart("watch", VoiceMemoCodec.logPart(logItem(504, it.toLong(), data.copyOfRange(it, minOf(it + 224, data.size)))), logged = true)
+        }
+        val gapEnd = VoiceMemoPart(504, data.size.toLong(), ByteArray(0),
+            MemoPartEnd(header, data.size.toLong(), VoiceMemoCodec.crc32(data.copyOf().also { java.util.Arrays.fill(it, 448, 672, 0) })))
+        check(repository.acceptPart("watch", gapEnd, logged = true) is MemoAcceptResult.Complete)
+
+        // Cut off without an end: streams are saved when the app closes, flash only when its
+        // session finishes, and an idle filter protects partial files still being written.
+        pieces.take(10).forEach { repository.acceptPart("watch", VoiceMemoPart(505, it.offset, it.payload)) }
+        pieces.take(5).forEach { repository.acceptPart("watch", VoiceMemoPart(506, it.offset, it.payload), logged = true) }
+        check(repository.finishIncomplete("watch", logged = true, idleMillis = 60_000).isEmpty())
+        val cut = repository.finishIncomplete("watch", logged = false).single()
+        check(cut.memo.durationMillis == 750L) // 3,000 bytes = 6,000 samples.
+        check(repository.finishIncomplete("watch", logged = true, captureId = 506).single().memo.durationMillis == 375L)
+        check(java.io.File(directory, "partial").listFiles().orEmpty().isEmpty())
+        check(repository.memos.value.size == 5)
+    } finally {
+        directory.deleteRecursively()
+    }
+
+    // Live playback level: very quiet speech after a full-scale start click and with one click
+    // mid-way. After the muted start, speech is raised near the target and the click is held down.
+    val second = 8000
+    val clickAt = 3 * second
+    val speech = ShortArray(6 * second) { i ->
+        val voice = 120 * kotlin.math.sin(2 * PI * 220 * i / 8000.0) * (0.6 + 0.4 * kotlin.math.sin(2 * PI * 3 * i / 8000.0))
+        val click = when {
+            i < 2000 -> if (i % 2 == 0) 30_000 else -30_000
+            i in clickAt until clickAt + 200 -> if (i % 4 < 2) 25_000 else -25_000
+            else -> 0
+        }
+        (1800 + voice + click).toInt().coerceIn(-32768, 32767).toShort()
+    }
+    val encoded = encode(speech)
+    val live = LiveMemoStream()
+    val out = ArrayList<Short>()
+    val adpcm = encoded.copyOfRange(16, encoded.size)
+    for (offset in adpcm.indices step 333) {
+        live.feed(offset.toLong(), adpcm.copyOfRange(offset, minOf(offset + 333, adpcm.size))).forEach { out.add(it) }
+    }
+    check(live.feed(0, adpcm.copyOfRange(0, 100)).isEmpty()) // A repeat plays nothing twice.
+    live.flush().forEach { out.add(it) }
+    check(out.size == speech.size) { "Live output ${out.size} of ${speech.size}" }
+    check(out.take(2400).all { it.toInt() == 0 }) // First 300 ms muted.
+    val voiced = out.subList(2 * second, clickAt - 400).maxOf { abs(it.toInt()) }
+    check(voiced in 5_000..14_000) { "Live speech reached $voiced" }
+    val clicked = out.subList(clickAt, clickAt + 200).maxOf { abs(it.toInt()) }
+    check(clicked <= 16_000) { "Live click reached $clicked" }
+    check(out.subList(clickAt + 1600, 5 * second).maxOf { abs(it.toInt()) } in 5_000..14_000) // Recovers at once.
 }

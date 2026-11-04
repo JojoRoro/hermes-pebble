@@ -3,6 +3,7 @@ package dev.hermespebble.companion.data.local
 import dev.hermespebble.companion.pebble.MemoLevels
 import dev.hermespebble.companion.pebble.VoiceMemoBlock
 import dev.hermespebble.companion.pebble.VoiceMemoCodec
+import dev.hermespebble.companion.pebble.VoiceMemoPart
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -39,7 +40,10 @@ sealed interface MemoAcceptResult {
 /**
  * Voice memos are kept as files, not in Room: blocks append to `partial/<key>.part` and a
  * finished memo becomes `<receivedAt>-<key>.wav`. The key ties a file to one watch, capture
- * and checksum, so repeated or resent blocks are recognised. App backups exclude these files.
+ * and checksum, so repeated or resent blocks are recognised. Memos streamed or logged while
+ * recording collect in `partial/<watch>-<capture>.live` (stream) or `.log` (watch flash) until
+ * their end piece arrives. App
+ * backups exclude these files.
  */
 class VoiceMemoRepository(private val directory: File, private val clock: () -> Long = System::currentTimeMillis) {
     private val partials = File(directory, "partial")
@@ -78,6 +82,65 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
         if (bytes.size.toLong() != block.total || VoiceMemoCodec.crc32(bytes) != block.checksum) {
             return MemoAcceptResult.Corrupt("Memo checksum mismatch")
         }
+        return save(key, bytes)
+    }
+
+    /**
+     * A piece of a memo sent while recording (stream) or logged to watch flash. Pieces are written
+     * at their offset, so repeats are harmless; a gap left by lost Data Logging items stays zero.
+     * The end piece checks length and CRC, then saves the memo as for [accept].
+     */
+    @Synchronized
+    fun acceptPart(watch: String, part: VoiceMemoPart, logged: Boolean = false): MemoAcceptResult {
+        VoiceMemoCodec.validatePart(part)
+        require(watch.isNotBlank())
+        val prefix = "${watchKey(watch)}-${part.captureId}"
+        completedCapture(prefix)?.let { memo ->
+            return if (part.end != null) MemoAcceptResult.Complete(memo, duplicate = true) else MemoAcceptResult.Accepted
+        }
+        partials.mkdirs()
+        val live = File(partials, "$prefix.${if (logged) "log" else "live"}")
+        val end = part.end
+        if (end == null) {
+            if (!live.exists()) removeAbandoned()
+            RandomAccessFile(live, "rw").use { file ->
+                if (part.offset > file.length()) file.setLength(part.offset)
+                file.seek(part.offset)
+                file.write(part.payload)
+            }
+            return MemoAcceptResult.Accepted
+        }
+        if (!live.exists()) return MemoAcceptResult.Corrupt("No audio arrived for this memo")
+        val data = live.readBytes()
+        live.delete()
+        if (data.size.toLong() != end.total || VoiceMemoCodec.crc32(data) != end.checksum) {
+            return MemoAcceptResult.Corrupt("Streamed memo checksum mismatch")
+        }
+        return save("$prefix-${"%08x".format(end.checksum)}", end.header + data)
+    }
+
+    /**
+     * Saves memos from [watch] whose end never arrived: streamed ones when the watch app closed,
+     * logged ones when their watch-flash session finished early. Optionally only [captureId], or
+     * only partial files untouched for [idleMillis].
+     */
+    @Synchronized
+    fun finishIncomplete(watch: String, logged: Boolean, captureId: Long? = null, idleMillis: Long = 0): List<MemoAcceptResult.Complete> {
+        val prefix = if (captureId != null) "${watchKey(watch)}-$captureId." else "${watchKey(watch)}-"
+        val extension = if (logged) ".log" else ".live"
+        val cutoff = clock() - idleMillis
+        return partials.listFiles().orEmpty()
+            .filter { it.name.endsWith(extension) && it.name.startsWith(prefix) && it.length() > 0 }
+            .filter { idleMillis == 0L || it.lastModified() <= cutoff }
+            .mapNotNull { live ->
+                val data = live.readBytes()
+                live.delete()
+                val key = "${live.name.removeSuffix(extension)}-${"%08x".format(VoiceMemoCodec.crc32(data))}"
+                save(key, VoiceMemoCodec.headerFor(data.size) + data) as? MemoAcceptResult.Complete
+            }
+    }
+
+    private fun save(key: String, bytes: ByteArray): MemoAcceptResult {
         val rendered = try {
             VoiceMemoCodec.render(VoiceMemoCodec.decode(bytes))
         } catch (error: IllegalArgumentException) {
@@ -112,6 +175,9 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
     }
 
     private fun completed(key: String): VoiceMemo? = state.value.firstOrNull { it.id.endsWith("-$key") }
+
+    /** A saved memo for this watch and capture, whatever its checksum. */
+    private fun completedCapture(prefix: String): VoiceMemo? = state.value.firstOrNull { it.id.contains("-$prefix-") }
 
     private fun removeAbandoned() {
         val cutoff = clock() - ABANDONED_AFTER_MILLIS

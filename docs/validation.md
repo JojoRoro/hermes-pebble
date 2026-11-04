@@ -2,6 +2,19 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.24 stream and watch-flash memos, live playback (4 November 2026)
+
+- Two new watch memo modes alongside RAM, chosen with Up and persisted. **Stream** sends ADPCM during recording (kind 12) through a ring of up to 48 KiB, for memos up to 10 minutes. **Watch flash** writes 240-byte Data Logging items during recording, up to 2 minutes, uploaded by the system even after Hermes closes. Android reassembles both into the same WAV pipeline. Optionally, it plays Stream memos live through an `AudioTrack`, with incremental decoding and a running level control (on by default).
+- PebbleOS facts relied on (read from source): a buffered app Data Logging session has a 301-byte buffer, so a log call accepts one item and returns BUSY until the system task flushes it; items may be up to 300 bytes; session files share 640 KiB. `DataLogSession` in PebbleKit2 has tag, timestamp and item size, but no ID.
+- Image size: the SDK's 16-bit size field left 1,960 bytes after 0.1.23 (63,575 used). The modes alone reached 65,267, so seven more UI buffers and the two result-parsing scratch strings (about 3.2 KiB) moved into the start-up allocation. Runtime RAM is unchanged.
+- Offline checks pass: the native memo codec and flow tests, also under `-Wconversion -Wshadow` and AddressSanitizer/UndefinedBehaviorSanitizer, and the full Kotlin host suite. New cases cover:
+  - ring mode matching linear output byte for byte, with a running CRC and fill-up;
+  - a 20 s stream through an 8 KiB ring (wrapping five times) compared byte for byte with a RAM encoding;
+  - a lagging phone filling the ring, a Bluetooth outage mid-stream, and a rejected receipt;
+  - watch flash with BUSY on every third call over 30 s, storage full mid-recording, missing storage, and leaving Hermes while saving;
+  - the phone side: stream dictionary decoding, item parsing and rejection, reassembly with repeats and a lost item, CRC failures, recovery of incomplete memos, and live level control (muted start, quiet speech raised, a mid-memo click held to 16,000 or below).
+- Not verifiable here: Bluetooth throughput for live streaming, Data Logging throughput into real flash, `AudioTrack` behaviour, and the sound itself. Watch and Android version names are 0.1.24, Android code 25.
+
 ## 0.1.23 voice memo loudness and clicks (4 November 2026)
 
 - Feedback on the 0.1.22 CI build: memos now play, but speech is audible only at the phone's maximum volume, and the start and stop button clicks are very loud. The clicks outlast the 0.1.22 mute windows (pressing and releasing Start), and even 32× was not enough for the speech.

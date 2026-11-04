@@ -21,6 +21,15 @@ data class VoiceMemoBlock(
     val isFinal: Boolean get() = offset + payload.size == total
 }
 
+/**
+ * A piece of a memo whose ADPCM left the watch while it was recorded (stream mode, kind 12, or
+ * watch-flash mode through Data Logging): [payload] belongs at data [offset], counted from the
+ * first ADPCM byte. The last piece carries [end] instead: the HVM1 header, data length and CRC.
+ */
+class VoiceMemoPart(val captureId: Long, val offset: Long, val payload: ByteArray, val end: MemoPartEnd? = null)
+
+class MemoPartEnd(val header: ByteArray, val total: Long, val checksum: Long)
+
 /** Loudness of a rendered memo for the diagnostic log: [speechDbfs] is the speech RMS before gain. */
 data class MemoLevels(val speechDbfs: Double, val peakDbfs: Double, val gain: Float, val dcOffset: Int)
 
@@ -35,8 +44,12 @@ object VoiceMemoCodec {
     const val HEADER_BYTES = 16
     const val SAMPLE_RATE = 8000
     const val CODEC_IMA_ADPCM = 1
-    /** Far above what the watch can hold (about 30 s), but bounds a hostile sender. */
-    const val MAX_BYTES = HEADER_BYTES + 180 * SAMPLE_RATE / 2
+    /** Above the longest memo the watch makes (10 min in stream mode), but bounds a hostile sender. */
+    const val MAX_BYTES = HEADER_BYTES + 610 * SAMPLE_RATE / 2
+    /** Watch-flash Data Logging session: tag "HVL1", 240-byte items (see memo_watch.h). */
+    const val LOG_TAG = 0x48564c31L
+    const val LOG_ITEM_BYTES = 240
+    private const val LOG_HEAD_BYTES = 16
     const val MAX_BLOCK_BYTES = 1024
 
     private val steps = intArrayOf(
@@ -56,6 +69,59 @@ object VoiceMemoCodec {
         require(block.total in (HEADER_BYTES + 1).toLong()..MAX_BYTES.toLong()) { "Memo size is out of range" }
         require(block.payload.isNotEmpty() && block.payload.size <= MAX_BLOCK_BYTES) { "Memo block size is invalid" }
         require(block.offset >= 0 && block.offset + block.payload.size <= block.total) { "Memo block is outside the memo" }
+    }
+
+    fun validatePart(part: VoiceMemoPart) {
+        require(part.captureId in 1..UInt.MAX_VALUE.toLong()) { "Capture identifier is outside the protocol range" }
+        require(part.payload.size <= MAX_BLOCK_BYTES) { "Memo piece is too large" }
+        require(part.offset >= 0 && part.offset + part.payload.size <= MAX_BYTES - HEADER_BYTES) { "Memo piece is outside the memo" }
+        val end = part.end
+        if (end == null) {
+            require(part.payload.isNotEmpty()) { "Memo piece is empty" }
+        } else {
+            require(end.header.size == HEADER_BYTES && end.total == part.offset && end.total > 0) { "Memo end is invalid" }
+        }
+    }
+
+    /** One watch-flash Data Logging item: capture, data offset, type (0 data, 1 end), length, payload. */
+    fun logPart(item: ByteArray): VoiceMemoPart {
+        require(item.size == LOG_ITEM_BYTES) { "Memo log item has the wrong size" }
+        val length = (item[10].toInt() and 0xff) or ((item[11].toInt() and 0xff) shl 8)
+        require(length in 1..LOG_ITEM_BYTES - LOG_HEAD_BYTES) { "Memo log item length is invalid" }
+        val captureId = u32(item, 0)
+        val offset = u32(item, 4)
+        val part = when (item[8].toInt()) {
+            0 -> VoiceMemoPart(captureId, offset, item.copyOfRange(LOG_HEAD_BYTES, LOG_HEAD_BYTES + length))
+            1 -> {
+                require(length == HEADER_BYTES + 8) { "Memo log end has the wrong length" }
+                val end = MemoPartEnd(item.copyOfRange(LOG_HEAD_BYTES, LOG_HEAD_BYTES + HEADER_BYTES),
+                    total = u32(item, LOG_HEAD_BYTES + HEADER_BYTES + 4), checksum = u32(item, LOG_HEAD_BYTES + HEADER_BYTES))
+                VoiceMemoPart(captureId, offset, ByteArray(0), end)
+            }
+            else -> throw IllegalArgumentException("Unknown memo log item type")
+        }
+        validatePart(part)
+        return part
+    }
+
+    /** Decodes one 4-bit code; [state] holds predictor and step index between calls. */
+    fun decodeNibble(state: IntArray, code: Int): Short {
+        val step = steps[state[1]]
+        var delta = step shr 3
+        if (code and 4 != 0) delta += step
+        if (code and 2 != 0) delta += step shr 1
+        if (code and 1 != 0) delta += step shr 2
+        state[0] = (if (code and 8 != 0) state[0] - delta else state[0] + delta).coerceIn(-32768, 32767)
+        state[1] = (state[1] + indexSteps[code and 7]).coerceIn(0, 88)
+        return state[0].toShort()
+    }
+
+    /** Header for a memo whose end never arrived (the watch app closed mid-way); coverage unknown. */
+    fun headerFor(dataBytes: Int): ByteArray = ByteArray(HEADER_BYTES).also { b ->
+        "HVM1".toByteArray().copyInto(b)
+        b[4] = (SAMPLE_RATE and 0xff).toByte(); b[5] = (SAMPLE_RATE shr 8).toByte(); b[6] = CODEC_IMA_ADPCM.toByte()
+        val samples = dataBytes.toLong() * 2
+        repeat(4) { b[8 + it] = (samples shr (8 * it)).toByte() }
     }
 
     /** Decodes a complete HVM1 file to 16-bit PCM, or throws if the header and length disagree. */
@@ -101,7 +167,8 @@ object VoiceMemoCodec {
      * [TAIL_MUTE_MS] (stop press) with short fades, remove DC and low rumble, and set one gain
      * from the speech level (roughly the 90th percentile of [WINDOW_MS] window RMS) towards [TARGET_RMS],
      * at most [MAX_GAIN]x. Windows that would still be far louder than speech, such as a click,
-     * are turned down to [MAX_WINDOW_RMS]; quiet pauses are gently lowered so the gain does
+     * are turned down to [MAX_WINDOW_RMS] (and [MAX_WINDOW_PEAK] for clicks shorter than a
+     * window); quiet pauses are gently lowered so the gain does
      * not bring up hiss; rare peaks are soft-limited instead of clipped.
      */
     fun render(pcm: ShortArray, sampleRate: Int = SAMPLE_RATE): RenderedMemo {
@@ -136,11 +203,15 @@ object VoiceMemoCodec {
         // Window RMS over the kept part.
         val window = maxOf(1, sampleRate * WINDOW_MS / 1000)
         val windows = maxOf(1, (end - lead + window - 1) / window)
+        val windowPeak = FloatArray(windows)
         val rms = FloatArray(windows) { w ->
             val from = lead + w * window
             val to = minOf(end, from + window)
             var energy = 0.0
-            for (i in from until to) energy += filtered[i].toDouble() * filtered[i]
+            for (i in from until to) {
+                energy += filtered[i].toDouble() * filtered[i]
+                windowPeak[w] = maxOf(windowPeak[w], abs(filtered[i]))
+            }
             if (to > from) sqrt(energy / (to - from)).toFloat() else 0f
         }
         // Speech level: the 90th percentile of window RMS, but at least a third of the 98th, so a
@@ -157,6 +228,7 @@ object VoiceMemoCodec {
             val r = rms[w]
             var g = gain
             if (r * g > MAX_WINDOW_RMS) g = MAX_WINDOW_RMS / r
+            if (windowPeak[w] * g > MAX_WINDOW_PEAK) g = MAX_WINDOW_PEAK / windowPeak[w] // Part-window clicks.
             val quiet = speech / PAUSE_RATIO
             if (r < quiet && quiet > 0f) g *= maxOf(PAUSE_FLOOR, sqrt(r / quiet))
             g
@@ -202,6 +274,7 @@ object VoiceMemoCodec {
     private const val WINDOW_MS = 20
     private const val TARGET_RMS = 6_000f
     private const val MAX_WINDOW_RMS = 9_000f
+    private const val MAX_WINDOW_PEAK = 16_000f
     private const val MAX_GAIN = 128f
     private const val PAUSE_RATIO = 10f
     private const val PAUSE_FLOOR = 0.35f

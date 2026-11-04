@@ -40,6 +40,7 @@ object WireProtocol {
     const val FLAG_STOP_REQUESTED = 0x02
     const val FLAG_REPLAYED = 0x04
     const val FLAG_DURABLE_COMMIT = 0x08
+    const val FLAG_MEMO_END = 0x20
 }
 
 enum class WireMessageKind(val value: Int) {
@@ -54,6 +55,7 @@ enum class WireMessageKind(val value: Int) {
     INK_BLOCK(9),
     AUDIO_STATUS(10),
     MEMO_BLOCK(11),
+    MEMO_STREAM(12),
     HANDSHAKE_ACK(101),
     DURABLE_RECEIPT(102),
     STATUS_UPDATE(103),
@@ -422,6 +424,35 @@ fun decodeMemoBlock(data: PebbleDictionary): MemoBlockDecode {
         MemoBlockDecode.Block(block)
     } catch (error: IllegalArgumentException) {
         MemoBlockDecode.Invalid(error.message ?: "Invalid memo block")
+    }
+}
+
+sealed interface MemoStreamDecode {
+    data object NotStream : MemoStreamDecode
+    data class Invalid(val reason: String) : MemoStreamDecode
+    data class Part(val transferId: Long, val part: VoiceMemoPart) : MemoStreamDecode
+}
+
+/** Kind 12: one AppMessage of ADPCM sent while recording, or (flag 0x20) the HVM1 header at the end. */
+fun decodeMemoStream(data: PebbleDictionary): MemoStreamDecode {
+    if (data.uint8(WireProtocol.KEY_MESSAGE_KIND) != WireMessageKind.MEMO_STREAM.value) return MemoStreamDecode.NotStream
+    if (data.uint8(WireProtocol.KEY_PROTOCOL_VERSION) != WireProtocol.VERSION) return MemoStreamDecode.Invalid("Protocol version differs")
+    val transferId = data.uint32(WireProtocol.KEY_TRANSFER_ID)?.takeIf { it != 0L } ?: return MemoStreamDecode.Invalid("Transfer ID is missing")
+    val captureId = data.uint32(WireProtocol.KEY_CAPTURE_ID) ?: return MemoStreamDecode.Invalid("Capture ID is missing")
+    val offset = data.uint32(WireProtocol.KEY_PAGE_OFFSET) ?: return MemoStreamDecode.Invalid("Offset is missing")
+    val payload = data.bytes(WireProtocol.KEY_PAYLOAD) ?: return MemoStreamDecode.Invalid("Payload is missing")
+    val flags = data.uint8(WireProtocol.KEY_FLAGS) ?: 0
+    val end = if (flags and WireProtocol.FLAG_MEMO_END != 0) {
+        MemoPartEnd(payload,
+            total = data.uint32(WireProtocol.KEY_TOTAL_BYTES) ?: return MemoStreamDecode.Invalid("Total size is missing"),
+            checksum = data.uint32(WireProtocol.KEY_CONVERSATION_GENERATION) ?: return MemoStreamDecode.Invalid("Checksum is missing"))
+    } else null
+    val part = VoiceMemoPart(captureId, offset, if (end != null) ByteArray(0) else payload, end)
+    return try {
+        VoiceMemoCodec.validatePart(part)
+        MemoStreamDecode.Part(transferId, part)
+    } catch (error: IllegalArgumentException) {
+        MemoStreamDecode.Invalid(error.message ?: "Invalid memo stream message")
     }
 }
 
