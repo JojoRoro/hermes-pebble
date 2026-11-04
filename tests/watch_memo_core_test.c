@@ -64,7 +64,8 @@ int main(int argc, char **argv) {
 
   // One second of a 440 Hz tone at 16 kHz becomes ~8,000 samples at 8 kHz.
   uint32_t phase = 0;
-  feed_tone(&encoder, 440.0, 12000.0, 16000u, &phase);
+  // Inputs are a quarter of the decoded level: the encoder applies MEMO_INPUT_GAIN (4x).
+  feed_tone(&encoder, 440.0, 3000.0, 16000u, &phase);
   assert(!encoder.full);
   assert(encoder.samples >= 7990u && encoder.samples <= 8000u);
   uint32_t length = memo_encoder_finish(&encoder, 1234567u);
@@ -81,7 +82,7 @@ int main(int argc, char **argv) {
   // A 7 kHz tone lies above the 4 kHz output band; the half-band filter must suppress it.
   assert(memo_encoder_begin(&encoder, buffer, sizeof(buffer)));
   phase = 0;
-  feed_tone(&encoder, 7000.0, 12000.0, 16000u, &phase);
+  feed_tone(&encoder, 7000.0, 3000.0, 16000u, &phase);
   uint32_t alias_samples = encoder.samples;
   memo_encoder_finish(&encoder, 0u);
   decode(buffer, alias_samples, pcm);
@@ -102,11 +103,20 @@ int main(int argc, char **argv) {
   assert(!memo_encoder_push(&encoder, loud, 320u) && encoder.samples == 202u);
   assert(memo_encoder_finish(&encoder, 0u) == sizeof(tiny));
 
+  // A full-scale click saturates instead of wrapping around.
+  assert(memo_encoder_begin(&encoder, buffer, sizeof(buffer)));
+  for (int i = 0; i < 320; i++) loud[i] = 30000;
+  for (int i = 0; i < 10; i++) memo_encoder_push(&encoder, loud, 320u);
+  uint32_t click_samples = encoder.samples;
+  memo_encoder_finish(&encoder, 0u);
+  decode(buffer, click_samples, pcm);
+  for (uint32_t i = 200; i < click_samples; i++) assert(pcm[i] > 30000);
+
   // Fixture for the Kotlin decoder: 1.5 s of 440 Hz, odd sample count included.
   static uint8_t fixture[MEMO_HEADER + 2u * MEMO_BYTES_PER_SECOND];
   assert(memo_encoder_begin(&encoder, fixture, sizeof(fixture)));
   phase = 0;
-  feed_tone(&encoder, 440.0, 12000.0, 24003u, &phase);
+  feed_tone(&encoder, 440.0, 3000.0, 24003u, &phase);
   uint32_t fixture_length = memo_encoder_finish(&encoder, 42u);
   if (argc > 1) {
     FILE *file = fopen(argv[1], "wb");

@@ -2,6 +2,13 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.23 voice memo loudness and clicks (4 November 2026)
+
+- Feedback on the 0.1.22 CI build: memos now play, but speech is audible only at the phone's maximum volume, and the start and stop button clicks are very loud. The clicks outlast the 0.1.22 mute windows (pressing and releasing Start), and even 32× was not enough for the speech.
+- Watch: 4× gain before ADPCM coding, saturating, so quiet speech stays well above the smallest ADPCM step (dictation uses 3×). Only clicks reach full scale. The codec test now feeds quarter-level tones and checks that a full-scale input saturates instead of wrapping.
+- Android: mutes 300 ms at the start and 200 ms at the end with 30 ms fades, and high-passes near 75 Hz. The speech level is the 90th percentile of 20 ms window RMS (at least a third of the 98th), taken towards RMS 6,000 with up to 128× gain. Windows above RMS 9,000 after gain, such as a click in the middle, are turned down to it, the neighbouring windows included. Pauses below a tenth of the speech level are lowered by up to 9 dB, so the extra gain does not bring up hiss.
+- New `VoiceMemoCheck.kt` cases: very quiet speech with full-scale clicks at both ends and one mid-memo (the click is held to ≤16,000 and speech returns to the target), a mostly silent memo with one word (the word stays at least 8× above the hiss), and a loud clip. The full native and Kotlin suites pass. Version 0.1.23, Android code 24. The 0.1.22 tag was never pushed; its CI build was only used for testing.
+
 ## 0.1.22 voice memo playback level (4 November 2026)
 
 - Reported on a Pebble Time 2: memos played on the phone as a little crackle and hiss, while dictation worked. The codec, transfer and firmware path were checked and are not the cause. The C encoder and the Kotlin decoder agree. A speech-like test signal with DC offsets of 0 and 3,000 and peaks of 300 to 20,000 decodes at about 22 dB SNR. Blocks are CRC-checked end to end. Slots 681/682 still match `exported_symbols.json` in PebbleOS v4.43.0 through v4.44.1 and main. The PT2 board captures mono 16 kHz in every release. Dictation uses the same driver and frame size but applies a fixed 3× gain, so the raw microphone level is low.

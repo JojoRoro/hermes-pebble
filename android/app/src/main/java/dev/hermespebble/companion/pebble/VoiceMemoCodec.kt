@@ -6,6 +6,7 @@ import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.roundToInt
 import kotlin.math.sign
+import kotlin.math.sqrt
 import kotlin.math.tanh
 
 /** One AppMessage of a watch voice memo: [payload] belongs at [offset] of a [total]-byte HVM1 file. */
@@ -20,7 +21,7 @@ data class VoiceMemoBlock(
     val isFinal: Boolean get() = offset + payload.size == total
 }
 
-/** Loudness of a rendered memo for the diagnostic log: [speechDbfs] is the 99.5th percentile. */
+/** Loudness of a rendered memo for the diagnostic log: [speechDbfs] is the speech RMS before gain. */
 data class MemoLevels(val speechDbfs: Double, val peakDbfs: Double, val gain: Float, val dcOffset: Int)
 
 class RenderedMemo(val wav: ByteArray, val levels: MemoLevels)
@@ -95,33 +96,34 @@ object VoiceMemoCodec {
     /**
      * Makes the memo listenable and wraps it as a 16-bit mono WAV of the same length.
      *
-     * The watch microphone is quiet, and its first frames carry a start-up transient while the
-     * stop press adds a click at the end. Scaling to the single loudest sample let those
-     * transients set the gain and left speech near the noise floor. Instead: mute the first
-     * [LEAD_MUTE_MS] and last [TAIL_MUTE_MS] with short fades, remove the DC offset, set the gain
-     * so the 99.5th percentile of the remaining audio reaches [TARGET_LEVEL] (at most
-     * [MAX_GAIN]x), and soft-limit the rare peaks above [LIMIT_KNEE] instead of clipping them.
+     * The watch microphone is quiet, while pressing and releasing the button makes clicks far
+     * louder than speech. So: mute the first [LEAD_MUTE_MS] (start press and release) and last
+     * [TAIL_MUTE_MS] (stop press) with short fades, remove DC and low rumble, and set one gain
+     * from the speech level (roughly the 90th percentile of [WINDOW_MS] window RMS) towards [TARGET_RMS],
+     * at most [MAX_GAIN]x. Windows that would still be far louder than speech, such as a click,
+     * are turned down to [MAX_WINDOW_RMS]; quiet pauses are gently lowered so the gain does
+     * not bring up hiss; rare peaks are soft-limited instead of clipped.
      */
     fun render(pcm: ShortArray, sampleRate: Int = SAMPLE_RATE): RenderedMemo {
         val n = pcm.size
         var lead = sampleRate * LEAD_MUTE_MS / 1000
         var tail = sampleRate * TAIL_MUTE_MS / 1000
         var fade = sampleRate * FADE_MS / 1000
-        if (n < lead + tail + 4 * fade) { lead = 0; tail = 0; fade = 0 } // Too short to trim.
+        if (n < lead + tail + 8 * fade) { lead = 0; tail = 0; fade = 0 } // Too short to trim.
         val end = n - tail
 
         var sum = 0.0
         for (i in lead until end) sum += pcm[i]
         val dc = if (end > lead) (sum / (end - lead)).toFloat() else 0f
 
-        // Remove the offset, then a gentle high-pass for drift. Starting at the first kept sample
-        // means the muted transient never passes through the filter.
+        // Offset removal, then a high-pass near 75 Hz against drift and handling rumble. It starts
+        // at the first kept sample, so the muted clicks never pass through it.
         val filtered = FloatArray(n)
         var previousIn = 0f
         var previousOut = 0f
         for (i in lead until end) {
             val x = pcm[i] - dc
-            val y = x - previousIn + 0.995f * previousOut
+            val y = x - previousIn + HIGH_PASS_POLE * previousOut
             previousIn = x
             previousOut = y
             filtered[i] = y * when {
@@ -131,15 +133,47 @@ object VoiceMemoCodec {
             }
         }
 
-        val magnitudes = FloatArray(end - lead) { abs(filtered[lead + it]) }
-        magnitudes.sort()
-        val level = if (magnitudes.isEmpty()) 0f else magnitudes[((magnitudes.size - 1) * 0.995).toInt()]
-        val peak = magnitudes.lastOrNull() ?: 0f
-        val gain = if (level < 1f) 1f else minOf(TARGET_LEVEL / level, MAX_GAIN)
+        // Window RMS over the kept part.
+        val window = maxOf(1, sampleRate * WINDOW_MS / 1000)
+        val windows = maxOf(1, (end - lead + window - 1) / window)
+        val rms = FloatArray(windows) { w ->
+            val from = lead + w * window
+            val to = minOf(end, from + window)
+            var energy = 0.0
+            for (i in from until to) energy += filtered[i].toDouble() * filtered[i]
+            if (to > from) sqrt(energy / (to - from)).toFloat() else 0f
+        }
+        // Speech level: the 90th percentile of window RMS, but at least a third of the 98th, so a
+        // memo that is mostly pause still takes its gain from the words, not from the hiss.
+        val speech = rms.sortedArray().let { maxOf(it[((it.size - 1) * 0.9).toInt()], it[((it.size - 1) * 0.98).toInt()] / 3f) }
+        var peak = 0f
+        for (i in lead until end) peak = maxOf(peak, abs(filtered[i]))
+        val gain = if (speech < 1f) 1f else minOf(TARGET_RMS / speech, MAX_GAIN)
+
+        // Per-window gain: the overall gain, lowered for windows much louder than speech (a
+        // neighbour's lower gain is taken too, so the reduction starts before a click), and
+        // lowered gently for pauses.
+        val own = FloatArray(windows) { w ->
+            val r = rms[w]
+            var g = gain
+            if (r * g > MAX_WINDOW_RMS) g = MAX_WINDOW_RMS / r
+            val quiet = speech / PAUSE_RATIO
+            if (r < quiet && quiet > 0f) g *= maxOf(PAUSE_FLOOR, sqrt(r / quiet))
+            g
+        }
+        val windowGain = FloatArray(windows) { w ->
+            minOf(own[w], own[maxOf(0, w - 1)], own[minOf(windows - 1, w + 1)])
+        }
 
         val data = ByteArray(n * 2)
-        for (i in 0 until n) {
-            val v = limit(filtered[i] * gain).toInt().coerceIn(-32768, 32767)
+        for (i in lead until end) {
+            // Interpolate between window centres so the gain never steps.
+            val position = (i - lead).toFloat() / window - 0.5f
+            val w0 = position.toInt().coerceIn(0, windows - 1)
+            val w1 = minOf(windows - 1, w0 + 1)
+            val t = (position - w0).coerceIn(0f, 1f)
+            val g = windowGain[w0] + (windowGain[w1] - windowGain[w0]) * t
+            val v = limit(filtered[i] * g).toInt().coerceIn(-32768, 32767)
             data[2 * i] = v.toByte()
             data[2 * i + 1] = (v shr 8).toByte()
         }
@@ -149,7 +183,7 @@ object VoiceMemoCodec {
         out.write("RIFF".toByteArray()); int(36 + data.size); out.write("WAVE".toByteArray())
         out.write("fmt ".toByteArray()); int(16); short(1); short(1); int(sampleRate); int(sampleRate * 2); short(2); short(16)
         out.write("data".toByteArray()); int(data.size); out.write(data)
-        return RenderedMemo(out.toByteArray(), MemoLevels(dbfs(level), dbfs(peak), gain, dc.roundToInt()))
+        return RenderedMemo(out.toByteArray(), MemoLevels(dbfs(speech), dbfs(peak), gain, dc.roundToInt()))
     }
 
     private fun limit(x: Float): Float {
@@ -161,11 +195,16 @@ object VoiceMemoCodec {
 
     private fun dbfs(value: Float): Double = if (value < 1f) -96.0 else 20 * log10(value / 32768.0)
 
-    private const val LEAD_MUTE_MS = 100
-    private const val TAIL_MUTE_MS = 80
-    private const val FADE_MS = 20
-    private const val TARGET_LEVEL = 12_000f
-    private const val MAX_GAIN = 32f
+    private const val LEAD_MUTE_MS = 300
+    private const val TAIL_MUTE_MS = 200
+    private const val FADE_MS = 30
+    private const val HIGH_PASS_POLE = 0.94f
+    private const val WINDOW_MS = 20
+    private const val TARGET_RMS = 6_000f
+    private const val MAX_WINDOW_RMS = 9_000f
+    private const val MAX_GAIN = 128f
+    private const val PAUSE_RATIO = 10f
+    private const val PAUSE_FLOOR = 0.35f
     private const val LIMIT_KNEE = 24_000f
     private const val LIMIT_CEILING = 32_000f
 

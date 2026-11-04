@@ -8,13 +8,17 @@
 /* HVM1 voice memo: 16-byte header, then 8 kHz mono IMA ADPCM (low nibble first).
  * Header: "HVM1", u16 rate, u8 codec, u8 coverage (percent of the recording time for which
  * microphone audio arrived, 0 = not measured), u32 sample count, u32 watch time.
- * The microphone delivers 16 kHz signed 16-bit PCM; a half-band filter drops it to
+ * The microphone delivers 16 kHz signed 16-bit PCM at a low level (dictation boosts it
+ * 3x), so the watch applies MEMO_INPUT_GAIN before coding: quiet speech then stays well
+ * above ADPCM's smallest step, and only button clicks saturate.
+ * A half-band filter drops it to
  * 8 kHz before 4-bit coding, so one second costs 4,000 bytes instead of 32,000. */
 #define MEMO_HEADER 16u
 #define MEMO_RATE 8000u
 #define MEMO_CODEC_IMA_ADPCM 1u
 #define MEMO_BYTES_PER_SECOND (MEMO_RATE / 2u)
 #define MEMO_FILTER_TAPS 7u
+#define MEMO_INPUT_GAIN 4
 
 typedef struct {
   uint8_t *bytes;
@@ -94,7 +98,8 @@ static void memo_emit(MemoEncoder *encoder, int32_t sample) {
 }
 
 /* Feeds 16 kHz PCM. Returns false once the buffer is full; later samples are ignored.
- * Half-band low-pass (-1, 0, 9, 16, 9, 0, -1) / 32, keeping every second output. */
+ * Half-band low-pass (-1, 0, 9, 16, 9, 0, -1) / 32 times MEMO_INPUT_GAIN, saturating,
+ * keeping every second output. */
 static bool memo_encoder_push(MemoEncoder *encoder, const int16_t *samples, size_t count) {
   if (encoder == NULL || encoder->bytes == NULL) return false;
   for (size_t i = 0; i < count && !encoder->full; i++) {
@@ -105,7 +110,8 @@ static bool memo_encoder_push(MemoEncoder *encoder, const int16_t *samples, size
     if (encoder->filled < MEMO_FILTER_TAPS || !encoder->odd) continue;
     const int16_t *h = encoder->history;
     int32_t y = 16 * (int32_t)h[3] + 9 * ((int32_t)h[2] + h[4]) - ((int32_t)h[0] + h[6]);
-    memo_emit(encoder, y / 32);
+    y = y * MEMO_INPUT_GAIN / 32;
+    memo_emit(encoder, y > 32767 ? 32767 : y < -32768 ? -32768 : y);
   }
   return !encoder->full;
 }

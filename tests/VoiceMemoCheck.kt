@@ -73,32 +73,50 @@ fun main(args: Array<String>) {
     check(VoiceMemoCodec.wavDurationMillis(wav.size.toLong()) == 1000L)
     fun pcmOf(wav: ByteArray) = (0 until (wav.size - 44) / 2).map { ((wav[44 + 2 * it].toInt() and 0xff) or (wav[45 + 2 * it].toInt() shl 8)) }
     val samples = pcmOf(wav)
-    check(samples.drop(1000).dropLast(1000).maxOf { abs(it) } in 10_500..13_500) // Level set to the target.
+    check(samples.drop(2700).dropLast(1900).maxOf { abs(it) } in 7_000..10_000) // Level set to the target.
     check(abs(samples.drop(4000).average()) < 400) // DC offset removed.
-    check(samples.take(800).all { it == 0 } && samples.takeLast(640).all { it == 0 }) // Edges muted.
+    check(samples.take(2400).all { it == 0 } && samples.takeLast(1600).all { it == 0 }) // Edges muted.
     check(VoiceMemoCodec.toWav(ShortArray(100)).size == 244) // Silence: no division by zero.
 
-    // Quiet speech between a full-scale start-up transient and a stop click, on a DC offset: the
-    // transients must not set the gain, and nothing may clip.
-    val quiet = ShortArray(4 * 8000) { i ->
-        val voice = 400 * sin(2 * PI * 220 * i / 8000.0) * (0.6 + 0.4 * sin(2 * PI * 3 * i / 8000.0))
-        val transient = when {
-            i < 240 -> if (i % 2 == 0) 30_000 else -30_000
-            i >= 4 * 8000 - 200 && i % 3 == 0 -> 28_000
+    // Very quiet speech on a DC offset, with full-scale clicks from the button at both ends and
+    // one in the middle: the clicks must not set the gain, and the middle one is turned down.
+    val second = 8000
+    val clickAt = 2 * second
+    val quiet = ShortArray(4 * second) { i ->
+        val voice = 150 * sin(2 * PI * 220 * i / 8000.0) * (0.6 + 0.4 * sin(2 * PI * 3 * i / 8000.0))
+        val click = when {
+            i < 2000 -> if (i % 2 == 0) 30_000 else -30_000 // Start press and release.
+            i >= 4 * second - 1200 && i % 3 == 0 -> 28_000 // Stop press.
+            i in clickAt until clickAt + 240 -> if (i % 4 < 2) 25_000 else -25_000
             else -> 0
         }
-        (2500 + voice + transient).toInt().coerceIn(-32768, 32767).toShort()
+        (2500 + voice + click).toInt().coerceIn(-32768, 32767).toShort()
     }
     val rendered = VoiceMemoCodec.render(quiet)
     val quietOut = pcmOf(rendered.wav)
     check(quietOut.size == quiet.size)
-    val speech = quietOut.subList(8000, 3 * 8000).maxOf { abs(it) }
-    check(speech in 9_000..16_000) { "Quiet speech reached only $speech" }
-    check(quietOut.maxOf { abs(it) } <= 32_000)
-    check(rendered.levels.gain > 20f && rendered.levels.dcOffset in 2400..2600) { rendered.levels.toString() }
+    val speech = quietOut.subList(second / 2, clickAt - 400).maxOf { abs(it) }
+    check(speech in 6_000..12_000) { "Quiet speech reached $speech" }
+    check(rendered.levels.gain > 40f && rendered.levels.dcOffset in 2400..2600) { rendered.levels.toString() }
+    val clickOut = quietOut.subList(clickAt, clickAt + 240).maxOf { abs(it) }
+    check(clickOut <= 16_000) { "Middle click reached $clickOut" }
+    check(quietOut.take(2400).all { it == 0 } && quietOut.takeLast(1600).all { it == 0 })
+    check(quietOut.subList(clickAt + 800, 3 * second).maxOf { abs(it) } in 6_000..12_000) // Speech recovers.
+    // A memo that is mostly pause takes its gain from the words, not from the hiss.
+    var noise = 1
+    val sparse = ShortArray(6 * second) { i ->
+        noise = noise * 1103515245 + 12345
+        val hiss = ((noise ushr 16) % 21) - 10
+        val word = if (i in 3 * second until 3 * second + 2400) 600 * sin(2 * PI * 200 * i / 8000.0) else 0.0
+        (hiss + word).toInt().toShort()
+    }
+    val sparseOut = pcmOf(VoiceMemoCodec.render(sparse).wav)
+    val wordPeak = sparseOut.subList(3 * second + 400, 3 * second + 2000).maxOf { abs(it) }
+    val hissPeak = sparseOut.subList(second / 2, 2 * second).maxOf { abs(it) }
+    check(wordPeak > 8 * hissPeak) { "Word $wordPeak against hiss $hissPeak" }
     // A clip that is loud from start to end is never boosted into the limiter.
-    val loud = VoiceMemoCodec.render(ShortArray(8000) { (30_000 * sin(2 * PI * 300 * it / 8000.0)).toInt().toShort() })
-    check(loud.levels.gain < 1f && pcmOf(loud.wav).maxOf { abs(it) } in 10_000..14_000)
+    val loud = VoiceMemoCodec.render(ShortArray(second) { (30_000 * sin(2 * PI * 300 * it / 8000.0)).toInt().toShort() })
+    check(loud.levels.gain < 1f && pcmOf(loud.wav).maxOf { abs(it) } in 7_000..10_000)
 
     // The watch reports how much of the recording time reached the encoder.
     check(VoiceMemoCodec.coveragePercent(memo) == null)
