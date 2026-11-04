@@ -71,10 +71,39 @@ fun main(args: Array<String>) {
     val wav = VoiceMemoCodec.toWav(decoded)
     check(String(wav, 0, 4) == "RIFF" && String(wav, 8, 4) == "WAVE" && wav.size == 44 + 2 * tone.size)
     check(VoiceMemoCodec.wavDurationMillis(wav.size.toLong()) == 1000L)
-    val samples = (0 until tone.size).map { ((wav[44 + 2 * it].toInt() and 0xff) or (wav[45 + 2 * it].toInt() shl 8)) }
-    check(samples.maxOf { abs(it) } in 26_000..32_767) // Normalized near full scale.
+    fun pcmOf(wav: ByteArray) = (0 until (wav.size - 44) / 2).map { ((wav[44 + 2 * it].toInt() and 0xff) or (wav[45 + 2 * it].toInt() shl 8)) }
+    val samples = pcmOf(wav)
+    check(samples.drop(1000).dropLast(1000).maxOf { abs(it) } in 10_500..13_500) // Level set to the target.
     check(abs(samples.drop(4000).average()) < 400) // DC offset removed.
+    check(samples.take(800).all { it == 0 } && samples.takeLast(640).all { it == 0 }) // Edges muted.
     check(VoiceMemoCodec.toWav(ShortArray(100)).size == 244) // Silence: no division by zero.
+
+    // Quiet speech between a full-scale start-up transient and a stop click, on a DC offset: the
+    // transients must not set the gain, and nothing may clip.
+    val quiet = ShortArray(4 * 8000) { i ->
+        val voice = 400 * sin(2 * PI * 220 * i / 8000.0) * (0.6 + 0.4 * sin(2 * PI * 3 * i / 8000.0))
+        val transient = when {
+            i < 240 -> if (i % 2 == 0) 30_000 else -30_000
+            i >= 4 * 8000 - 200 && i % 3 == 0 -> 28_000
+            else -> 0
+        }
+        (2500 + voice + transient).toInt().coerceIn(-32768, 32767).toShort()
+    }
+    val rendered = VoiceMemoCodec.render(quiet)
+    val quietOut = pcmOf(rendered.wav)
+    check(quietOut.size == quiet.size)
+    val speech = quietOut.subList(8000, 3 * 8000).maxOf { abs(it) }
+    check(speech in 9_000..16_000) { "Quiet speech reached only $speech" }
+    check(quietOut.maxOf { abs(it) } <= 32_000)
+    check(rendered.levels.gain > 20f && rendered.levels.dcOffset in 2400..2600) { rendered.levels.toString() }
+    // A clip that is loud from start to end is never boosted into the limiter.
+    val loud = VoiceMemoCodec.render(ShortArray(8000) { (30_000 * sin(2 * PI * 300 * it / 8000.0)).toInt().toShort() })
+    check(loud.levels.gain < 1f && pcmOf(loud.wav).maxOf { abs(it) } in 10_000..14_000)
+
+    // The watch reports how much of the recording time reached the encoder.
+    check(VoiceMemoCodec.coveragePercent(memo) == null)
+    check(VoiceMemoCodec.coveragePercent(memo.copyOf().also { it[7] = 37 }) == 37)
+    check(VoiceMemoCodec.decode(memo.copyOf().also { it[7] = 37 }).size == tone.size)
 
     // Header validation.
     rejected { VoiceMemoCodec.decode(memo.copyOf(memo.size - 1)) }
@@ -123,6 +152,7 @@ fun main(args: Array<String>) {
         check(repository.accept("watch", parts[0]) == MemoAcceptResult.Accepted)
         for (part in parts.drop(1).dropLast(1)) check(repository.accept("watch", part) == MemoAcceptResult.Accepted)
         val complete = repository.accept("watch", parts.last()) as MemoAcceptResult.Complete
+        check(complete.levels != null && complete.coveragePercent == null)
         check(!complete.duplicate && complete.memo.durationMillis == 1000L && complete.memo.receivedAt == now)
         check(complete.memo.file.readBytes().contentEquals(VoiceMemoCodec.toWav(VoiceMemoCodec.decode(memo))))
         check(repository.memos.value.single().id == complete.memo.id)

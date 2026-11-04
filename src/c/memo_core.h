@@ -6,6 +6,8 @@
 #include <stdint.h>
 
 /* HVM1 voice memo: 16-byte header, then 8 kHz mono IMA ADPCM (low nibble first).
+ * Header: "HVM1", u16 rate, u8 codec, u8 coverage (percent of the recording time for which
+ * microphone audio arrived, 0 = not measured), u32 sample count, u32 watch time.
  * The microphone delivers 16 kHz signed 16-bit PCM; a half-band filter drops it to
  * 8 kHz before 4-bit coding, so one second costs 4,000 bytes instead of 32,000. */
 #define MEMO_HEADER 16u
@@ -20,6 +22,7 @@ typedef struct {
   int32_t predictor;
   int16_t history[MEMO_FILTER_TAPS];
   uint8_t filled, index;
+  uint8_t coverage; /* Set by the caller before memo_encoder_finish; 0 = not measured. */
   bool odd, high_nibble;
   bool full;
 } MemoEncoder;
@@ -117,7 +120,7 @@ static uint32_t memo_encoder_finish(MemoEncoder *encoder, uint32_t recorded_at) 
   uint8_t *b = encoder->bytes;
   b[0] = 'H'; b[1] = 'V'; b[2] = 'M'; b[3] = '1';
   b[4] = (uint8_t)(MEMO_RATE & 0xffu); b[5] = (uint8_t)(MEMO_RATE >> 8);
-  b[6] = MEMO_CODEC_IMA_ADPCM; b[7] = 0u;
+  b[6] = MEMO_CODEC_IMA_ADPCM; b[7] = encoder->coverage;
   memo_put_u32(b, 8u, encoder->samples);
   memo_put_u32(b, 12u, recorded_at);
   return encoder->length;

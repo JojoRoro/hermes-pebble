@@ -16,6 +16,9 @@
 #define MEMO_RECEIPT_TIMEOUT_MS 15000u
 #define MEMO_FLIGHT_TIMEOUT_MS 20000u
 #define MEMO_YIELD_MS 200u
+/* Below this share of the elapsed time, frames were dropped and the memo has gaps. */
+#define MEMO_MIN_COVERAGE 80u
+#define MEMO_COVERAGE_MIN_ELAPSED_MS 2000u
 
 #define MEMO_IDLE 0u
 #define MEMO_RECORDING 1u
@@ -29,6 +32,8 @@ typedef struct {
   MemoEncoder encoder;
   uint8_t *buffer;
   uint32_t capacity, length, crc, capture, offset, final_offset, flight_length, transfer_id, callbacks;
+  time_t started_s;
+  uint16_t started_ms;
   uint16_t block;
   uint8_t state, retries, receipt_waits, level;
   bool in_flight, confirm_delete;
@@ -107,9 +112,28 @@ static const char *memo_start_error(MicCaptureStartResult result) {
   }
 }
 
+/* Percent of the wall-clock recording time covered by the samples that arrived (1-100). The
+ * firmware drops frames when its two-frame queue overflows, which leaves gaps in the memo. */
+static uint8_t memo_coverage(uint32_t *elapsed_ms_out) {
+  time_t now_s = 0;
+  uint16_t now_ms = 0u;
+  time_ms(&now_s, &now_ms);
+  int64_t elapsed = (int64_t)(now_s - s_memo.started_s) * 1000 + (int64_t)now_ms - (int64_t)s_memo.started_ms;
+  uint32_t elapsed_ms = elapsed > 0 ? (uint32_t)elapsed : 0u;
+  uint32_t captured_ms = (uint32_t)((uint64_t)s_memo.encoder.samples * 1000u / MEMO_RATE);
+  if (elapsed_ms_out) *elapsed_ms_out = elapsed_ms;
+  if (elapsed_ms == 0u || captured_ms >= elapsed_ms) return 100u;
+  uint32_t percent = captured_ms * 100u / elapsed_ms;
+  return (uint8_t)(percent < 1u ? 1u : percent);
+}
+
 static void memo_finish_recording(const char *note) {
   if (s_memo.state != MEMO_RECORDING) return;
   memo_mic_stop();
+  uint32_t elapsed_ms = 0u;
+  s_memo.encoder.coverage = memo_coverage(&elapsed_ms);
+  APP_LOG(APP_LOG_LEVEL_INFO, "Memo: %lu samples in %lu ms (%u%%)", (unsigned long)s_memo.encoder.samples,
+      (unsigned long)elapsed_ms, (unsigned)s_memo.encoder.coverage);
   s_memo.length = memo_encoder_finish(&s_memo.encoder, (uint32_t)time(NULL));
   if (s_memo.encoder.samples < MEMO_RATE / 2u) {
     memo_release();
@@ -128,15 +152,26 @@ static void memo_finish_recording(const char *note) {
   }
   s_memo.state = MEMO_READY;
   s_memo.confirm_delete = false;
-  memo_set_status(note);
+  if (elapsed_ms >= MEMO_COVERAGE_MIN_ELAPSED_MS && s_memo.encoder.coverage < MEMO_MIN_COVERAGE) {
+    char text[sizeof(s_memo.status)];
+    snprintf(text, sizeof(text), "%s%sThe watch missed audio: only %u%% of the time was captured.",
+        note, note[0] ? " " : "", (unsigned)s_memo.encoder.coverage);
+    memo_set_status(text);
+  } else {
+    memo_set_status(note);
+  }
 }
 
 static void memo_on_audio(const int16_t *samples, size_t count, void *context) {
   (void)context;
-  if (s_memo.state != MEMO_RECORDING || samples == NULL) return;
-  int32_t peak = 0;
+  if (s_memo.state != MEMO_RECORDING || samples == NULL || count == 0u) return;
+  // Meter the sound, not the microphone's DC offset: peak distance from the frame's mean.
+  int32_t sum = 0, peak = 0;
+  for (size_t i = 0; i < count; i++) sum += samples[i];
+  int32_t mean = sum / (int32_t)count;
   for (size_t i = 0; i < count; i++) {
-    int32_t v = samples[i] < 0 ? -(int32_t)samples[i] : samples[i];
+    int32_t v = samples[i] - mean;
+    if (v < 0) v = -v;
     if (v > peak) peak = v;
   }
   // Rough log scale: each doubling of amplitude adds one of twelve meter steps.
@@ -188,6 +223,7 @@ static void memo_start_recording(void) {
   s_memo.callbacks = 0u;
   s_memo.level = 0u;
   s_memo.state = MEMO_RECORDING;
+  time_ms(&s_memo.started_s, &s_memo.started_ms);
   MicCaptureStartResult result = memo_mic_start((MicCaptureHandlers){
     .data = memo_on_audio, .stopped = memo_on_stopped,
   }, NULL);

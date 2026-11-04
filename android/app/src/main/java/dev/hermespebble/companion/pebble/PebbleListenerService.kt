@@ -222,7 +222,11 @@ class PebbleListenerService : BasePebbleListenerService() {
             MemoAcceptResult.Accepted -> ReceiveResult.Ack
             is MemoAcceptResult.Complete -> {
                 if (!result.duplicate) {
-                    DiagnosticLog.record("Memo", "Saved voice memo: ${result.memo.durationMillis / 1000.0}s, ${block.total} bytes from watch")
+                    val levels = result.levels?.let {
+                        ", speech %.0f dBFS, peak %.0f dBFS, gain %.1fx, DC %d".format(it.speechDbfs, it.peakDbfs, it.gain, it.dcOffset)
+                    }.orEmpty()
+                    val coverage = result.coveragePercent?.let { ", watch heard $it% of the recording time" }.orEmpty()
+                    DiagnosticLog.record("Memo", "Saved voice memo: ${result.memo.durationMillis / 1000.0}s, ${block.total} bytes from watch$coverage$levels")
                 }
                 bridge.launch { bridge.sendMemoReceipt(watch, block, saved = true) }
                 ReceiveResult.Ack

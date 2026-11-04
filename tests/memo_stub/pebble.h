@@ -49,6 +49,7 @@ typedef enum { APP_MSG_OK = 0, APP_MSG_BUSY = 64 } AppMessageResult;
 #define FONT_KEY_GOTHIC_18_BOLD "g18b"
 #define FONT_KEY_BITHAM_42_BOLD "b42"
 
+#define APP_LOG_LEVEL_INFO 100
 #define APP_LOG_LEVEL_WARNING 50
 #define APP_LOG(level, fmt, ...) ((void)(level))
 
@@ -73,6 +74,7 @@ void window_single_click_subscribe(ButtonId button, ClickHandler handler);
 AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, void *data);
 void app_timer_cancel(AppTimer *timer);
 size_t heap_bytes_free(void);
+uint16_t time_ms(time_t *tloc, uint16_t *out_ms);
 void vibes_short_pulse(void);
 bool connection_service_peek_pebble_app_connection(void);
 AppMessageResult app_message_outbox_begin(DictionaryIterator **iterator);

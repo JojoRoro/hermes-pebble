@@ -2,6 +2,13 @@
 
 The user confirmed on 28 September that installing the finalized PBW resolved watch routing and that correcting their API key resolved Hermes authentication. They also confirmed manual Fetch retrieves an answer. Those reports establish the existing transport path; the new automatic answer flow below is validated in the emulator and still needs physical-device acceptance.
 
+## 0.1.22 voice memo playback level (4 November 2026)
+
+- Reported on a Pebble Time 2: memos played on the phone as a little crackle and hiss, while dictation worked. The codec, transfer and firmware path were checked and are not the cause. The C encoder and the Kotlin decoder agree. A speech-like test signal with DC offsets of 0 and 3,000 and peaks of 300 to 20,000 decodes at about 22 dB SNR. Blocks are CRC-checked end to end. Slots 681/682 still match `exported_symbols.json` in PebbleOS v4.43.0 through v4.44.1 and main. The PT2 board captures mono 16 kHz in every release. Dictation uses the same driver and frame size but applies a fixed 3× gain, so the raw microphone level is low.
+- Likely cause: Android scaled each memo by its single loudest sample, at most 12×. A start-up transient or the click of the stop press then set the gain, and quiet speech stayed near the noise floor. Android now mutes the first 100 ms and last 80 ms with fades. It removes DC from the kept audio, sets the gain from the 99.5th percentile (target 12,000, at most 32×) and soft-limits above 24,000. Memos saved by 0.1.21 keep their old WAV; record a new one to compare.
+- To check the other possible cause, frames dropped on the watch, the watch now compares received samples with elapsed time. It writes that share into the HVM1 header's former reserved byte 7 and warns on screen below 80% over at least 2 s. The level meter now ignores DC. Android logs speech level, peak, gain, DC and coverage for each memo under Diagnostics.
+- Offline checks pass: the native memo codec and flow tests (including simulated one-in-five frame delivery and a DC-offset meter case) and the full Kotlin host suite. The new `VoiceMemoCheck.kt` cases cover quiet speech between full-scale transients, a loud clip that must not be boosted, and coverage parsing. Watch and Android version names are 0.1.22, Android code 23. Physical playback still needs device confirmation.
+
 ## 0.1.21 voice memos (3 November 2026)
 
 - Built on the voice-reply line (v0.1.19 plus the untagged v0.1.20 inactivity change). Memo receipts use kind 115 because 114 is `VOICE_STATUS`. While a memo records, reply playback is stopped and refused so the speaker is not recorded.

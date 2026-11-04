@@ -87,6 +87,13 @@ AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, voi
 }
 void app_timer_cancel(AppTimer *timer) { (void)timer; timer_callback = NULL; }
 size_t heap_bytes_free(void) { return free_heap; }
+// Wall clock for coverage: speak() advances it by each frame's 20 ms (or more when frames drop).
+static uint64_t clock_ms = 1700000000000ull;
+uint16_t time_ms(time_t *tloc, uint16_t *out_ms) {
+  if (tloc) *tloc = (time_t)(clock_ms / 1000u);
+  if (out_ms) *out_ms = (uint16_t)(clock_ms % 1000u);
+  return (uint16_t)(clock_ms % 1000u);
+}
 void vibes_short_pulse(void) { vibes++; }
 bool connection_service_peek_pebble_app_connection(void) { return connected; }
 AppMessageResult app_message_outbox_begin(DictionaryIterator **iterator) {
@@ -162,14 +169,17 @@ static void fire_timer(void) {
   callback(NULL);
 }
 
-static void speak(uint32_t frames) {
+/* Delivers one frame per frame_ms of wall clock: 20 ms is real time, more means drops. */
+static void speak_paced(uint32_t frames, uint32_t frame_ms, int16_t dc) {
   int16_t frame[320];
   static uint32_t phase;
   for (uint32_t f = 0; f < frames && s_memo.state == MEMO_RECORDING; f++) {
-    for (int i = 0; i < 320; i++, phase++) frame[i] = (int16_t)(9000.0 * sin(phase * 0.17));
+    for (int i = 0; i < 320; i++, phase++) frame[i] = (int16_t)(dc + 9000.0 * sin(phase * 0.17));
+    clock_ms += frame_ms;
     mic.data(frame, 320u, NULL);
   }
 }
+static void speak(uint32_t frames) { speak_paced(frames, 20u, 0); }
 
 static void draw(void) { memo_draw(NULL, NULL); }
 
@@ -207,6 +217,8 @@ int main(void) {
   record(150u);
   assert(speaker_stops == 1u); // Reply playback is stopped before the microphone opens.
   assert(s_memo.encoder.samples == 150u * 160u - 3u);
+  assert(s_memo.encoder.coverage >= 99u && s_memo.buffer[7] == s_memo.encoder.coverage);
+  assert(strstr(s_memo.status, "missed") == NULL);
   uint32_t expected = s_memo.length, crc = s_memo.crc, capture = s_memo.capture;
   static uint8_t original[200000];
   memcpy(original, s_memo.buffer, expected);
@@ -313,6 +325,29 @@ int main(void) {
   assert(s_memo.state == MEMO_SENT);
   outbox_limit = 1024u;
 
+  // Dropped frames: only one in five arrives, so the memo says it has gaps.
+  memo_select(NULL, NULL);
+  speak_paced(50u, 100u, 0);
+  memo_select(NULL, NULL);
+  assert(s_memo.state == MEMO_READY && s_memo.encoder.coverage >= 19u && s_memo.encoder.coverage <= 20u);
+  assert(s_memo.buffer[7] == s_memo.encoder.coverage && strstr(s_memo.status, "missed audio: only"));
+  memo_down(NULL, NULL);
+  memo_down(NULL, NULL);
+
+  // The level meter ignores a DC offset: silence at +12000 reads empty, speech reads high.
+  memo_select(NULL, NULL);
+  int16_t still[320];
+  for (int i = 0; i < 320; i++) still[i] = 12000;
+  for (int i = 0; i < 20; i++) mic.data(still, 320u, NULL);
+  assert(s_memo.level == 0u);
+  speak_paced(5u, 20u, 12000);
+  assert(s_memo.level >= 10u);
+  memo_down(NULL, NULL); // Ignored while recording.
+  memo_select(NULL, NULL);
+  memo_down(NULL, NULL);
+  memo_down(NULL, NULL);
+  assert(s_memo.state == MEMO_IDLE);
+
   // Disconnected: fail fast, keep the clip.
   record(40u);
   connected = false;
@@ -369,6 +404,6 @@ int main(void) {
   memo_shutdown();
   assert(s_memo.buffer == NULL && s_memo_window == NULL);
   printf("Voice memo watch flow: record, ACK-paced %u-byte blocks, receipts, resend, backoff, "
-         "block shrink, priority, memory bounds, mic refusals and interruptions passed\n", MEMO_BLOCK_BYTES);
+         "block shrink, priority, memory bounds, mic refusals, interruptions, coverage and DC-free meter passed\n", MEMO_BLOCK_BYTES);
   return 0;
 }

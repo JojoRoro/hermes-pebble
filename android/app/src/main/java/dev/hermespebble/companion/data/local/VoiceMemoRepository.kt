@@ -1,5 +1,6 @@
 package dev.hermespebble.companion.data.local
 
+import dev.hermespebble.companion.pebble.MemoLevels
 import dev.hermespebble.companion.pebble.VoiceMemoBlock
 import dev.hermespebble.companion.pebble.VoiceMemoCodec
 import java.io.File
@@ -19,8 +20,16 @@ data class VoiceMemo(
 sealed interface MemoAcceptResult {
     /** Stored (or already stored) and not yet complete: acknowledge the block. */
     data object Accepted : MemoAcceptResult
-    /** The memo is complete and saved as WAV; [duplicate] when this repeats an earlier completion. */
-    data class Complete(val memo: VoiceMemo, val duplicate: Boolean) : MemoAcceptResult
+    /**
+     * The memo is complete and saved as WAV; [duplicate] when this repeats an earlier completion.
+     * A new memo carries its [levels] and the watch's [coveragePercent] for the diagnostic log.
+     */
+    data class Complete(
+        val memo: VoiceMemo,
+        val duplicate: Boolean,
+        val levels: MemoLevels? = null,
+        val coveragePercent: Int? = null,
+    ) : MemoAcceptResult
     /** All bytes arrived but the checksum or format is wrong; the partial file was discarded. */
     data class Corrupt(val reason: String) : MemoAcceptResult
     /** The block does not continue the stored partial file (gap or conflicting bytes). */
@@ -69,8 +78,8 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
         if (bytes.size.toLong() != block.total || VoiceMemoCodec.crc32(bytes) != block.checksum) {
             return MemoAcceptResult.Corrupt("Memo checksum mismatch")
         }
-        val wav = try {
-            VoiceMemoCodec.toWav(VoiceMemoCodec.decode(bytes))
+        val rendered = try {
+            VoiceMemoCodec.render(VoiceMemoCodec.decode(bytes))
         } catch (error: IllegalArgumentException) {
             return MemoAcceptResult.Corrupt(error.message ?: "Memo format is invalid")
         }
@@ -78,10 +87,15 @@ class VoiceMemoRepository(private val directory: File, private val clock: () -> 
         val receivedAt = clock()
         val target = File(directory, "$receivedAt-$key.wav")
         val temporary = File(directory, "$receivedAt-$key.tmp")
-        temporary.writeBytes(wav)
+        temporary.writeBytes(rendered.wav)
         check(temporary.renameTo(target)) { "Could not save the memo" }
         refresh()
-        return MemoAcceptResult.Complete(requireNotNull(completed(key)), duplicate = false)
+        return MemoAcceptResult.Complete(
+            requireNotNull(completed(key)),
+            duplicate = false,
+            levels = rendered.levels,
+            coveragePercent = VoiceMemoCodec.coveragePercent(bytes),
+        )
     }
 
     @Synchronized

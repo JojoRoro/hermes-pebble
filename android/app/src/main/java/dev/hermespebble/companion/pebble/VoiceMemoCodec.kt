@@ -3,6 +3,10 @@ package dev.hermespebble.companion.pebble
 import java.io.ByteArrayOutputStream
 import java.util.zip.CRC32
 import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.roundToInt
+import kotlin.math.sign
+import kotlin.math.tanh
 
 /** One AppMessage of a watch voice memo: [payload] belongs at [offset] of a [total]-byte HVM1 file. */
 data class VoiceMemoBlock(
@@ -16,10 +20,15 @@ data class VoiceMemoBlock(
     val isFinal: Boolean get() = offset + payload.size == total
 }
 
+/** Loudness of a rendered memo for the diagnostic log: [speechDbfs] is the 99.5th percentile. */
+data class MemoLevels(val speechDbfs: Double, val peakDbfs: Double, val gain: Float, val dcOffset: Int)
+
+class RenderedMemo(val wav: ByteArray, val levels: MemoLevels)
+
 /**
  * HVM1, written by the watch's memo_core.h: a 16-byte header ("HVM1", u16 sample rate,
- * u8 codec, u8 reserved, u32 sample count, u32 watch time) and 4-bit IMA ADPCM, low
- * nibble first, starting from predictor 0 / step index 0.
+ * u8 codec, u8 capture coverage percent (0 = not reported), u32 sample count, u32 watch
+ * time) and 4-bit IMA ADPCM, low nibble first, starting from predictor 0 / step index 0.
  */
 object VoiceMemoCodec {
     const val HEADER_BYTES = 16
@@ -76,26 +85,61 @@ object VoiceMemoCodec {
         return out
     }
 
+    /** Share of the recording time for which the watch received microphone audio, or null if not reported. */
+    fun coveragePercent(file: ByteArray): Int? =
+        if (file.size > HEADER_BYTES) (file[7].toInt() and 0xff).takeIf { it in 1..100 } else null
+
+    /** Wraps decoded memo audio as a PCM WAV file; see [render]. */
+    fun toWav(pcm: ShortArray, sampleRate: Int = SAMPLE_RATE): ByteArray = render(pcm, sampleRate).wav
+
     /**
-     * Removes the microphone's DC offset and normalizes the peak to about -1 dBFS (at most 12x
-     * gain, so silence is not amplified into noise), then wraps the result as a PCM WAV file.
+     * Makes the memo listenable and wraps it as a 16-bit mono WAV of the same length.
+     *
+     * The watch microphone is quiet, and its first frames carry a start-up transient while the
+     * stop press adds a click at the end. Scaling to the single loudest sample let those
+     * transients set the gain and left speech near the noise floor. Instead: mute the first
+     * [LEAD_MUTE_MS] and last [TAIL_MUTE_MS] with short fades, remove the DC offset, set the gain
+     * so the 99.5th percentile of the remaining audio reaches [TARGET_LEVEL] (at most
+     * [MAX_GAIN]x), and soft-limit the rare peaks above [LIMIT_KNEE] instead of clipping them.
      */
-    fun toWav(pcm: ShortArray, sampleRate: Int = SAMPLE_RATE): ByteArray {
-        val filtered = FloatArray(pcm.size)
+    fun render(pcm: ShortArray, sampleRate: Int = SAMPLE_RATE): RenderedMemo {
+        val n = pcm.size
+        var lead = sampleRate * LEAD_MUTE_MS / 1000
+        var tail = sampleRate * TAIL_MUTE_MS / 1000
+        var fade = sampleRate * FADE_MS / 1000
+        if (n < lead + tail + 4 * fade) { lead = 0; tail = 0; fade = 0 } // Too short to trim.
+        val end = n - tail
+
+        var sum = 0.0
+        for (i in lead until end) sum += pcm[i]
+        val dc = if (end > lead) (sum / (end - lead)).toFloat() else 0f
+
+        // Remove the offset, then a gentle high-pass for drift. Starting at the first kept sample
+        // means the muted transient never passes through the filter.
+        val filtered = FloatArray(n)
         var previousIn = 0f
         var previousOut = 0f
-        for (i in pcm.indices) {
-            val x = pcm[i].toFloat()
+        for (i in lead until end) {
+            val x = pcm[i] - dc
             val y = x - previousIn + 0.995f * previousOut
             previousIn = x
             previousOut = y
-            filtered[i] = y
+            filtered[i] = y * when {
+                fade > 0 && i < lead + fade -> (i - lead + 1).toFloat() / fade
+                fade > 0 && i >= end - fade -> (end - i).toFloat() / fade
+                else -> 1f
+            }
         }
-        val peak = filtered.maxOfOrNull { abs(it) } ?: 0f
-        val gain = if (peak < 1f) 1f else minOf(29000f / peak, 12f)
-        val data = ByteArray(pcm.size * 2)
-        for (i in filtered.indices) {
-            val v = (filtered[i] * gain).toInt().coerceIn(-32768, 32767)
+
+        val magnitudes = FloatArray(end - lead) { abs(filtered[lead + it]) }
+        magnitudes.sort()
+        val level = if (magnitudes.isEmpty()) 0f else magnitudes[((magnitudes.size - 1) * 0.995).toInt()]
+        val peak = magnitudes.lastOrNull() ?: 0f
+        val gain = if (level < 1f) 1f else minOf(TARGET_LEVEL / level, MAX_GAIN)
+
+        val data = ByteArray(n * 2)
+        for (i in 0 until n) {
+            val v = limit(filtered[i] * gain).toInt().coerceIn(-32768, 32767)
             data[2 * i] = v.toByte()
             data[2 * i + 1] = (v shr 8).toByte()
         }
@@ -105,8 +149,25 @@ object VoiceMemoCodec {
         out.write("RIFF".toByteArray()); int(36 + data.size); out.write("WAVE".toByteArray())
         out.write("fmt ".toByteArray()); int(16); short(1); short(1); int(sampleRate); int(sampleRate * 2); short(2); short(16)
         out.write("data".toByteArray()); int(data.size); out.write(data)
-        return out.toByteArray()
+        return RenderedMemo(out.toByteArray(), MemoLevels(dbfs(level), dbfs(peak), gain, dc.roundToInt()))
     }
+
+    private fun limit(x: Float): Float {
+        val magnitude = abs(x)
+        if (magnitude <= LIMIT_KNEE) return x
+        val room = LIMIT_CEILING - LIMIT_KNEE
+        return sign(x) * (LIMIT_KNEE + room * tanh((magnitude - LIMIT_KNEE) / room))
+    }
+
+    private fun dbfs(value: Float): Double = if (value < 1f) -96.0 else 20 * log10(value / 32768.0)
+
+    private const val LEAD_MUTE_MS = 100
+    private const val TAIL_MUTE_MS = 80
+    private const val FADE_MS = 20
+    private const val TARGET_LEVEL = 12_000f
+    private const val MAX_GAIN = 32f
+    private const val LIMIT_KNEE = 24_000f
+    private const val LIMIT_CEILING = 32_000f
 
     /** Duration of a 16-bit mono WAV produced by [toWav]. */
     fun wavDurationMillis(wavBytes: Long, sampleRate: Int = SAMPLE_RATE): Long =
