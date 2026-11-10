@@ -1,0 +1,192 @@
+{
+ "models": [
+  {
+   "id": "moonshine-tiny",
+   "name": "Moonshine Tiny",
+   "note": "English. Fastest.",
+   "repo": "onnx-community/moonshine-tiny-ONNX",
+   "multilingual": false,
+   "revision": "a6da1241cd305dcd64eab1edbd615f2bb9aabb95",
+   "dtype": "q8",
+   "size": 32079632,
+   "files": [
+    {
+     "path": "config.json",
+     "size": 921,
+     "sha256": "558e1e02069137c796ace1e50c48d8fe451f04a295929138e6bea885517f0edb"
+    },
+    {
+     "path": "generation_config.json",
+     "size": 147,
+     "sha256": "f9b3f711b57be7def2e50a8942f64f36ee0a55fad5b84ff93a687b6c5bcc1d44"
+    },
+    {
+     "path": "preprocessor_config.json",
+     "size": 128,
+     "sha256": "fa43a7017ef85cd1d0fba0d9aae77c8adb16990ae6f11115631f41ec5d8aa679"
+    },
+    {
+     "path": "tokenizer.json",
+     "size": 3761754,
+     "sha256": "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f"
+    },
+    {
+     "path": "tokenizer_config.json",
+     "size": 135735,
+     "sha256": "edaee394565d428ea98a663ae7209cdcfeefc5585c42d7a570ff7c986df2cd15"
+    },
+    {
+     "path": "onnx/encoder_model_quantized.onnx",
+     "size": 7937661,
+     "sha256": "c6fc4b7bc5af75c0591fd157a1f3829b533d18e9769a888fd95a62e470dd4f4a"
+    },
+    {
+     "path": "onnx/decoder_model_merged_quantized.onnx",
+     "size": 20243286,
+     "sha256": "eed87831c3a6103534aae7d47a5d485025c659a1323901513961c39fe8a1a367"
+    }
+   ]
+  },
+  {
+   "id": "moonshine-base",
+   "name": "Moonshine Base",
+   "note": "English. More accurate, slower.",
+   "repo": "onnx-community/moonshine-base-ONNX",
+   "multilingual": false,
+   "revision": "b1e9b6aae3c3c7298f10c3798393fdf38e8fbbad",
+   "dtype": "q8",
+   "size": 66910619,
+   "files": [
+    {
+     "path": "config.json",
+     "size": 922,
+     "sha256": "fab7241d1e9fc6c2370c4c6dfb5da79bb54d67ed9ab6b507ac51d29d2abe01d1"
+    },
+    {
+     "path": "generation_config.json",
+     "size": 147,
+     "sha256": "f9b3f711b57be7def2e50a8942f64f36ee0a55fad5b84ff93a687b6c5bcc1d44"
+    },
+    {
+     "path": "preprocessor_config.json",
+     "size": 128,
+     "sha256": "fa43a7017ef85cd1d0fba0d9aae77c8adb16990ae6f11115631f41ec5d8aa679"
+    },
+    {
+     "path": "tokenizer.json",
+     "size": 3761754,
+     "sha256": "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f"
+    },
+    {
+     "path": "tokenizer_config.json",
+     "size": 135735,
+     "sha256": "edaee394565d428ea98a663ae7209cdcfeefc5585c42d7a570ff7c986df2cd15"
+    },
+    {
+     "path": "onnx/encoder_model_quantized.onnx",
+     "size": 20513063,
+     "sha256": "1dd9ab0a7f987113d30affcba5a068d11c8f90fa0223caa3e491ade431ad9751"
+    },
+    {
+     "path": "onnx/decoder_model_merged_quantized.onnx",
+     "size": 42498870,
+     "sha256": "cc9f3cd6698a369c6008b41aa60aa3fb3322e7f03c9bdf19d8e6b7200afca4f3"
+    }
+   ]
+  },
+  {
+   "id": "whisper-tiny",
+   "name": "Whisper Tiny",
+   "note": "99 languages.",
+   "repo": "onnx-community/whisper-tiny",
+   "multilingual": true,
+   "revision": "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
+   "dtype": "q8",
+   "size": 43613734,
+   "files": [
+    {
+     "path": "config.json",
+     "size": 2243,
+     "sha256": "46aeea0a406afbeb563fc8e59ca10609203df4299af6a83f73752fef369efd2d"
+    },
+    {
+     "path": "generation_config.json",
+     "size": 3772,
+     "sha256": "f5c67e5a4f7102f8cb4d058bc95da276bbc19eeec997267c3bb0f25ef68facd1"
+    },
+    {
+     "path": "preprocessor_config.json",
+     "size": 339,
+     "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d"
+    },
+    {
+     "path": "tokenizer.json",
+     "size": 2480466,
+     "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566"
+    },
+    {
+     "path": "tokenizer_config.json",
+     "size": 282683,
+     "sha256": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce"
+    },
+    {
+     "path": "onnx/encoder_model_quantized.onnx",
+     "size": 10124990,
+     "sha256": "2af4a414ca47aa30f61246017e5fe82b0a8d229281d1255ba666a2a7f6b84d19"
+    },
+    {
+     "path": "onnx/decoder_model_merged_quantized.onnx",
+     "size": 30719241,
+     "sha256": "25e807a962b6349356d0ea5d0dfe530b7e5bf0e2a484aeca0359d03143faddd3"
+    }
+   ]
+  },
+  {
+   "id": "whisper-base",
+   "name": "Whisper Base",
+   "note": "99 languages. More accurate, slowest.",
+   "repo": "onnx-community/whisper-base",
+   "multilingual": true,
+   "revision": "27a07b4b52b3a4c5886134bb4320e93e1a4bbc7c",
+   "dtype": "q8",
+   "size": 79664191,
+   "files": [
+    {
+     "path": "config.json",
+     "size": 2243,
+     "sha256": "f4d0608f7d918166da7edb3e188de5ef1bfe70d9802e785d271fd88111e9cf4b"
+    },
+    {
+     "path": "generation_config.json",
+     "size": 3832,
+     "sha256": "61070cf8de25b1e9256e8e102ded49d8d24a8369ed36ef84fdf21549e68125a0"
+    },
+    {
+     "path": "preprocessor_config.json",
+     "size": 339,
+     "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d"
+    },
+    {
+     "path": "tokenizer.json",
+     "size": 2480466,
+     "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566"
+    },
+    {
+     "path": "tokenizer_config.json",
+     "size": 282682,
+     "sha256": "2e036e4dbacfdeb7242c7d4ec4149f4a16e86026048f94d1637e3a8ee9c6a573"
+    },
+    {
+     "path": "onnx/encoder_model_quantized.onnx",
+     "size": 23201314,
+     "sha256": "5862993336bf33acd23736071aae2b32261d3b1b2f37780194460d4ef974dd46"
+    },
+    {
+     "path": "onnx/decoder_model_merged_quantized.onnx",
+     "size": 53693315,
+     "sha256": "fa3ef9902734ce5ae6f9ef2bdb2ba9a6c4b5785b09f4f420ce036573dc9d090b"
+    }
+   ]
+  }
+ ]
+}

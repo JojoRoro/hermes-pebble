@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Hermes 2 settings</title>
+<style>
+  :root {
+    --night: #001e41;
+    --deep: #00142d;
+    --card: #04284f;
+    --line: #1d4673;
+    --field: #001833;
+    --gold: #ffaa00;
+    --gold-soft: #ffc85a;
+    --ink: #f4efe4;
+    --muted: #a9bcd2;
+    --ok: #7ddc9c;
+    --bad: #ff8a78;
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", "Courier New", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--night); color: var(--ink);
+    font: 16px/1.45 var(--sans);
+    padding: 0 0 calc(40px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 28px 4px 10px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark {
+    width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+    background: var(--gold); color: var(--night);
+    display: grid; place-items: center; font: 700 22px/1 var(--mono);
+  }
+  h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: .01em; }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+  #banner {
+    margin: 14px 0 4px; padding: 12px 14px; border-radius: 12px;
+    background: var(--deep); border: 1px solid var(--line); color: var(--muted); font-size: 15px;
+  }
+  #banner.bad { border-color: var(--bad); color: var(--ink); }
+  #banner[hidden] { display: none; }
+
+  section {
+    margin: 18px 0; padding: 18px 16px 16px; border-radius: 16px;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  h2 {
+    margin: 0 0 4px; font: 700 13px/1.2 var(--mono); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--gold);
+  }
+  .lead { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+  .field { margin: 16px 0 0; }
+  .field:first-of-type { margin-top: 10px; }
+  label.name, .name { display: block; font-weight: 600; font-size: 15px; margin: 0 0 6px; }
+  .hint { display: block; color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  input[type=text], input[type=url], input[type=password], select {
+    width: 100%; min-height: 46px; padding: 11px 12px; font: 16px var(--sans);
+    color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 10px;
+    -webkit-appearance: none; appearance: none;
+  }
+  select {
+    background-image: linear-gradient(45deg, transparent 50%, var(--gold) 50%), linear-gradient(135deg, var(--gold) 50%, transparent 50%);
+    background-position: calc(100% - 20px) 20px, calc(100% - 14px) 20px;
+    background-size: 6px 6px; background-repeat: no-repeat; padding-right: 36px;
+  }
+  input::placeholder { color: #6d87a6; }
+  input:focus, select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(255,170,0,.25); }
+  :focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+
+  .secret-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+    font: 600 12px/1.4 var(--mono); letter-spacing: .04em; text-transform: uppercase;
+    border: 1px solid var(--line); color: var(--muted); background: var(--deep); white-space: nowrap;
+  }
+  .chip.on { color: var(--night); background: var(--gold); border-color: var(--gold); }
+  .chip.ok { color: var(--ok); border-color: rgba(125,220,156,.5); }
+  .chip.bad { color: var(--bad); border-color: rgba(255,138,120,.5); }
+  .chip.wait { color: var(--gold-soft); border-color: rgba(255,170,0,.45); }
+
+  button {
+    font: 600 15px var(--sans); min-height: 46px; padding: 10px 16px; border-radius: 10px;
+    border: 1px solid var(--gold); background: transparent; color: var(--gold); cursor: pointer;
+  }
+  button.primary { background: var(--gold); color: var(--night); }
+  button.quiet { border-color: var(--line); color: var(--ink); }
+  button.danger { border-color: rgba(255,138,120,.6); color: var(--bad); }
+  button.danger.armed { background: var(--bad); color: var(--deep); border-color: var(--bad); }
+  button.link { min-height: 32px; padding: 4px 0; border: 0; color: var(--gold-soft); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .row > button { flex: 1 1 140px; }
+
+  .switch { display: flex; align-items: flex-start; gap: 14px; margin: 14px 0 0; cursor: pointer; }
+  .switch .text { flex: 1; }
+  .switch .text b { display: block; font-weight: 600; font-size: 15px; }
+  .switch .text span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .switch input {
+    -webkit-appearance: none; appearance: none; flex: 0 0 auto; margin: 2px 0 0;
+    width: 50px; height: 30px; border-radius: 999px; background: var(--deep); border: 1px solid var(--line);
+    position: relative; transition: background .15s, border-color .15s; cursor: pointer;
+  }
+  .switch input::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--muted); transition: transform .15s, background .15s;
+  }
+  .switch input:checked { background: var(--gold); border-color: var(--gold); }
+  .switch input:checked::after { transform: translateX(20px); background: var(--night); }
+  .switch input:disabled { opacity: .45; }
+
+  .status { min-height: 20px; margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .status.ok { color: var(--ok); }
+  .status.bad { color: var(--bad); }
+  .status:empty { display: none; }
+
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-top: 10px; }
+  .seg label { position: relative; display: block; padding: 11px 10px; text-align: center; cursor: pointer; background: var(--field); font-size: 14px; }
+  .seg label + label { border-left: 1px solid var(--line); }
+  .seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .seg b { display: block; font-weight: 600; font-size: 15px; }
+  .seg small { color: var(--muted); font-size: 12px; }
+  .seg label.on { background: var(--gold); color: var(--night); }
+  .seg label.on small { color: #3a2a00; }
+  .seg label:has(input:focus-visible) { outline: 3px solid var(--gold-soft); outline-offset: -3px; }
+
+  .models { display: grid; gap: 8px; margin-top: 8px; }
+  .model { display: flex; gap: 12px; align-items: center; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--field); cursor: pointer; }
+  .model input { accent-color: var(--gold); width: 20px; height: 20px; margin: 0; flex: 0 0 auto; }
+  .model .t { flex: 1; min-width: 0; }
+  .model .t b { display: block; font-weight: 600; }
+  .model .t span { color: var(--muted); font-size: 13px; }
+  .model .size { font: 600 13px var(--mono); color: var(--gold-soft); white-space: nowrap; }
+  .model.on { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+
+  .progress { margin-top: 12px; height: 8px; border-radius: 999px; background: var(--deep); overflow: hidden; border: 1px solid var(--line); }
+  .progress > i { display: block; height: 100%; width: 0; background: var(--gold); transition: width .3s; }
+  .progress[hidden] { display: none; }
+  .dl { margin-top: 16px; padding: 12px; border-radius: 12px; background: var(--deep); border: 1px solid var(--line); }
+  .dl .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dl .head b { font-size: 15px; }
+  .dl p { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+
+  .list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+  .list li { padding: 12px; border-radius: 12px; background: var(--field); border: 1px solid var(--line); }
+  .list .top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
+  .list .when { color: var(--muted); font: 12px var(--mono); white-space: nowrap; }
+  .list .q { margin: 8px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+  .list .a { margin: 6px 0 0; color: var(--muted); font-size: 14px; white-space: pre-line; overflow-wrap: anywhere;
+             display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .list .a.open { -webkit-line-clamp: unset; display: block; }
+  .list .err { margin: 6px 0 0; color: var(--bad); font-size: 13px; }
+  .empty { margin: 10px 0 0; padding: 14px; border-radius: 12px; border: 1px dashed var(--line); color: var(--muted); font-size: 14px; text-align: center; }
+  canvas.note { display: block; width: 100%; margin-top: 8px; border-radius: 8px; background: #f4efe4; }
+  .split { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  dl.about { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 10px 0 0; font-size: 14px; }
+  dl.about dt { color: var(--muted); }
+  dl.about dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+  .fine { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+  [hidden] { display: none !important; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
+    background: var(--gold); color: var(--night); font-weight: 700; padding: 10px 18px; border-radius: 999px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.4); opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none;
+    max-width: calc(100% - 32px); text-align: center;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.bad { background: var(--bad); color: var(--deep); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true">H</div>
+      <div>
+        <h1>Hermes 2</h1>
+        <p class="sub">Your Hermes Agent, on your wrist <span id="ready-chip" class="chip wait">Starting</span></p>
+      </div>
+    </div>
+    <div id="banner" role="status">Waiting for the Hermes plugin to start…</div>
+  </header>
+
+  <!-- Connection ------------------------------------------------------------------------------>
+  <section id="connection" aria-labelledby="h-connection">
+    <h2 id="h-connection">Connection</h2>
+    <p class="lead">Where your Hermes Agent API server is, and how to get in.</p>
+
+    <div class="field">
+      <label class="name" for="url">Hermes URL</label>
+      <input id="url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="https://hermes.example.com" aria-describedby="url-hint">
+      <span class="hint" id="url-hint">The API root, with or without /v1. It must start with https:// (plain http only works for localhost).</span>
+    </div>
+
+    <div class="field">
+      <label class="name" for="apikey">API key</label>
+      <div class="secret-state"><span id="key-chip" class="chip">Not set</span><span id="key-note"></span>
+        <button type="button" class="link" id="key-clear" hidden>Remove saved key</button></div>
+      <input id="apikey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="Paste your API key" aria-describedby="key-hint">
+      <span class="hint" id="key-hint">Sent as a Bearer token. Stored encrypted by the Pebble app and never shown again.</span>
+    </div>
+
+    <label class="switch" for="extra-on">
+      <span class="text"><b>Extra access header</b><span>For a gateway or proxy in front of Hermes that wants its own header.</span></span>
+      <input id="extra-on" type="checkbox" role="switch">
+    </label>
+    <div id="extra-fields" hidden>
+      <div class="field">
+        <label class="name" for="extra-name">Header name</label>
+        <input id="extra-name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="X-Access-Token">
+      </div>
+      <div class="field">
+        <label class="name" for="extra-value">Header value</label>
+        <div class="secret-state"><span id="extra-chip" class="chip">Not set</span>
+          <button type="button" class="link" id="extra-clear" hidden>Remove saved value</button></div>
+        <input id="extra-value" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the header value">
+      </div>
+    </div>
+
+    <div class="row">
+      <button type="button" class="primary" id="save">Save</button>
+      <button type="button" id="test">Test connection</button>
+    </div>
+    <p class="status" id="conn-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- Behaviour ------------------------------------------------------------------------------->
+  <section id="behaviour" aria-labelledby="h-behaviour">
+    <h2 id="h-behaviour">Behaviour</h2>
+    <p class="lead">Changes here are saved straight away.</p>
+
+    <label class="switch" for="brief">
+      <span class="text"><b>Brief replies</b><span>Ask Hermes for a few short, plain sentences: no Markdown, lists or tables. Easier to read on the watch.</span></span>
+      <input id="brief" type="checkbox" role="switch">
+    </label>
+
+    <div class="field">
+      <label class="name" for="idle">Start a new conversation after</label>
+      <select id="idle" aria-describedby="idle-hint">
+        <option value="0">Never (keep one conversation)</option>
+        <option value="1">1 hour without use</option>
+        <option value="2">2 hours without use</option>
+        <option value="4">4 hours without use</option>
+        <option value="8">8 hours without use</option>
+        <option value="24">24 hours without use</option>
+      </select>
+      <span class="hint" id="idle-hint">After this long with no question or answer, the next question starts a fresh context.</span>
+    </div>
+
+    <p class="fine" id="conv-line" aria-live="polite"></p>
+    <div class="row">
+      <button type="button" class="quiet" id="new-conv">New conversation</button>
+      <button type="button" class="danger" id="clear-history">Clear history</button>
+    </div>
+    <p class="status" id="beh-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- Speech ---------------------------------------------------------------------------------->
+  <section id="speech" aria-labelledby="h-speech">
+    <h2 id="h-speech">Speech</h2>
+    <p class="lead">How what you say to the watch becomes text.</p>
+
+    <fieldset style="border:0;margin:0;padding:0">
+      <legend class="name">Recognition</legend>
+      <div class="seg">
+        <label><input type="radio" name="mode" value="phone"><b>On this phone</b><small>Offline model</small></label>
+        <label><input type="radio" name="mode" value="pebble"><b>Pebble dictation</b><small>Pebble's service</small></label>
+      </div>
+    </fieldset>
+    <p class="hint" id="mode-hint"></p>
+
+    <div id="phone-opts">
+      <fieldset style="border:0;margin:16px 0 0;padding:0">
+        <legend class="name">Model</legend>
+        <div class="models" id="models"></div>
+      </fieldset>
+
+      <div class="field" id="lang-field">
+        <label class="name" for="lang">Language</label>
+        <select id="lang" aria-describedby="lang-hint"></select>
+        <span class="hint" id="lang-hint">Whisper models only. Naming the language is faster and more accurate than detecting it.</span>
+      </div>
+
+      <label class="switch" for="autostop">
+        <span class="text"><b>Stop listening when I pause</b><span>Ends the recording after about 1.6 seconds of quiet.</span></span>
+        <input id="autostop" type="checkbox" role="switch">
+      </label>
+
+      <div class="dl" id="dl" aria-live="polite">
+        <div class="head"><b id="dl-title">Speech model</b><span id="dl-chip" class="chip">Unknown</span></div>
+        <div class="progress" id="dl-bar" hidden role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Download progress"><i></i></div>
+        <p id="dl-text"></p>
+        <div class="row" style="margin-top:10px">
+          <button type="button" id="dl-start">Download now</button>
+          <button type="button" class="quiet" id="dl-cancel" hidden>Cancel download</button>
+        </div>
+      </div>
+      <p class="fine">The model is downloaded once, the first time you use it (or now), and kept on the phone. After that, nothing you say leaves the phone. Phones whose Pebble app cannot run it use Pebble dictation instead.</p>
+    </div>
+    <p class="status" id="sp-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- Recent ---------------------------------------------------------------------------------->
+  <section id="recent" aria-labelledby="h-recent">
+    <div class="split"><h2 id="h-recent">Recent questions</h2><button type="button" class="link" id="reload">Refresh</button></div>
+    <ul class="list" id="items"></ul>
+    <p class="empty" id="items-empty" hidden>No questions yet. Ask one from the watch.</p>
+  </section>
+
+  <!-- Notes ----------------------------------------------------------------------------------->
+  <section id="notes" aria-labelledby="h-notes">
+    <h2 id="h-notes">Handwritten notes</h2>
+    <p class="lead">Drawn on the watch and kept here as strokes. They are not read or sent to Hermes.</p>
+    <ul class="list" id="note-list"></ul>
+    <p class="empty" id="notes-empty" hidden>No notes yet.</p>
+    <div class="row" id="notes-actions" hidden><button type="button" class="danger" id="clear-notes">Clear notes</button></div>
+    <p class="status" id="notes-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- Memos ----------------------------------------------------------------------------------->
+  <section id="memos" aria-labelledby="h-memos">
+    <h2 id="h-memos">Voice memos</h2>
+    <p class="lead">Memos come over while the Hermes app is open on the watch, are turned into text here with the speech model, and go to Hermes as a message.</p>
+    <ul class="list" id="memo-list"></ul>
+    <p class="empty" id="memos-empty" hidden>No memos yet.</p>
+  </section>
+
+  <!-- About ----------------------------------------------------------------------------------->
+  <section id="about" aria-labelledby="h-about">
+    <h2 id="h-about">About</h2>
+    <dl class="about">
+      <dt>App</dt><dd>Hermes 2</dd>
+      <dt>Version</dt><dd id="version"></dd>
+      <dt>Server</dt><dd id="about-host">Not set</dd>
+      <dt>Speech</dt><dd id="about-stt">-</dd>
+    </dl>
+    <p class="fine">Hermes 2 talks only to the server you set above, and downloads the speech model from Hugging Face and the speech runtime from jsDelivr, both checked against fixed hashes. Answers are text only.</p>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var VERSION = '2.0.0';
+  // A copy of src/pkjs/stt_catalog.json (and the runtime size from stt_engine.json): this page has
+  // to work before the watch app's JavaScript has ever run. test/config.test.mjs keeps it in step.
+  var RUNTIME_BYTES = 14264838;
+  var MODELS = [
+    { id: 'moonshine-tiny', name: 'Moonshine Tiny', note: 'English. Fastest.', size: 32079632, multilingual: false },
+    { id: 'moonshine-base', name: 'Moonshine Base', note: 'English. More accurate, slower.', size: 66910619, multilingual: false },
+    { id: 'whisper-tiny', name: 'Whisper Tiny', note: '99 languages.', size: 43613734, multilingual: true },
+    { id: 'whisper-base', name: 'Whisper Base', note: '99 languages. More accurate, slowest.', size: 79664191, multilingual: true }
+  ];
+  var LANGUAGES = [
+    ['', 'Detect automatically'], ['en', 'English'], ['de', 'German'], ['fr', 'French'], ['es', 'Spanish'],
+    ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['pl', 'Polish'], ['cs', 'Czech'],
+    ['sv', 'Swedish'], ['da', 'Danish'], ['no', 'Norwegian'], ['fi', 'Finnish'], ['tr', 'Turkish'],
+    ['el', 'Greek'], ['ru', 'Russian'], ['uk', 'Ukrainian'], ['ar', 'Arabic'], ['he', 'Hebrew'],
+    ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese']
+  ];
+  var STATES = {
+    1: ['Waiting to send', 'wait'], 2: ['Sending', 'wait'], 3: ['Accepted', 'wait'], 4: ['Working', 'wait'],
+    5: ['Needs approval in Hermes', 'wait'], 6: ['Answered', 'ok'], 7: ['Failed', 'bad'], 8: ['Stopped', ''],
+    9: ['Cancelled', ''], 10: ['Outcome unknown', 'bad'], 11: ['Stopping', 'wait']
+  };
+  var SOURCES = { watch: 'From the watch', index: 'From Index', memo: 'Voice memo' };
+  var MEMO_STATES = {
+    stored: ['Waiting for the speech model', 'wait'], transcribed: ['Transcribed', 'wait'],
+    sent: ['Sent to Hermes', 'ok'], empty: ['Nothing heard', ''], lost: ['Audio lost', 'bad']
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var snap = null;               // the plugin's last settings snapshot
+  var stt = null;                // the speech summary, live from PKJS when it is running
+  var sttLive = false;
+  var up = { plugin: false, pkjs: false };
+  var removeKey = false, removeExtra = false;
+  var connEdited = false;        // unsaved typing in Connection, kept when other sections save
+
+  // ---- talking to the plugin and to PebbleKit JS ---------------------------------------------
+
+  function send(target, message) {
+    if (!up[target]) return Promise.reject(new Error(target === 'plugin'
+      ? 'The Hermes plugin is not running yet.' : 'Open Hermes 2 on the watch first.'));
+    return Promise.resolve(Pebble.sendMessage(target, message)).then(function (reply) {
+      if (reply && reply.error) throw new Error(reply.error);
+      return reply || {};
+    });
+  }
+
+  function errorText(e) { return String((e && e.message) || e || 'Something went wrong'); }
+
+  function say(id, text, kind) {
+    var el = $(id);
+    el.textContent = text || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  var toastTimer = null;
+  function toast(text, bad) {
+    var el = $('toast');
+    el.textContent = text;
+    el.className = 'show' + (bad ? ' bad' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.className = bad ? 'bad' : ''; }, 2200);
+  }
+
+  function banner(text, bad) {
+    var el = $('banner');
+    el.hidden = !text;
+    el.textContent = text || '';
+    el.className = bad ? 'bad' : '';
+  }
+
+  /** Two taps for anything that throws data away. */
+  function armed(button, label, action) {
+    var timer = null;
+    var idle = button.textContent;
+    button.addEventListener('click', function () {
+      if (!button.classList.contains('armed')) {
+        button.classList.add('armed');
+        button.textContent = label;
+        timer = setTimeout(function () { button.classList.remove('armed'); button.textContent = idle; }, 4000);
+        return;
+      }
+      clearTimeout(timer);
+      button.classList.remove('armed');
+      button.textContent = idle;
+      action();
+    });
+  }
+
+  // ---- formatting ------------------------------------------------------------------------------
+
+  function mb(bytes) { return Math.round(bytes / 1048576) + ' MB'; }
+
+  function ago(ms) {
+    if (!ms) return '';
+    var s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + ' min ago';
+    if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+    var d = new Date(ms);
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function chip(text, kind) {
+    var el = document.createElement('span');
+    el.className = 'chip' + (kind ? ' ' + kind : '');
+    el.textContent = text;
+    return el;
+  }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  // ---- connection ------------------------------------------------------------------------------
+
+  function urlProblem(url) {
+    if (!url) return '';
+    var m = /^([a-z]+):\/\/([^/:?#]+)/i.exec(url);
+    if (!m) return 'That is not a web address. Start it with https://';
+    if (/^https$/i.test(m[1])) return '';
+    var host = m[2].toLowerCase();
+    if (/^http$/i.test(m[1]) && (host === 'localhost' || host === '127.0.0.1' || host === '10.0.2.2')) return '';
+    return 'Use https:// for a server that is not on this phone.';
+  }
+
+  function showSecrets() {
+    var hasKey = snap.hasKey && !removeKey;
+    $('key-chip').textContent = removeKey ? 'Will be removed' : hasKey ? 'Saved' : 'Not set';
+    $('key-chip').className = 'chip' + (removeKey ? ' bad' : hasKey ? ' ok' : '');
+    $('key-note').textContent = hasKey ? 'Paste a new one to replace it.' : '';
+    $('key-clear').hidden = !snap.hasKey || removeKey;
+    $('apikey').placeholder = hasKey ? 'Paste a new key to replace it' : 'Paste your API key';
+
+    var hasExtra = snap.hasExtra && !removeExtra;
+    $('extra-chip').textContent = removeExtra ? 'Will be removed' : hasExtra ? 'Saved' : 'Not set';
+    $('extra-chip').className = 'chip' + (removeExtra ? ' bad' : hasExtra ? ' ok' : '');
+    $('extra-clear').hidden = !snap.hasExtra || removeExtra;
+    $('extra-value').placeholder = hasExtra ? 'Paste a new value to replace it' : 'Paste the header value';
+  }
+
+  function connectionDirty() {
+    var c = snap.cfg;
+    return $('url').value.trim().replace(/\/+$/, '') !== (c.url || '') || !!$('apikey').value ||
+      $('extra-on').checked !== !!c.extraOn || $('extra-name').value.trim() !== (c.extraName || '') ||
+      !!$('extra-value').value || removeKey || removeExtra;
+  }
+
+  function saveConnection() {
+    var url = $('url').value.trim();
+    var problem = urlProblem(url);
+    if (problem) {
+      say('conn-status', problem, 'bad');
+      $('url').focus();
+      return Promise.reject(new Error(problem));
+    }
+    var extraOn = $('extra-on').checked;
+    var extraName = $('extra-name').value.trim();
+    if (extraOn && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(extraName)) {
+      var bad = 'Give the extra header a name made of letters, digits and dashes.';
+      say('conn-status', bad, 'bad');
+      $('extra-name').focus();
+      return Promise.reject(new Error(bad));
+    }
+    var message = {
+      type: 'save',
+      cfg: { url: url, extraOn: extraOn, extraName: extraName },
+      apiKey: $('apikey').value.trim(),
+      clearApiKey: removeKey && !$('apikey').value.trim(),
+      extraValue: $('extra-value').value,
+      clearExtra: removeExtra && !$('extra-value').value
+    };
+    return send('plugin', message).then(function (next) {
+      $('apikey').value = '';
+      $('extra-value').value = '';
+      removeKey = removeExtra = false;
+      connEdited = false;
+      show(next);
+      return next;
+    });
+  }
+
+  $('save').addEventListener('click', function () {
+    say('conn-status', 'Saving…');
+    saveConnection().then(function (next) {
+      var ready = next.cfg.url && next.hasKey;
+      say('conn-status', ready ? 'Saved. Use Test connection to check it.' : 'Saved. Hermes needs a URL and an API key.', ready ? 'ok' : '');
+      toast('Saved');
+    }, function (e) {
+      if ($('conn-status').className.indexOf('bad') < 0) say('conn-status', errorText(e), 'bad');
+    });
+  });
+
+  $('test').addEventListener('click', function () {
+    var button = $('test');
+    button.disabled = true;
+    var first = connectionDirty() ? saveConnection() : Promise.resolve(snap);
+    first.then(function () {
+      say('conn-status', 'Testing the connection…');
+      return send('plugin', { type: 'test' });
+    }).then(function (result) {
+      say('conn-status', (result.ok ? '✓ ' : '✗ ') + result.message, result.ok ? 'ok' : 'bad');
+    }, function (e) {
+      if ($('conn-status').className.indexOf('bad') < 0) say('conn-status', errorText(e), 'bad');
+    }).then(function () { button.disabled = false; });
+  });
+
+  $('key-clear').addEventListener('click', function () {
+    removeKey = true;
+    $('apikey').value = '';
+    showSecrets();
+    say('conn-status', 'The key will be removed when you save.');
+  });
+  $('extra-clear').addEventListener('click', function () {
+    removeExtra = true;
+    $('extra-value').value = '';
+    showSecrets();
+    say('conn-status', 'The header value will be removed when you save.');
+  });
+  $('extra-on').addEventListener('change', function () { $('extra-fields').hidden = !$('extra-on').checked; });
+  ['url', 'apikey', 'extra-on', 'extra-name', 'extra-value'].forEach(function (id) {
+    $(id).addEventListener('input', function () { connEdited = true; });
+    $(id).addEventListener('change', function () { connEdited = true; });
+  });
+  $('url').addEventListener('blur', function () {
+    var problem = urlProblem($('url').value.trim());
+    if (problem) say('conn-status', problem, 'bad');
+    else if ($('conn-status').className.indexOf('bad') >= 0) say('conn-status', '');
+  });
+
+  // ---- behaviour and speech: saved as they change ----------------------------------------------
+
+  function saveCfg(changes, statusId) {
+    return send('plugin', { type: 'save', cfg: changes }).then(function (next) {
+      show(next);
+      toast('Saved');
+      return next;
+    }, function (e) {
+      say(statusId, errorText(e), 'bad');
+      show(snap);                  // back to what is really stored
+      throw e;
+    });
+  }
+
+  $('brief').addEventListener('change', function () { saveCfg({ brief: $('brief').checked }, 'beh-status').catch(function () {}); });
+  $('idle').addEventListener('change', function () { saveCfg({ idleHours: Number($('idle').value) }, 'beh-status').catch(function () {}); });
+
+  $('new-conv').addEventListener('click', function () {
+    send('plugin', { type: 'newConversation' }).then(function (next) {
+      show(next);
+      say('beh-status', 'The next question starts a new conversation.', 'ok');
+      if (up.pkjs) send('pkjs', { type: 'refresh' }).catch(function () {});
+    }, function (e) { say('beh-status', errorText(e), 'bad'); });
+  });
+
+  armed($('clear-history'), 'Tap again to clear', function () {
+    send('plugin', { type: 'clearHistory' }).then(function (next) {
+      show(next);
+      say('beh-status', 'History cleared. Questions still in progress were kept.', 'ok');
+    }, function (e) { say('beh-status', errorText(e), 'bad'); });
+  });
+
+  function speechChanged(changes) {
+    return saveCfg(changes, 'sp-status').then(function () {
+      // PebbleKit JS picks the new model up and says whether it is on the phone already.
+      if (up.pkjs) return send('pkjs', { type: 'refresh' }).then(function (r) { if (r.stt) showStt(r.stt, true); });
+    }).catch(function () {});
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=mode]'), function (radio) {
+    radio.addEventListener('change', function () { if (radio.checked) speechChanged({ sttMode: radio.value }); });
+  });
+  $('lang').addEventListener('change', function () { speechChanged({ sttLanguage: $('lang').value }); });
+  $('autostop').addEventListener('change', function () { speechChanged({ autoStop: $('autostop').checked }); });
+
+  function buildModels() {
+    var box = $('models');
+    MODELS.forEach(function (m) {
+      var label = el('label', 'model');
+      var input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'model';
+      input.value = m.id;
+      input.addEventListener('change', function () { if (input.checked) speechChanged({ sttModel: m.id }); });
+      var text = el('span', 't');
+      text.appendChild(el('b', '', m.name));
+      text.appendChild(el('span', '', m.note));
+      label.appendChild(input);
+      label.appendChild(text);
+      label.appendChild(el('span', 'size', mb(m.size)));
+      box.appendChild(label);
+    });
+    var lang = $('lang');
+    LANGUAGES.forEach(function (pair) {
+      var option = document.createElement('option');
+      option.value = pair[0];
+      option.textContent = pair[1];
+      lang.appendChild(option);
+    });
+  }
+
+  /** Selected styling without relying on :has(), which older WebViews lack. */
+  function markChecked() {
+    Array.prototype.forEach.call(document.querySelectorAll('.seg label, .model'), function (label) {
+      var input = label.querySelector('input');
+      label.classList.toggle('on', !!(input && input.checked));
+    });
+  }
+
+  function modelById(id) { return MODELS.filter(function (m) { return m.id === id; })[0] || MODELS[0]; }
+
+  function showStt(summary, live) {
+    if (summary) stt = summary;
+    if (live) sttLive = true;
+    var cfg = snap ? snap.cfg : {};
+    var model = modelById(cfg.sttModel);
+    var s = stt && stt.model === model.id ? stt : null;
+    var status = s ? s.status : 'unknown';
+    var unsupported = stt && stt.supported === false;
+
+    $('dl-title').textContent = model.name;
+    var chipText = { missing: 'Not downloaded', downloading: 'Downloading', ready: 'On this phone', error: 'Problem', unknown: 'Unknown' }[status] || status;
+    if (unsupported) chipText = 'Not supported';
+    $('dl-chip').textContent = chipText;
+    $('dl-chip').className = 'chip' + (unsupported || status === 'error' ? ' bad' : status === 'ready' ? ' ok' : status === 'downloading' ? ' wait' : '');
+
+    var bar = $('dl-bar');
+    bar.hidden = status !== 'downloading';
+    if (status === 'downloading') {
+      bar.firstChild.style.width = (s.percent || 0) + '%';
+      bar.setAttribute('aria-valuenow', String(s.percent || 0));
+    }
+
+    var total = mb(model.size + RUNTIME_BYTES);
+    var text;
+    if (unsupported) {
+      text = 'This phone\'s Pebble app cannot run the on-phone model, so the watch uses Pebble dictation.';
+    } else if (status === 'downloading') {
+      text = (s.percent || 0) + '% of ' + total + '. Keep Hermes 2 open on the watch until it finishes.';
+    } else if (status === 'ready') {
+      text = 'Ready. Speech is recognised on this phone, offline.';
+    } else if (status === 'error') {
+      text = (s.error || 'The download failed.') + ' Try again.';
+    } else if (status === 'missing') {
+      text = 'Needs a one-time download of ' + total + ' (model and speech runtime). Wi-Fi recommended.';
+    } else {
+      text = 'About ' + total + ' to download once. Open Hermes 2 on the watch to see whether it is here already.';
+    }
+    if (!up.pkjs && status !== 'ready' && !unsupported) {
+      text += ' Downloads run in the Pebble app while Hermes 2 is open on the watch.';
+    }
+    if (s && !sttLive && s.at && status === 'downloading') text = 'Was downloading ' + ago(s.at) + '. Open Hermes 2 on the watch to carry on.';
+    $('dl-text').textContent = text;
+
+    var canAct = up.pkjs && !unsupported;
+    $('dl-start').hidden = status === 'ready' || status === 'downloading' || unsupported;
+    $('dl-start').disabled = !canAct;
+    $('dl-start').textContent = status === 'error' ? 'Try again' : 'Download now';
+    $('dl-cancel').hidden = status !== 'downloading' || !canAct;
+
+    var phone = cfg.sttMode !== 'pebble';
+    $('mode-hint').textContent = unsupported
+      ? 'This phone uses Pebble dictation whatever is chosen here.'
+      : phone ? 'Recognised on this phone with the model below. Works offline once downloaded.'
+        : 'Recognised by Pebble\'s dictation service. Needs the phone to be online.';
+    $('about-stt').textContent = phone && !unsupported ? model.name + ' (' + chipText.toLowerCase() + ')' : 'Pebble dictation';
+  }
+
+  $('dl-start').addEventListener('click', function () {
+    say('sp-status', '');
+    send('pkjs', { type: 'sttDownload' }).then(function (r) { showStt(r.stt, true); }, function (e) { say('sp-status', errorText(e), 'bad'); });
+  });
+  $('dl-cancel').addEventListener('click', function () {
+    send('pkjs', { type: 'sttCancel' }).then(function (r) { showStt(r.stt, true); }, function (e) { say('sp-status', errorText(e), 'bad'); });
+  });
+
+  // ---- recent, notes, memos --------------------------------------------------------------------
+
+  function showItems(items) {
+    var list = $('items');
+    list.textContent = '';
+    $('items-empty').hidden = items.length > 0;
+    items.forEach(function (item) {
+      var li = document.createElement('li');
+      var top = el('div', 'top');
+      var st = STATES[item.state] || ['State ' + item.state, ''];
+      top.appendChild(chip(st[0], st[1]));
+      top.appendChild(el('span', 'when', (SOURCES[item.src] ? SOURCES[item.src] + ' · ' : '') + ago(item.createdAt)));
+      li.appendChild(top);
+      li.appendChild(el('p', 'q', item.q || '(empty)'));
+      if (item.err && item.state !== 6) li.appendChild(el('p', 'err', item.err));
+      if (item.preview) {
+        var answer = el('p', 'a', item.preview + (item.bytes > item.preview.length + 8 ? ' …' : ''));
+        answer.title = 'Tap to show more';
+        answer.addEventListener('click', function () { answer.classList.toggle('open'); });
+        li.appendChild(answer);
+      }
+      list.appendChild(li);
+    });
+  }
+
+  function b64(text) {
+    var bin = atob(String(text || '').replace(/[^A-Za-z0-9+/=]/g, ''));
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  /**
+   * A note is a byte stream from the watch: x,y pairs on a 120 x 128 grid, 0xFD pen up,
+   * 0xFE a space, 0xFF the end of a character. Returns characters as lists of strokes.
+   */
+  function parseNote(bytes) {
+    var chars = [], strokes = [], stroke = [];
+    function endStroke() { if (stroke.length) strokes.push(stroke); stroke = []; }
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i];
+      if (b === 0xFF) { endStroke(); chars.push(strokes); strokes = []; }
+      else if (b === 0xFE) { endStroke(); if (strokes.length) chars.push(strokes); strokes = []; chars.push(null); }
+      else if (b === 0xFD) endStroke();
+      else if (i + 1 < bytes.length && bytes[i + 1] < 0xF0) { stroke.push([b, bytes[i + 1]]); i++; }
+    }
+    endStroke();
+    if (strokes.length) chars.push(strokes);
+    return chars;
+  }
+
+  function drawNote(canvas, chars) {
+    var width = canvas.parentNode.clientWidth - 24 || 320;
+    var cw = 30, ch = 32, gap = 4, pad = 8;
+    var perRow = Math.max(1, Math.floor((width - pad * 2 + gap) / (cw + gap)));
+    var rows = Math.max(1, Math.ceil(chars.length / perRow));
+    var ratio = window.devicePixelRatio || 1;
+    var height = pad * 2 + rows * ch + (rows - 1) * 8;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    canvas.style.height = height + 'px';
+    var g = canvas.getContext('2d');
+    g.scale(ratio, ratio);
+    g.strokeStyle = '#d9d2c1';
+    g.lineWidth = 1;
+    for (var r = 0; r < rows; r++) {
+      var base = pad + r * (ch + 8) + ch * 0.82;
+      g.beginPath(); g.moveTo(pad, base); g.lineTo(width - pad, base); g.stroke();
+    }
+    g.strokeStyle = '#001e41';
+    g.lineWidth = 2;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    chars.forEach(function (strokes, index) {
+      if (!strokes) return;
+      var x0 = pad + (index % perRow) * (cw + gap);
+      var y0 = pad + Math.floor(index / perRow) * (ch + 8);
+      strokes.forEach(function (points) {
+        g.beginPath();
+        points.forEach(function (p, n) {
+          var x = x0 + p[0] * cw / 120, y = y0 + p[1] * ch / 128;
+          if (n) g.lineTo(x, y); else g.moveTo(x, y);
+        });
+        if (points.length === 1) g.lineTo(x0 + points[0][0] * cw / 120 + 0.1, y0 + points[0][1] * ch / 128);
+        g.stroke();
+      });
+    });
+  }
+
+  function showNotes(notes) {
+    var list = $('note-list');
+    list.textContent = '';
+    $('notes-empty').hidden = notes.length > 0;
+    $('notes-actions').hidden = !notes.length;
+    notes.slice().reverse().forEach(function (note) {
+      var li = document.createElement('li');
+      var chars = [];
+      try { chars = parseNote(b64(note.data)); } catch (e) { /* damaged */ }
+      var letters = chars.filter(function (c) { return c; }).length;
+      var top = el('div', 'top');
+      top.appendChild(el('b', '', letters + (letters === 1 ? ' character' : ' characters')));
+      top.appendChild(el('span', 'when', ago(note.at)));
+      li.appendChild(top);
+      var canvas = el('canvas', 'note');
+      canvas.setAttribute('role', 'img');
+      canvas.setAttribute('aria-label', 'Handwritten note with ' + letters + ' characters');
+      li.appendChild(canvas);
+      list.appendChild(li);
+      drawNote(canvas, chars);
+    });
+  }
+
+  armed($('clear-notes'), 'Tap again to clear notes', function () {
+    send('plugin', { type: 'clearNotes' }).then(function (next) {
+      show(next);
+      say('notes-status', 'Notes cleared from this phone.', 'ok');
+    }, function (e) { say('notes-status', errorText(e), 'bad'); });
+  });
+
+  function showMemos(memos) {
+    var list = $('memo-list');
+    list.textContent = '';
+    $('memos-empty').hidden = memos.length > 0;
+    memos.slice().reverse().forEach(function (memo) {
+      var li = document.createElement('li');
+      var top = el('div', 'top');
+      var st = MEMO_STATES[memo.status] || [memo.status, ''];
+      top.appendChild(chip(st[0], st[1]));
+      top.appendChild(el('span', 'when', (memo.seconds ? memo.seconds + ' s · ' : '') + ago((memo.at || 0) * 1000)));
+      li.appendChild(top);
+      if (memo.text) li.appendChild(el('p', 'a open', memo.text));
+      list.appendChild(li);
+    });
+    var waiting = memos.filter(function (m) { return m.status === 'stored'; }).length;
+    if (waiting && stt && stt.status !== 'ready') {
+      var hint = el('li', '', waiting + (waiting === 1 ? ' memo waits' : ' memos wait') + ' for the speech model. Download it above; they are sent once it is ready and the watch app is open.');
+      hint.style.color = 'var(--muted)';
+      hint.style.fontSize = '14px';
+      list.insertBefore(hint, list.firstChild);
+    }
+  }
+
+  // ---- the whole page --------------------------------------------------------------------------
+
+  function show(next) {
+    snap = next;
+    var c = snap.cfg;
+    if (!connEdited) {
+      $('url').value = c.url || '';
+      $('extra-on').checked = !!c.extraOn;
+      $('extra-fields').hidden = !c.extraOn;
+      $('extra-name').value = c.extraName || '';
+    }
+    showSecrets();
+
+    $('brief').checked = !!c.brief;
+    $('idle').value = String(c.idleHours || 0);
+    if ($('idle').selectedIndex < 0) $('idle').value = '4';
+    var conv = snap.conv || {};
+    $('conv-line').textContent = conv.active
+      ? 'Current conversation: ' + conv.turns + (conv.turns === 1 ? ' question' : ' questions') +
+        (conv.idleMin >= 0 ? ', last one ' + (conv.idleMin < 1 ? 'just now' : conv.idleMin < 120 ? conv.idleMin + ' min ago' : Math.floor(conv.idleMin / 60) + ' h ago') : '') + '.'
+      : 'No conversation in progress. The next question starts one.';
+
+    Array.prototype.forEach.call(document.querySelectorAll('input[name=mode]'), function (r) { r.checked = r.value === (c.sttMode === 'pebble' ? 'pebble' : 'phone'); });
+    Array.prototype.forEach.call(document.querySelectorAll('input[name=model]'), function (r) { r.checked = r.value === modelById(c.sttModel).id; });
+    markChecked();
+    $('lang').value = c.sttLanguage || '';
+    $('autostop').checked = c.autoStop !== false;
+    $('phone-opts').hidden = c.sttMode === 'pebble';
+    $('lang-field').hidden = !modelById(c.sttModel).multilingual;
+    if (!sttLive && snap.stt) stt = snap.stt;
+    showStt(null);
+
+    showItems(snap.items || []);
+    showNotes(snap.notes || []);
+    showMemos(snap.memos || []);
+
+    var ready = !!(c.url && snap.hasKey);
+    $('ready-chip').textContent = ready ? 'Ready' : 'Set up';
+    $('ready-chip').className = 'chip ' + (ready ? 'ok' : 'wait');
+    var host = /^[a-z]+:\/\/([^/:?#]+)/i.exec(c.url || '');
+    $('about-host').textContent = host ? host[1] : 'Not set';
+    if (!ready) banner('Enter your Hermes URL and API key below, then Save and Test connection.');
+    else banner('');
+  }
+
+  function load() {
+    return send('plugin', { type: 'load' }).then(show, function (e) {
+      banner('Could not read the settings: ' + errorText(e), true);
+    });
+  }
+
+  $('reload').addEventListener('click', function () {
+    load().then(function () { toast('Up to date'); });
+    if (up.pkjs) send('pkjs', { type: 'refresh' }).then(function (r) { if (r.stt) showStt(r.stt, true); }, function () {});
+  });
+
+  function targetUp(target) {
+    if (up[target]) return;
+    up[target] = true;
+    if (target === 'plugin') {
+      clearTimeout(slowTimer);
+      load();
+    } else {
+      send('pkjs', { type: 'refresh' }).then(function (r) { if (r.stt) showStt(r.stt, true); }, function () {});
+      if (snap) showStt(null);
+    }
+  }
+
+  $('version').textContent = VERSION;
+  buildModels();
+
+  if (typeof Pebble === 'undefined' || !Pebble.sendMessage) {
+    banner('Open this page from the Hermes 2 settings in the Pebble app.', true);
+    return;
+  }
+  var slowTimer = setTimeout(function () {
+    if (!up.plugin) banner('The Hermes plugin has not started. In the Pebble app, turn on Plugins (Settings → Plugins) and allow Hermes 2 its permissions, then open this page again.', true);
+  }, 8000);
+
+  Pebble.addEventListener('ready', function (event) { if (event && event.target) targetUp(event.target); });
+  Pebble.addEventListener('message', function (event) {
+    var data = event && event.data;
+    if (data && data.type === 'stt' && data.stt) showStt(data.stt, true);
+  });
+  if (typeof Pebble.readyTargets === 'function') {
+    (Pebble.readyTargets() || []).forEach(targetUp);
+  }
+})();
+</script>
+</body>
+</html>

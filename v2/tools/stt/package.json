@@ -1,0 +1,14 @@
+{
+  "name": "hermes-pebble-stt-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Builds the on-phone speech engine that the PebbleKit JS side evals at runtime.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "4.3.2",
+    "esbuild": "0.28.2",
+    "playwright-core": "^1.65.0"
+  }
+}

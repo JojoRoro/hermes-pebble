@@ -1,0 +1,143 @@
+{
+  "name": "hermes-pebble-v2",
+  "author": "Hermes Pebble",
+  "version": "2.0.0",
+  "private": true,
+  "keywords": [
+    "pebble-app"
+  ],
+  "scripts": {
+    "engine": "npm --prefix tools/stt ci --ignore-scripts && npm --prefix tools/stt run build",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Hermes 2",
+    "uuid": "16f5cba8-2d99-4173-9e41-6d19458e1b5a",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": [
+      "configurable"
+    ],
+    "messageKeys": [
+      "op",
+      "rid",
+      "a",
+      "b",
+      "c",
+      "txt",
+      "txt2",
+      "bin"
+    ],
+    "resources": {
+      "media": []
+    },
+    "configPage": "src/config.html",
+    "usesPermissions": [
+      {
+        "name": "WatchMicrophone",
+        "reason": "To hear your question and record voice memos",
+        "required": true
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "huggingface.co",
+            "hf.co",
+            "cdn.jsdelivr.net"
+          ]
+        },
+        "reason": "To download the offline speech model once",
+        "required": false
+      }
+    ],
+    "plugin": {
+      "description": "Sends messages to your own Hermes Agent server. Use send_to_agent to hand Hermes a task or question; the answer appears in the Hermes app on the watch.",
+      "script": "src/plugin/index.js",
+      "sources": [
+        {
+          "category": "agent",
+          "items": [
+            "configured"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "configured": [
+              "boolean",
+              "shortText"
+            ]
+          },
+          "supportsMultiple": false,
+          "suggestedRefreshIntervalSec": 60
+        },
+        {
+          "category": "agent",
+          "items": [
+            "chats"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "title": [
+              "shortText",
+              "longText"
+            ]
+          },
+          "supportsMultiple": true,
+          "suggestedRefreshIntervalSec": 300
+        }
+      ],
+      "actions": [
+        {
+          "name": "send_to_agent",
+          "description": "Send a message to the user's Hermes Agent. It starts working at once and may take minutes; the reply is read in the Hermes watch app, not returned here.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "What to tell or ask Hermes."
+              },
+              "chat_id": {
+                "type": "string",
+                "description": "\"current\" to continue the conversation, \"new\" to start a fresh one. Defaults to current."
+              }
+            },
+            "required": [
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "watch_rpc",
+          "description": "Internal bridge for the Hermes watch app. Not for assistants or other apps.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

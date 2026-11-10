@@ -1,0 +1,96 @@
+name: Hermes 2 watchapp
+
+# Builds the plugin-based v2 app (v2/) on every push to main. v1 keeps its own
+# tag-driven workflow in android.yml; the two never share tags or artifacts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2.yml"
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build v2 PBW
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Read version
+        id: meta
+        working-directory: v2
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Build speech engine
+        working-directory: v2
+        run: npm run engine
+      - name: Phone-side tests
+        working-directory: v2
+        run: npm test
+      - name: Install Pebble SDK
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pebble-tools"
+          "$RUNNER_TEMP/pebble-tools/bin/pip" install pebble-tool==5.1.2
+          echo "$RUNNER_TEMP/pebble-tools/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk install 4.44
+          "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk activate 4.44
+      - name: Build
+        working-directory: v2
+        run: |
+          pebble build
+          cp build/v2.pbw "build/hermes-pebble-v2-${{ steps.meta.outputs.version }}.pbw"
+      - name: Upload PBW
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hermes-pebble-v2
+          path: v2/build/hermes-pebble-v2-*.pbw
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish v2 PBW
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: v2-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: pebble2-${{ needs.build.outputs.version }}
+    steps:
+      - name: Download PBW
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hermes-pebble-v2
+          path: dist
+      - name: Publish once per version
+        run: |
+          # Release tags are never moved: a version that is already published is left alone.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; bump v2/package.json to publish a new one."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" dist/*.pbw \
+            --target "$GITHUB_SHA" \
+            --title "Hermes 2 for Pebble ${RELEASE_TAG#pebble2-}" \
+            --notes "Plugin-based watchapp for Pebble Time 2 (no Android companion). Sideload the .pbw with the Pebble app; see v2/README.md." \
+            --prerelease
