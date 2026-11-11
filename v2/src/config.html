@@ -327,7 +327,7 @@
   <!-- Memos ----------------------------------------------------------------------------------->
   <section id="memos" aria-labelledby="h-memos">
     <h2 id="h-memos">Voice memos</h2>
-    <p class="lead">Memos come over while the Hermes app is open on the watch, are turned into text here with the speech model, and go to Hermes as a message.</p>
+    <p class="lead">Memos come over while the Hermes app is open on the watch, are turned into text here with the speech model, and go to Hermes as a message. The newest ones can be played here while Hermes 2 is open on the watch.</p>
     <ul class="list" id="memo-list"></ul>
     <p class="empty" id="memos-empty" hidden>No memos yet.</p>
   </section>
@@ -350,7 +350,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.0.0';
+  var VERSION = '2.0.1';
   // A copy of src/pkjs/stt_catalog.json (and the runtime size from stt_engine.json): this page has
   // to work before the watch app's JavaScript has ever run. test/config.test.mjs keeps it in step.
   var RUNTIME_BYTES = 14264838;
@@ -375,7 +375,7 @@
   var SOURCES = { watch: 'From the watch', index: 'From Index', memo: 'Voice memo' };
   var MEMO_STATES = {
     stored: ['Waiting for the speech model', 'wait'], transcribed: ['Transcribed', 'wait'],
-    sent: ['Sent to Hermes', 'ok'], empty: ['Nothing heard', ''], lost: ['Audio lost', 'bad']
+    sent: ['Sent to Hermes', 'ok'], empty: ['No speech found', 'bad'], lost: ['Audio lost', 'bad']
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -861,6 +861,35 @@
       top.appendChild(el('span', 'when', (memo.seconds ? memo.seconds + ' s · ' : '') + ago((memo.at || 0) * 1000)));
       li.appendChild(top);
       if (memo.text) li.appendChild(el('p', 'a open', memo.text));
+      if (memo.status === 'empty') {
+        li.appendChild(el('p', 'err', 'The speech model found no words in this memo.' +
+          (memo.speechDb !== undefined && memo.speechDb < -60 ? ' It is very quiet: the microphone may have been covered.' : '') +
+          ' Play it to check. Transcribe again runs the model on all of it, even if it sounds silent.'));
+      }
+      var hasAudio = memo.audio || (memo.audio === undefined && memo.status === 'stored');
+      if (hasAudio) {
+        var actions = el('div', 'row');
+        actions.style.marginTop = '10px';
+        var play = el('button', 'quiet', 'Play');
+        play.type = 'button';
+        play.addEventListener('click', function () { playMemo(memo.id, play); });
+        actions.appendChild(play);
+        if (memo.status === 'empty') {
+          var again = el('button', 'quiet', 'Transcribe again');
+          again.type = 'button';
+          again.addEventListener('click', function () {
+            again.disabled = true;
+            send('pkjs', { type: 'memoRetry', id: memo.id }).then(function () {
+              toast('Transcribing the memo again');
+            }, function (e) {
+              again.disabled = false;
+              toast(errorText(e), true);
+            });
+          });
+          actions.appendChild(again);
+        }
+        li.appendChild(actions);
+      }
       list.appendChild(li);
     });
     var waiting = memos.filter(function (m) { return m.status === 'stored'; }).length;
@@ -870,6 +899,35 @@
       hint.style.fontSize = '14px';
       list.insertBefore(hint, list.firstChild);
     }
+  }
+
+  // Memo audio lives with PebbleKit JS, which runs while Hermes 2 is open on the watch.
+  var player = null;
+  function playMemo(id, button) {
+    if (player && player.memo === id && !player.audio.paused) {
+      player.audio.pause();
+      button.textContent = 'Play';
+      return;
+    }
+    if (player) { player.audio.pause(); if (player.button) player.button.textContent = 'Play'; }
+    button.disabled = true;
+    button.textContent = 'Loading…';
+    var late = new Promise(function (resolve, reject) {
+      setTimeout(function () { reject(new Error('The phone did not send the audio. Is Hermes 2 still open on the watch?')); }, 35000);
+    });
+    Promise.race([send('pkjs', { type: 'memoAudio', id: id }), late]).then(function (reply) {
+      button.disabled = false;
+      if (!reply.wav) throw new Error(reply.error || 'No audio came back.');
+      var audio = new Audio('data:audio/wav;base64,' + reply.wav);
+      player = { memo: id, audio: audio, button: button };
+      audio.addEventListener('ended', function () { button.textContent = 'Play'; });
+      button.textContent = 'Pause';
+      return audio.play();
+    }).catch(function (e) {
+      button.disabled = false;
+      button.textContent = 'Play';
+      toast(errorText(e), true);
+    });
   }
 
   // ---- the whole page --------------------------------------------------------------------------
@@ -955,6 +1013,11 @@
   Pebble.addEventListener('message', function (event) {
     var data = event && event.data;
     if (data && data.type === 'stt' && data.stt) showStt(data.stt, true);
+    if (data && data.type === 'memos' && data.memos) {
+      if (snap) snap.memos = data.memos;
+      // A memo playing keeps playing; only its row is redrawn.
+      showMemos(data.memos);
+    }
   });
   if (typeof Pebble.readyTargets === 'function') {
     (Pebble.readyTargets() || []).forEach(targetUp);

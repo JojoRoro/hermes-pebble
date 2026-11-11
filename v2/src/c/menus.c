@@ -240,7 +240,7 @@ static void settings_row(int index, ListRow *row) {
       break;
     case SET_ABOUT:
       snprintf(row->title, sizeof(row->title), "Hermes 2");
-      snprintf(row->sub, sizeof(row->sub), "Version 2.0.0");
+      snprintf(row->sub, sizeof(row->sub), "Version 2.0.1");
       break;
   }
 }

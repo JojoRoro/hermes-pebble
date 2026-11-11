@@ -15,7 +15,10 @@ What it does:
 - Answers are cleaned of Markdown and characters the watch fonts cannot draw, and are paged to
   the watch only as you read. The last three items can be reopened.
 - Voice memos recorded to the watch's flash, transcribed on the phone and sent to Hermes as a
-  message.
+  message. The recorder says beside each button what it does (Send to Hermes, Keep on watch) and
+  confirms what happened. Memos still on the watch play on its speaker; the newest twelve that
+  reached the phone can be played on the settings page while the watch app is open, and one in
+  which no words were found can be transcribed again.
 - Handwritten notes drawn on the touch screen, kept on the phone and viewable on the settings
   page. They are not recognised or sent to Hermes.
 - Other apps and assistants on the phone can hand Hermes a task through the plugin's
@@ -54,6 +57,14 @@ Hermes Agent API  (/health, /v1/models, /v1/runs)
   (`src/pkjs/stt_catalog.json`) and the WASM runtime are downloaded once from Hugging Face and
   jsDelivr at pinned revisions, each checked against its SHA-256, and cached in IndexedDB. Where that
   cannot run, or if you choose it, the watch uses standard Pebble dictation instead.
+- **Audio levels**: the watch microphone is quiet (normal speech is around -50 dBFS), has a DC
+  offset, and the button presses that start and stop a recording click far louder than the words.
+  The watch boosts memo audio 4x behind a half-band filter before 4-bit ADPCM coding. The phone
+  removes DC and rumble, mutes the button presses, sets one gain from the speech level (up to
+  128x) and holds clicks down before the model hears it (`cleanSpeech` in `lib.js`, after the v1
+  companion's tuning on real watches). The voice detector only decides when to stop listening; the
+  model decides whether anything was said. Memos are transcribed in 20-second pieces, and a
+  question being asked goes ahead of memo transcription.
 
 ## Setup
 

@@ -88,7 +88,8 @@ const seed = {
   ],
   'hp2.memos': [
     { id: 21, at: Math.floor(now / 1000) - 7200, seconds: 14, status: 'sent', text: 'Remember to call the garage about the brakes before Thursday.' },
-    { id: 22, at: Math.floor(now / 1000) - 600, seconds: 6, status: 'stored', text: '' },
+    { id: 22, at: Math.floor(now / 1000) - 600, seconds: 6, status: 'stored', text: '', audio: true },
+    { id: 23, at: Math.floor(now / 1000) - 300, seconds: 4, status: 'empty', text: '', audio: true, speechDb: -64 },
   ],
   'hp2.stt': { supported: true, model: 'moonshine-tiny', name: 'Moonshine Tiny', bytes: 46344470, status: 'missing', percent: 0, error: '', at: now - 3600000 },
 };
@@ -110,8 +111,24 @@ function stub({ seed, pkjs, pluginSource }) {
   let timer = null;
   window.__log = [];
 
+  // A short tone as a WAV, standing in for a memo's audio.
+  function toneWav() {
+    const n = 4000, bytes = new Uint8Array(44 + n * 2), v = new DataView(bytes.buffer);
+    const put = (at, s) => { for (let i = 0; i < s.length; i++) bytes[at + i] = s.charCodeAt(i); };
+    put(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); put(8, 'WAVE'); put(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true);
+    v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); put(36, 'data');
+    v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + 2 * i, Math.round(8000 * Math.sin(i * 2 * Math.PI * 440 / 8000)), true);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
   function pkjsReply(message) {
     window.__log.push(['pkjs', message.type]);
+    if (message.type === 'memoAudio') return message.id === 22 || message.id === 23 ? { id: message.id, wav: toneWav() } : { error: 'gone' };
+    if (message.type === 'memoRetry') return { ok: true };
     const cfg = JSON.parse(localStorage.getItem('hp2.cfg') || '{}');
     if (message.type === 'refresh' && cfg.sttModel && cfg.sttModel !== sttState.model) {
       clearInterval(timer);
@@ -268,6 +285,17 @@ try {
     });
     check(inked > 200, 'note strokes are drawn (' + inked + ' ink pixels)');
     check((await text(page, '#memo-list')).includes('Sent to Hermes'), 'memo status shown');
+    check((await text(page, '#memo-list')).includes('No speech found'), 'a memo with no words found says so');
+    check((await text(page, '#memo-list')).includes('very quiet'), 'and that it is very quiet');
+    check((await page.locator('#memo-list button', { hasText: 'Play' }).count()) === 2, 'memos with audio can be played');
+    await page.locator('#memo-list li', { hasText: 'No speech found' }).locator('button', { hasText: 'Play' }).click();
+    await page.waitForTimeout(300);
+    check(await page.evaluate(() => window.__log.some((e) => e[0] === 'pkjs' && e[1] === 'memoAudio')), 'play asks PebbleKit JS for the audio');
+    check((await page.locator('#memo-list button', { hasText: 'Pause' }).count()) === 1, 'the memo plays');
+    await page.locator('#memo-list button', { hasText: 'Pause' }).click();
+    await page.locator('#memo-list button', { hasText: 'Transcribe again' }).click();
+    await page.waitForTimeout(100);
+    check(await page.evaluate(() => window.__log.some((e) => e[0] === 'pkjs' && e[1] === 'memoRetry')), 'transcribe again asks PebbleKit JS');
     check((await text(page, '#conv-line')).includes('3 questions'), 'conversation line');
     check(!(await page.locator('#dl-start').isDisabled()), 'download possible with the watch app open');
     await page.waitForTimeout(2600);    // let the 'Up to date' toast go

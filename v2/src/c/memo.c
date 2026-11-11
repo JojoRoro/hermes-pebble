@@ -109,8 +109,19 @@ static int8_t s_erase_slot = -1;   // the slot being erased now; the cursor belo
 static uint32_t s_erase_block;
 static AppTimer *s_erase_timer;
 
+static bool s_recording;
+
+#define ERASE_TICK_MS 100
+#define ERASE_PER_TICK 6
+
 static void erase_step(void *data) {
   s_erase_timer = NULL;
+  // Every storage call scans all of the app's records on the app task, which also drains the
+  // microphone: while recording, erasing waits, or the recording would lose audio.
+  if (s_recording) {
+    s_erase_timer = app_timer_register(500, erase_step, NULL);
+    return;
+  }
   if (s_erase_slot < 0) {
     // Finish one slot before starting the next, or the cursor would skip blocks.
     for (uint8_t slot = 0; slot < MEMO_MAX; slot++) {
@@ -122,7 +133,7 @@ static void erase_step(void *data) {
     }
   }
   if (s_erase_slot >= 0) {
-    for (int n = 0; n < 40; n++) {
+    for (int n = 0; n < ERASE_PER_TICK; n++) {
       const uint32_t key = audio_key((uint8_t)s_erase_slot, s_erase_block);
       if (!persist_exists(key)) {
         s_erase_slots &= ~(1 << s_erase_slot);
@@ -133,12 +144,12 @@ static void erase_step(void *data) {
       s_erase_block++;
     }
   }
-  if (s_erase_slots) s_erase_timer = app_timer_register(40, erase_step, NULL);
+  if (s_erase_slots) s_erase_timer = app_timer_register(ERASE_TICK_MS, erase_step, NULL);
 }
 
 static void erase_audio(uint8_t slot) {
   s_erase_slots |= 1 << slot;
-  if (!s_erase_timer) s_erase_timer = app_timer_register(40, erase_step, NULL);
+  if (!s_erase_timer) s_erase_timer = app_timer_register(ERASE_TICK_MS, erase_step, NULL);
 }
 
 static bool slot_busy(uint8_t slot) {
@@ -151,8 +162,15 @@ static bool slot_busy(uint8_t slot) {
 
 // ---- recording -----------------------------------------------------------------------------
 
-static bool s_recording;
+// The microphone is quiet: normal speech sits near ADPCM's smallest steps, where 4-bit coding
+// loses it. Like dictation, the watch boosts it first; only button clicks then saturate.
+#define INPUT_GAIN 4
+#define FILTER_TAPS 7
+
 static Memo s_new;
+static int16_t s_hist[FILTER_TAPS];
+static uint8_t s_hist_filled;
+static bool s_odd;
 static Adpcm s_enc;
 static uint8_t s_block[BLOCK];
 static uint16_t s_block_len;
@@ -172,11 +190,23 @@ static void flush_block(void) {
 
 static void captured(const int16_t *samples, size_t count, void *context) {
   if (!s_recording) return;
-  int32_t peak = 0;
-  // 16 kHz in, 8 kHz kept: each pair of samples becomes one.
-  for (size_t i = 0; i + 1 < count; i += 2) {
-    const int16_t sample = (int16_t)(((int32_t)samples[i] + samples[i + 1]) / 2);
-    const int32_t level = sample < 0 ? -sample : sample;
+  int32_t peak = 0, sum = 0;
+  for (size_t i = 0; i < count; i++) sum += samples[i];
+  const int32_t mean = count ? sum / (int32_t)count : 0;
+  for (size_t i = 0; i < count; i++) {
+    // 16 kHz in, 8 kHz kept, through a half-band low-pass (-1 0 9 16 9 0 -1)/32 so what is
+    // above 4 kHz does not fold back into the speech.
+    memmove(&s_hist[1], &s_hist[0], (FILTER_TAPS - 1) * sizeof(int16_t));
+    s_hist[0] = samples[i];
+    if (s_hist_filled < FILTER_TAPS) s_hist_filled++;
+    s_odd = !s_odd;
+    if (s_hist_filled < FILTER_TAPS || !s_odd) continue;
+    const int16_t *h = s_hist;
+    int32_t y = 16 * (int32_t)h[3] + 9 * ((int32_t)h[2] + h[4]) - ((int32_t)h[0] + h[6]);
+    y = y * INPUT_GAIN / 32;
+    const int16_t sample = (int16_t)(y > 32767 ? 32767 : y < -32768 ? -32768 : y);
+    // The meter ignores the microphone's DC offset.
+    const int32_t level = samples[i] > mean ? samples[i] - mean : mean - samples[i];
     if (level > peak) peak = level;
     const uint8_t code = adpcm_encode(&s_enc, sample);
     if (!s_have_nibble) {
@@ -188,7 +218,8 @@ static void captured(const int16_t *samples, size_t count, void *context) {
       if (s_block_len == BLOCK) flush_block();
     }
   }
-  s_level = (uint16_t)(peak * 100 / 32768);
+  // Speech peaks at a few percent of full scale: the meter shows it at that size.
+  s_level = (uint16_t)(peak * INPUT_GAIN * 100 / 32768);
   if (s_new.bytes + s_block_len >= (uint32_t)MEMO_MAX_SECONDS * MEMO_BYTES_PER_SECOND) {
     s_recording = false;       // full: the screen notices and wraps up
   }
@@ -212,6 +243,9 @@ bool memo_record_start(void) {
   s_block_no = 0;
   s_have_nibble = false;
   s_level = 0;
+  memset(s_hist, 0, sizeof(s_hist));
+  s_hist_filled = 0;
+  s_odd = false;
   const MicCaptureStartResult result = mic_capture_start(
       (MicCaptureHandlers){ .data = captured, .stopped = capture_stopped }, NULL);
   if (result != MicCaptureStartOk) {
@@ -272,6 +306,14 @@ static AppTimer *s_play_timer;
 static int16_t s_pcm[BLOCK * 2];
 static uint16_t s_pcm_len, s_pcm_pos;       // bytes
 static uint8_t s_play_stalled;              // feeds in a row the speaker took nothing
+static uint32_t s_play_samples;             // decoded so far
+static int32_t s_hp_in, s_hp_out;           // high-pass state
+static int32_t s_play_level;                // recent peak, for the gain
+
+#define PLAY_LEAD_MUTE 2400                 // 300 ms: the press that started the recording
+#define PLAY_TARGET 20000
+#define PLAY_FLOOR 300                      // below this, pauses: no more gain
+#define PLAY_MAX_GAIN_Q8 (12 * 256)
 
 #define PLAY_FEED_MS 40
 #define PLAY_STALL_FEEDS 75                 // three seconds without progress: give up
@@ -313,12 +355,36 @@ static void play_feed(void *data) {
       return;
     }
     const int got = persist_read_data(audio_key(s_play_slot, s_play_block++), s_block, BLOCK);
+    if (got <= 0) {
+      // The audio is gone from flash: end here.
+      speaker_stream_close();
+      play_ended();
+      return;
+    }
     s_pcm_len = 0;
     s_pcm_pos = 0;
-    for (int i = 0; i < got; i++) {
-      s_pcm[s_pcm_len / 2] = adpcm_decode(&s_dec, s_block[i] & 15);
-      s_pcm[s_pcm_len / 2 + 1] = adpcm_decode(&s_dec, s_block[i] >> 4);
-      s_pcm_len += 4;
+    int32_t peak = 0;
+    for (int i = 0; i < got * 2; i++) {
+      const int32_t x = adpcm_decode(&s_dec, i & 1 ? s_block[i / 2] >> 4 : s_block[i / 2] & 15);
+      // DC and rumble out: y = x - x' + 0.94 y'.
+      s_hp_out = x - s_hp_in + (s_hp_out * 30802 >> 15);
+      s_hp_in = x;
+      int32_t y = s_play_samples++ < PLAY_LEAD_MUTE ? 0 : s_hp_out;
+      y = y > 32767 ? 32767 : y < -32768 ? -32768 : y;
+      s_pcm[i] = (int16_t)y;
+      if (y < 0) y = -y;
+      if (y > peak) peak = y;
+    }
+    s_pcm_len = (uint16_t)(got * 4);
+    // One gain per block, from the recent peak level: quiet speech becomes audible, loud stays.
+    s_play_level = peak > s_play_level ? peak : s_play_level - s_play_level / 8;
+    const int32_t level = s_play_level > PLAY_FLOOR ? s_play_level : PLAY_FLOOR;
+    int32_t gain = PLAY_TARGET * 256 / level;
+    if (gain > PLAY_MAX_GAIN_Q8) gain = PLAY_MAX_GAIN_Q8;
+    if (gain < 256) gain = 256;
+    for (int i = 0; i < got * 2; i++) {
+      const int32_t v = s_pcm[i] * gain >> 8;
+      s_pcm[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
     }
   }
   s_play_timer = app_timer_register(PLAY_FEED_MS, play_feed, NULL);
@@ -336,6 +402,9 @@ bool memo_play(int32_t id) {
   s_play_blocks = (m->bytes + BLOCK - 1) / BLOCK;
   s_pcm_len = s_pcm_pos = 0;
   s_play_stalled = 0;
+  s_play_samples = 0;
+  s_hp_in = s_hp_out = 0;
+  s_play_level = 0;
   memset(&s_dec, 0, sizeof(s_dec));
   speaker_set_finish_callback(play_finished, NULL);
   play_feed(NULL);

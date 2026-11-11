@@ -323,6 +323,11 @@ function gather(chunks, maxSamples) {
   return out;
 }
 
+/** The live audio, cleaned for the model: DC, rumble and the closing button press gone, gain set. */
+function liveAudio(s, maxSamples) {
+  return lib.cleanSpeech(gather(s.chunks, maxSamples), 16000, { tailMs: s.done ? 150 : 0 });
+}
+
 function maybePartial(s) {
   if (s.busy || s.done || s.cancelled || !s.vad.heard || !stt.isLoaded()) return;
   // Leave the phone room to breathe: wait for new audio worth at least the last run's cost.
@@ -331,11 +336,12 @@ function maybePartial(s) {
   s.busy = true;
   s.partialAt = s.samples;
   var started = Date.now();
-  stt.transcribe(gather(s.chunks, 25 * 16000)).then(function (text) {
+  stt.transcribe(liveAudio(s, 20 * 16000).samples).then(function (raw) {
     s.busy = false;
     s.lastCost = Date.now() - started;
     if (s !== session || s.cancelled) return;
     if (s.done) { finalize(s); return; }
+    var text = lib.cleanTranscript(raw);
     if (text) send(P.PARTIAL, { txt: lib.clipBytes(text, lib.TEXT_BYTES) }, 'partial');
     maybePartial(s);
   }, function () {
@@ -344,41 +350,83 @@ function maybePartial(s) {
   });
 }
 
-function finalize(s) {
-  if (s.cancelled || s.finalized) return;
-  s.finalized = true;
-  if (!s.vad.heard || s.samples < 4800) {
-    send(P.FINAL, { a: 1, txt: '' });
-    return;
-  }
-  if (!stt.usable()) {
-    send(P.FINAL, { a: 2, txt: '' });
-    return;
-  }
-  var parts = lib.splitForModel(gather(s.chunks), 25);
+/** Resolves once no question is being listened to or transcribed. */
+function liveIdle() {
+  return new Promise(function (resolve) {
+    var check = function () { if (liveBusy()) setTimeout(check, 300); else resolve(); };
+    check();
+  });
+}
+
+/**
+ * Transcribes cleaned 16 kHz audio in pieces the model handles well. In the background (memos)
+ * it lets a question being asked go first between pieces.
+ */
+function transcribeAll(samples, background) {
+  var parts = lib.splitForModel(samples, MODEL_SECONDS);
   var texts = [];
   var step = function (index) {
-    if (index >= parts.length) return Promise.resolve();
-    return stt.transcribe(parts[index]).then(function (text) {
+    if (index >= parts.length) return Promise.resolve(texts.join(' ').trim());
+    var ready = background ? liveIdle() : Promise.resolve();
+    return ready.then(function () { return stt.transcribe(parts[index]); }).then(function (raw) {
+      var text = lib.cleanTranscript(raw);
       if (text) texts.push(text);
       return step(index + 1);
     });
   };
-  step(0).then(function () {
+  return step(0);
+}
+
+function liveBusy() {
+  if (!session || session.cancelled) return false;
+  // A stream whose end never arrived must not hold the memos up for good.
+  if (!session.finalized && Date.now() - session.startedAt > 120000) return false;
+  return !session.finalized || !!session.transcribing;
+}
+
+function finalize(s) {
+  if (s.cancelled || s.finalized) return;
+  s.finalized = true;
+  s.transcribing = true;
+  var settle = function () {
+    s.transcribing = false;
+    setTimeout(processMemos, 0);
+  };
+  // The voice detector only decides when to stop listening, never whether to transcribe: a quiet
+  // microphone can fool it, and the model is the better judge of whether anything was said.
+  if (s.samples < 4800) {
+    send(P.FINAL, { a: 1, txt: '' });
+    settle();
+    return;
+  }
+  if (!stt.usable()) {
+    send(P.FINAL, { a: 2, txt: '' });
+    settle();
+    return;
+  }
+  var audio = liveAudio(s);
+  console.log('listen: ' + (s.samples / 16000).toFixed(1) + ' s, speech ' + lib.dbfs(audio.speech) +
+    ' dBFS, floor ' + lib.dbfs(audio.floor) + ' dBFS, gain ' + audio.gain.toFixed(1) +
+    ', voice ' + (s.vad.heard ? 'heard' : 'not heard'));
+  transcribeAll(audio.samples).then(function (text) {
+    settle();
     if (s.cancelled) return;
-    var text = texts.join(' ').trim();
     send(P.FINAL, { a: text ? 0 : 1, txt: lib.clipBytes(text, lib.TEXT_BYTES) });
   }, function (e) {
+    settle();
     console.log('transcription failed: ' + ((e && e.message) || e));
     if (!s.cancelled) send(P.FINAL, { a: 2, txt: '' });
   });
 }
 
-Pebble.addEventListener('audiostreamstart', function () {
+Pebble.addEventListener('audiostreamstart', function (e) {
+  var rate = (e && Number(e.sampleRate)) || 16000;
   session = {
     chunks: [], samples: 0, partialAt: 0, lastCost: 0, busy: false, done: false,
-    cancelled: dropNext, finalized: false, vadSent: false,
+    cancelled: dropNext, finalized: false, vadSent: false, startedAt: Date.now(),
     vad: new lib.Vad({ pauseMs: 1600 }),
+    // The models want 16 kHz; the phone says what the watch sends.
+    resampler: rate !== 16000 ? new lib.Resampler(rate, 16000) : null,
   };
   dropNext = false;
   if (stt.usable()) stt.ensureLoaded().catch(function () {});
@@ -390,6 +438,7 @@ Pebble.addEventListener('audiostream', function (e) {
   var pcm = new Int16Array(e.data);
   var samples = new Float32Array(pcm.length);
   for (var i = 0; i < pcm.length; i++) samples[i] = pcm[i] / 32768;
+  if (s.resampler) samples = s.resampler.feed(samples);
   s.chunks.push(samples);
   s.samples += samples.length;
   s.vad.feed(samples);
@@ -414,6 +463,7 @@ function onListen(m) {
     if (stt.usable()) stt.ensureLoaded().catch(function () {});
   } else if (session && !session.finalized) {
     session.cancelled = true;
+    setTimeout(processMemos, 0);
   } else {
     dropNext = !session || session.done;
   }
@@ -423,6 +473,9 @@ function onListen(m) {
 
 var incoming = null;               // the memo being received
 var memoBusy = false;
+var MODEL_SECONDS = 20;            // the models are most reliable on pieces of 20 s or less
+// Memo audio is kept after transcription so it can be played from the settings page.
+var KEEP_AUDIO = Stt.supported() ? 12 : 3;
 
 function memoList() { return readJson('hp2.memos', []); }
 
@@ -450,12 +503,39 @@ function dropMemoAudio(id) {
   return Promise.resolve();
 }
 
+var DONE_MEMO = { sent: true, transcribed: true, empty: true };
+
+function saveMemos(list) {
+  // Only the newest memos keep their audio; older ones keep their text. A memo still waiting to be
+  // transcribed always keeps it: the watch let go of its copy when the phone took it.
+  var withAudio = list.filter(function (m) { return m.audio && DONE_MEMO[m.status]; });
+  withAudio.slice(0, Math.max(0, withAudio.length - KEEP_AUDIO)).forEach(function (m) {
+    m.audio = false;
+    dropMemoAudio(m.id);
+  });
+  // Past 20, the oldest finished memos go; waiting ones stay.
+  var extra = Math.max(0, list.length - 20);
+  var kept = list.filter(function (m) {
+    if (extra > 0 && DONE_MEMO[m.status]) {
+      extra--;
+      if (m.audio) dropMemoAudio(m.id);
+      return false;
+    }
+    return true;
+  });
+  writeJson('hp2.memos', kept);
+  // The settings page, if it is open, shows the change.
+  if (typeof Pebble.sendConfigMessage === 'function') {
+    try { Pebble.sendConfigMessage({ type: 'memos', memos: memoList() }); } catch (e) { /* no page */ }
+  }
+}
+
 function updateMemo(id, changes) {
   var list = memoList();
   list.forEach(function (memo) {
     if (memo.id === id) Object.keys(changes).forEach(function (k) { memo[k] = changes[k]; });
   });
-  writeJson('hp2.memos', list.slice(-20));
+  saveMemos(list);
 }
 
 function memoTime(seconds) {
@@ -467,30 +547,40 @@ function memoTime(seconds) {
 
 /** Turns stored memos into text and hands them to Hermes, oldest first. */
 function processMemos() {
-  if (memoBusy || !stt.usable()) return;
+  // A question being asked goes first: the model runs one thing at a time.
+  if (memoBusy || !stt.usable() || liveBusy()) return;
   var memo = memoList().filter(function (m) { return m.status === 'stored'; })[0];
   if (!memo) return;
   memoBusy = true;
   loadMemoAudio(memo.id).then(function (bytes) {
     if (!bytes) {
-      updateMemo(memo.id, { status: 'lost' });
+      updateMemo(memo.id, { status: 'lost', audio: false });
       return null;
     }
-    var parts = lib.splitForModel(lib.memoToFloat16k(bytes), 25);
-    var texts = [];
-    var step = function (index) {
-      if (index >= parts.length) return Promise.resolve(texts.join(' ').trim());
-      return stt.transcribe(parts[index]).then(function (text) {
-        if (text) texts.push(text);
-        return step(index + 1);
-      });
-    };
-    return step(0).then(function (text) {
+    // Tried again by hand: the button presses are not muted, in case words were under them.
+    var audio = memo.retry ? lib.memoForSpeech(bytes, { leadMs: 0, tailMs: 0 }) : lib.memoForSpeech(bytes);
+    var levels = { speechDb: lib.dbfs(audio.speech), floorDb: lib.dbfs(audio.floor), retry: false };
+    console.log('memo ' + memo.id + ': speech ' + levels.speechDb + ' dBFS, floor ' + levels.floorDb +
+      ' dBFS, gain ' + audio.gain.toFixed(1));
+    // Hiss with nothing above it, brought up by the gain, makes the models invent a polite phrase
+    // that would go to Hermes unseen. Such a memo is kept as empty; trying again forces the model.
+    if (!memo.retry && audio.speech < audio.floor * 1.8) {
+      levels.audio = true;
+      levels.status = 'empty';
+      updateMemo(memo.id, levels);
+      return null;
+    }
+    return transcribeAll(audio.samples, true).then(function (text) {
+      levels.audio = true;
       if (!text) {
-        updateMemo(memo.id, { status: 'empty' });
-        return dropMemoAudio(memo.id);
+        // Kept, so it can be played and tried again from the settings page.
+        levels.status = 'empty';
+        updateMemo(memo.id, levels);
+        return null;
       }
-      updateMemo(memo.id, { status: 'transcribed', text: text });
+      levels.status = 'transcribed';
+      levels.text = text;
+      updateMemo(memo.id, levels);
       // The memo's id is the request id, so sending it twice cannot make two requests.
       var entry = {
         rid: memo.id, src: 'memo', newConv: false, at: Date.now(),
@@ -505,7 +595,7 @@ function processMemos() {
       updateMemo(memo.id, { status: 'sent' });
       lastSubmit = Date.now();
       schedulePoll(0);
-      return dropMemoAudio(memo.id);
+      return null;
     });
   }).then(function () {
     memoBusy = false;
@@ -550,8 +640,8 @@ function onMemo(m) {
     }
     saveMemoAudio(id, memo.bytes).then(function () {
       var list = memoList();
-      list.push({ id: id, at: memo.at, seconds: memo.seconds, status: 'stored', text: '' });
-      writeJson('hp2.memos', list.slice(-20));
+      list.push({ id: id, at: memo.at, seconds: memo.seconds, status: 'stored', text: '', audio: true });
+      saveMemos(list);
       incoming = null;
       send(P.MEMO_ACK, { rid: id, a: 1, b: memo.total });
       processMemos();
@@ -632,13 +722,44 @@ Pebble.addEventListener('appmessage', function (e) {
   }
 });
 
+/** A memo as a WAV file, base64, for the settings page to play. */
+function hasAudio(memo) { return memo.audio || (memo.audio === undefined && memo.status === 'stored'); }
+
+function memoAudioReply(id) {
+  var memo = memoList().filter(function (m) { return m.id === id; })[0];
+  if (!memo || !hasAudio(memo)) return Promise.resolve({ error: 'The phone no longer has the audio of this memo.' });
+  return loadMemoAudio(id).then(function (bytes) {
+    if (!bytes) return { error: 'The phone no longer has the audio of this memo.' };
+    return { id: id, wav: lib.base64Encode(lib.memoWav(bytes)) };
+  });
+}
+
+function memoRetry(id) {
+  var memo = memoList().filter(function (m) { return m.id === id; })[0];
+  if (!memo || !memo.audio || memo.status !== 'empty') return { error: 'This memo cannot be transcribed again.' };
+  updateMemo(id, { status: 'stored', retry: true });
+  processMemos();
+  return { ok: true, stt: stt.summary() };
+}
+
 // The settings page can reach this side while the watch app is open.
 Pebble.addEventListener('configmessage', function (e) {
   var message = e.data || e.message || {};
+  var respond = e.respond || function () {};
+  if (message.type === 'memoAudio') {
+    memoAudioReply(Number(message.id)).then(respond, function (err) {
+      respond({ error: String((err && err.message) || err) });
+    });
+    return;
+  }
+  if (message.type === 'memoRetry') {
+    respond(memoRetry(Number(message.id)));
+    return;
+  }
   if (message.type === 'sttDownload') stt.download();
   if (message.type === 'sttCancel') stt.cancel();
   if (message.type === 'refresh') refreshStatus();
-  if (e.respond) e.respond({ stt: stt.summary() });
+  respond({ stt: stt.summary() });
 });
 
 Pebble.addEventListener('ready', function () {

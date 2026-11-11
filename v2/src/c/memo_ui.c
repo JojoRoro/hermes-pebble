@@ -27,14 +27,23 @@ static void draw(Layer *layer, GContext *ctx) {
   static char clock[8], left[24];
   const int seconds = memo_record_seconds();
   snprintf(clock, sizeof(clock), "%d:%02d", seconds / 60, seconds % 60);
-  ui_text(ctx, clock, F_NUM36, GRect(12, 44, 150, 44), C_PAPER, GTextAlignmentLeft,
+  ui_text(ctx, clock, F_NUM36, GRect(12, 34, 150, 44), C_PAPER, GTextAlignmentLeft,
           GTextOverflowModeTrailingEllipsis);
   snprintf(left, sizeof(left), "of %d:%02d", MEMO_MAX_SECONDS / 60, MEMO_MAX_SECONDS % 60);
-  ui_text(ctx, left, F18, GRect(12, 90, 150, 22), C_HAZE, GTextAlignmentLeft,
+  ui_text(ctx, left, F18, GRect(12, 78, 150, 22), C_HAZE, GTextAlignmentLeft,
           GTextOverflowModeTrailingEllipsis);
+  // What each button does, written beside it: the two ways to stop must never be confused.
+  const int text_right = SCREEN_W - RAIL_W - 6;
+  ui_text(ctx, "Send to Hermes", F18B, GRect(12, BTN_SELECT_Y - 13, text_right - 12, 22), C_GOLD,
+          GTextAlignmentRight, GTextOverflowModeTrailingEllipsis);
+  // The system's microphone bar covers the bottom: the keep button's icon and label ride above it.
+  int stop_y = BTN_DOWN_Y;
+  if (stop_y > area.size.h - 16) stop_y = area.size.h - 16;
+  ui_text(ctx, "Keep on watch", F18B, GRect(12, stop_y - 13, text_right - 12, 22), C_PAPER,
+          GTextAlignmentRight, GTextOverflowModeTrailingEllipsis);
   // Level.
-  const int w = SCREEN_W - 24 - RAIL_W;
-  const int y = area.size.h - 20;
+  const int w = text_right - 12;
+  const int y = BTN_SELECT_Y + 20;
   graphics_context_set_fill_color(ctx, GColorDukeBlue);
   graphics_fill_rect(ctx, GRect(12, y, w, 8), 4, GCornersAll);
   int level = memo_record_level() * 3;
@@ -50,37 +59,108 @@ static void draw(Layer *layer, GContext *ctx) {
             C_PAPER, GTextAlignmentLeft, GTextOverflowModeTrailingEllipsis);
   }
   ui_rail(ctx, ICON_NONE, ICON_SEND, ICON_NONE, true);
-  // The system's microphone bar covers the bottom: the stop hint rides just above it.
-  int stop_y = BTN_DOWN_Y;
-  if (stop_y > area.size.h - 16) stop_y = area.size.h - 16;
   ui_icon(ctx, ICON_STOP, GPoint(SCREEN_W - 18, stop_y), C_PAPER);
 }
 
+// ---- what happened, said plainly ----------------------------------------------------------
+
+static AppTimer *s_note_timer;
+static int32_t s_stopped_id;       // a recording that ended on its own, waiting for a choice
+
+static void note_timeout(void *data) {
+  s_note_timer = NULL;
+  dialog_pop();
+}
+
+static void note_closed(void) {
+  if (s_note_timer) app_timer_cancel(s_note_timer);
+  s_note_timer = NULL;
+}
+
+// A short-lived confirmation; Back closes it sooner.
+static void note(const char *title, const char *body) {
+  dialog_push(&(DialogSpec){ .label = "MEMO", .title = title, .body = body, .progress = -1,
+                             .on_close = note_closed });
+  if (s_note_timer) app_timer_cancel(s_note_timer);
+  s_note_timer = app_timer_register(2500, note_timeout, NULL);
+}
+
+static void say_sent(void) {
+  note("Sending to Hermes",
+       g_phone.seen ? "Your phone turns it into text and sends it to Hermes as a message."
+                    : "It goes to your phone when Hermes 2 can reach it, then on to Hermes.");
+}
+
+static void say_kept(void) {
+  note("Kept on watch", "Nothing was sent. Play or send it from More, Memos.");
+}
+
+static void stopped_send(void) {
+  const int32_t id = s_stopped_id;
+  s_stopped_id = 0;
+  memo_send(id);
+  home_refresh();
+  say_sent();
+}
+
+static void stopped_keep(void) {
+  s_stopped_id = 0;
+  say_kept();
+}
+
 static void done(bool send) {
+  if (s_timer) app_timer_cancel(s_timer);
+  s_timer = NULL;
   const int32_t id = memo_record_stop();
   if (id && send) memo_send(id);
-  window_stack_pop(true);
+  window_stack_remove(s_window, true);
   home_refresh();
+  if (!id) note("Too short", "Nothing was kept. Record for at least a second.");
+  else if (send) say_sent();
+  else say_kept();
 }
 
 static void tick(void *data) {
   s_timer = NULL;
   if (!s_window) return;
   if (!s_failed && !memo_recording()) {
-    // Out of room or interrupted: keep what there is, unsent.
-    done(false);
+    // Out of time or room, or something took the microphone: keep what there is, and ask.
+    const bool full = memo_record_seconds() + 1 >= MEMO_MAX_SECONDS || memo_free_seconds() == 0;
+    if (s_timer) app_timer_cancel(s_timer);
+    s_timer = NULL;
+    const int32_t id = memo_record_stop();
+    window_stack_remove(s_window, true);
+    home_refresh();
+    if (!id) {
+      note("Recording stopped", "Something took the microphone before anything was recorded.");
+      return;
+    }
+    vibes_short_pulse();
+    s_stopped_id = id;
+    dialog_push(&(DialogSpec){
+      .label = "MEMO", .title = "Recording stopped", .progress = -1,
+      .body = full ? "That is as long as a memo can be. It is saved on the watch."
+                   : "Something took the microphone. What was recorded is saved on the watch.",
+      .select_icon = ICON_SEND, .select_label = "Send to Hermes", .on_select = stopped_send,
+      .down_icon = ICON_STOP, .down_label = "Keep on watch", .on_down = stopped_keep });
     return;
   }
   layer_mark_dirty(s_layer);
   s_timer = app_timer_register(250, tick, NULL);
 }
 
-static void stop_and_send(void) { if (s_failed) window_stack_pop(true); else done(true); }
-static void stop_and_keep(void) { if (s_failed) window_stack_pop(true); else done(false); }
+static void stop_and_send(void) { if (s_failed) window_stack_remove(s_window, true); else done(true); }
+static void stop_and_keep(void) { if (s_failed) window_stack_remove(s_window, true); else done(false); }
 
 static const UiKeys s_keys = { .select = stop_and_send, .down = stop_and_keep, .back = stop_and_keep };
 
-static void appear(Window *window) { ui_focus(&s_keys, NULL); }
+// Only the buttons end a recording. The touch rail's zones are fixed while the microphone bar
+// moves the keep button up to their boundary, and a finger on a button can brush the screen's
+// edge: a touch could send what was meant to be kept, or the reverse. Touches are swallowed.
+static void ignore_touch(const TouchEvent *e) {}
+static const UiTouch s_touch = { .raw = ignore_touch, .no_rail = true };
+
+static void appear(Window *window) { ui_focus(&s_keys, &s_touch); }
 static void disappear(Window *window) { ui_blur(); }
 
 static void unload(Window *window) {

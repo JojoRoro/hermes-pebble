@@ -182,10 +182,10 @@ var ADPCM_STEPS = [
   2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487,
   12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767];
 
-/** Watch memo audio (4-bit IMA ADPCM, low nibble first, 8 kHz) to 16 kHz float samples. */
-function memoToFloat16k(bytes) {
-  var out = new Float32Array(bytes.length * 4);
-  var predicted = 0, index = 0, previous = 0, at = 0;
+/** Watch memo audio (4-bit IMA ADPCM, low nibble first) to 8 kHz float samples, as coded. */
+function memoDecode8k(bytes) {
+  var out = new Float32Array(bytes.length * 2);
+  var predicted = 0, index = 0, at = 0;
   for (var i = 0; i < bytes.length; i++) {
     for (var half = 0; half < 2; half++) {
       var code = half === 0 ? bytes[i] & 15 : bytes[i] >> 4;
@@ -198,30 +198,222 @@ function memoToFloat16k(bytes) {
       predicted = predicted > 32767 ? 32767 : predicted < -32768 ? -32768 : predicted;
       index += ADPCM_INDEX[code & 7];
       index = index < 0 ? 0 : index > 88 ? 88 : index;
-      var sample = predicted / 32768;
-      // Doubling the rate: the midpoint, then the sample.
-      out[at++] = (previous + sample) / 2;
-      out[at++] = sample;
-      previous = sample;
+      out[at++] = predicted / 32768;
     }
   }
   return out;
 }
 
+/** Twice the sample rate: the midpoint, then the sample. */
+function upsample2x(samples) {
+  var out = new Float32Array(samples.length * 2);
+  var previous = 0;
+  for (var i = 0; i < samples.length; i++) {
+    out[2 * i] = (previous + samples[i]) / 2;
+    out[2 * i + 1] = samples[i];
+    previous = samples[i];
+  }
+  return out;
+}
+
+/** Watch memo audio to 16 kHz float samples, exactly as coded (no cleaning). */
+function memoToFloat16k(bytes) { return upsample2x(memoDecode8k(bytes)); }
+
+/**
+ * Linear resampling for a stream delivered in pieces. feed() returns the new output samples.
+ * Used when the phone delivers the microphone at another rate than the model's 16 kHz.
+ */
+function Resampler(from, to) {
+  this.ratio = from / to;
+  this.pos = 0;              // position of the next output sample, in input samples from `last`
+  this.last = 0;
+}
+
+Resampler.prototype.feed = function (input) {
+  if (this.ratio === 1) return input;
+  var out = [];
+  // Input index -1 is the last sample of the previous piece.
+  while (this.pos < input.length - 1) {
+    var i = Math.floor(this.pos);
+    var t = this.pos - i;
+    var a = i < 0 ? this.last : input[i];
+    var b = input[i + 1];
+    out.push(a + (b - a) * t);
+    this.pos += this.ratio;
+  }
+  this.pos -= input.length;
+  if (input.length) this.last = input[input.length - 1];
+  return new Float32Array(out);
+};
+
+// Speech cleaning, after the v1 Android companion, which was tuned on real watches: the watch
+// microphone is quiet (around -50 dBFS for normal speech) and has a DC offset, and the button
+// presses that start and stop a recording click far louder than the words.
+var CLEAN = {
+  windowMs: 20,
+  fadeMs: 30,
+  target: 0.183,            // speech RMS after gain (6000 of 32768)
+  maxWindowRms: 0.275,
+  maxWindowPeak: 0.488,
+  maxGain: 128,
+  pauseRatio: 10,
+  pauseFloor: 0.35,
+  knee: 0.732,
+  ceiling: 0.977,
+};
+
+function softLimit(x) {
+  var m = Math.abs(x);
+  if (m <= CLEAN.knee) return x;
+  var room = CLEAN.ceiling - CLEAN.knee;
+  return (x < 0 ? -1 : 1) * (CLEAN.knee + room * Math.tanh((m - CLEAN.knee) / room));
+}
+
+function percentile(sorted, p) { return sorted.length ? sorted[Math.floor((sorted.length - 1) * p)] : 0; }
+
+/**
+ * Makes quiet watch audio fit for a speech model, and for listening.
+ * Mutes the first `leadMs` and last `tailMs` (button presses) with short fades, removes DC and
+ * rumble below about 75 Hz, and sets one gain from the speech level (the 90th percentile of 20 ms
+ * window RMS, but at least a third of the 98th) towards a fixed target, at most 128x. Windows far
+ * louder than speech (clicks) are turned down, pauses gently lowered, rare peaks soft-limited.
+ * Returns { samples, speech, floor, gain } with levels before gain, as 0..1 RMS.
+ */
+function cleanSpeech(samples, rate, options) {
+  var o = options || {};
+  var n = samples.length;
+  var lead = Math.floor(rate * (o.leadMs || 0) / 1000);
+  var tail = Math.floor(rate * (o.tailMs || 0) / 1000);
+  var fade = Math.floor(rate * CLEAN.fadeMs / 1000);
+  if (n < lead + tail + 8 * fade) { lead = 0; tail = 0; fade = 0; }
+  var end = n - tail;
+  var out = new Float32Array(n);
+  if (end <= lead) return { samples: out, speech: 0, floor: 0, gain: 1 };
+
+  var sum = 0;
+  for (var i = lead; i < end; i++) sum += samples[i];
+  var dc = sum / (end - lead);
+  var pole = Math.exp(-2 * Math.PI * 75 / rate);
+  var prevIn = 0, prevOut = 0;
+  for (i = lead; i < end; i++) {
+    var x = samples[i] - dc;
+    var y = x - prevIn + pole * prevOut;
+    prevIn = x;
+    prevOut = y;
+    var f = 1;
+    if (fade > 0 && i < lead + fade) f = (i - lead + 1) / fade;
+    else if (fade > 0 && i >= end - fade) f = (end - i) / fade;
+    out[i] = y * f;
+  }
+
+  var win = Math.max(1, Math.floor(rate * CLEAN.windowMs / 1000));
+  var windows = Math.max(1, Math.ceil((end - lead) / win));
+  var rms = new Float32Array(windows);
+  var peaks = new Float32Array(windows);
+  for (var w = 0; w < windows; w++) {
+    var from = lead + w * win, to = Math.min(end, from + win), e = 0, pk = 0;
+    for (i = from; i < to; i++) {
+      e += out[i] * out[i];
+      if (Math.abs(out[i]) > pk) pk = Math.abs(out[i]);
+    }
+    rms[w] = to > from ? Math.sqrt(e / (to - from)) : 0;
+    peaks[w] = pk;
+  }
+  var sorted = Array.prototype.slice.call(rms).sort(function (a, b) { return a - b; });
+  var speech = Math.max(percentile(sorted, 0.9), percentile(sorted, 0.98) / 3);
+  var floor = percentile(sorted, 0.1);
+  var gain = speech < 1 / 32768 ? 1 : Math.min(CLEAN.target / speech, CLEAN.maxGain);
+
+  var own = new Float32Array(windows);
+  var quiet = speech / CLEAN.pauseRatio;
+  for (w = 0; w < windows; w++) {
+    var g = gain;
+    if (rms[w] * g > CLEAN.maxWindowRms) g = CLEAN.maxWindowRms / rms[w];
+    if (peaks[w] * g > CLEAN.maxWindowPeak) g = CLEAN.maxWindowPeak / peaks[w];
+    if (quiet > 0 && rms[w] < quiet) g *= Math.max(CLEAN.pauseFloor, Math.sqrt(rms[w] / quiet));
+    own[w] = g;
+  }
+  var wg = new Float32Array(windows);
+  for (w = 0; w < windows; w++) {
+    wg[w] = Math.min(own[w], own[Math.max(0, w - 1)], own[Math.min(windows - 1, w + 1)]);
+  }
+  for (i = lead; i < end; i++) {
+    // Between window centres, so the gain never steps.
+    var position = (i - lead) / win - 0.5;
+    var w0 = Math.min(windows - 1, Math.max(0, Math.floor(position)));
+    var w1 = Math.min(windows - 1, w0 + 1);
+    var t = Math.min(1, Math.max(0, position - w0));
+    out[i] = softLimit(out[i] * (wg[w0] + (wg[w1] - wg[w0]) * t));
+  }
+  return { samples: out, speech: speech, floor: floor, gain: gain };
+}
+
+var MEMO_LEAD_MS = 300;       // the press that started it
+var MEMO_TAIL_MS = 200;       // the press that stopped it
+
+/** A memo as the speech model should hear it: cleaned, at 16 kHz. Returns cleanSpeech's result. */
+function memoForSpeech(bytes, options) {
+  var cleaned = cleanSpeech(memoDecode8k(bytes), 8000, options || { leadMs: MEMO_LEAD_MS, tailMs: MEMO_TAIL_MS });
+  cleaned.samples = upsample2x(cleaned.samples);
+  return cleaned;
+}
+
+/** A memo as a 16-bit mono 8 kHz WAV file, cleaned for listening. */
+function memoWav(bytes) {
+  var pcm = cleanSpeech(memoDecode8k(bytes), 8000, { leadMs: MEMO_LEAD_MS, tailMs: MEMO_TAIL_MS }).samples;
+  var out = new Uint8Array(44 + pcm.length * 2);
+  var view = new DataView(out.buffer);
+  var text = function (at, s) { for (var k = 0; k < s.length; k++) out[at + k] = s.charCodeAt(k); };
+  text(0, 'RIFF'); view.setUint32(4, 36 + pcm.length * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, 8000, true); view.setUint32(28, 16000, true); view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, 'data'); view.setUint32(40, pcm.length * 2, true);
+  for (var i = 0; i < pcm.length; i++) {
+    var v = Math.round(pcm[i] * 32767);
+    view.setInt16(44 + 2 * i, v > 32767 ? 32767 : v < -32768 ? -32768 : v, true);
+  }
+  return out;
+}
+
+/** Level in dBFS of a 0..1 RMS, rounded; -96 for silence. */
+function dbfs(level) { return level > 1 / 32768 ? Math.round(20 * Math.log(level) / Math.LN10) : -96; }
+
+/**
+ * What a model said, or '' when it said nothing real: tags such as [BLANK_AUDIO] or (silence)
+ * are dropped, and so is text with no letters or digits.
+ */
+function cleanTranscript(text) {
+  var t = String(text || '').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  // Letters of the scripts the models write; symbols such as music notes or ellipses are not words.
+  return /[A-Za-z0-9\u00C0-\u024F\u0370-\u052F\u0590-\u06FF\u0900-\u0DFF\u0E00-\u0EFF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/.test(t) ? t : '';
+}
+
 /**
  * Tells speech from silence in 16 kHz audio, 20 ms at a time.
  * `ended` turns true once speech has been followed by a long enough pause.
+ *
+ * The bar is set from the room: the first 400 ms (the user has only just pressed the button)
+ * give the noise floor, which then follows the quiet frames. Speech must be three times the
+ * floor, with a low absolute minimum because the watch microphone is quiet. DC is removed first.
  */
 function Vad(options) {
   var o = options || {};
   this.pauseMs = o.pauseMs || 1600;
-  this.patienceMs = o.patienceMs || 8000;
-  this.floor = 0.004;
+  this.patienceMs = o.patienceMs || 12000;   // never heard: give up, but not on quiet speech too soon
+  this.minLevel = 0.0015;
+  this.minFloor = 0.0003;
+  this.ratio = 2.5;
+  this.floor = 0;
+  this.sinceLowMs = 0;
+  this.calibration = [];
   this.speechMs = 0;
   this.silenceMs = 0;
   this.totalMs = 0;
   this.heard = false;
   this.rest = null;
+  this.prevIn = 0;
+  this.prevOut = 0;
 }
 
 Vad.prototype.feed = function (samples) {
@@ -235,10 +427,26 @@ Vad.prototype.feed = function (samples) {
   var i = 0;
   for (; i + frame <= data.length; i += frame) {
     var sum = 0;
-    for (var j = i; j < i + frame; j++) sum += data[j] * data[j];
+    for (var j = i; j < i + frame; j++) {
+      // A gentle high-pass: the microphone's offset is not sound.
+      var y = data[j] - this.prevIn + 0.995 * this.prevOut;
+      this.prevIn = data[j];
+      this.prevOut = y;
+      sum += y * y;
+    }
     var rms = Math.sqrt(sum / frame);
     this.totalMs += 20;
-    var loud = rms > Math.max(this.floor * 3, 0.012);
+    if (this.calibration) {
+      this.calibration.push(rms);
+      if (this.calibration.length < 20) continue;
+      // The quiet end of the first 400 ms, so a word said straight away does not set the bar.
+      var sorted = this.calibration.sort(function (a, b) { return a - b; });
+      // Never zero: a stream that opens with digital silence must not make every hiss speech.
+      this.floor = Math.max(this.minFloor, sorted[Math.floor(sorted.length * 0.2)]);
+      this.calibration = null;
+      continue;
+    }
+    var loud = rms > Math.max(this.floor * this.ratio, this.minLevel);
     if (loud) {
       this.speechMs += 20;
       this.silenceMs = 0;
@@ -246,9 +454,17 @@ Vad.prototype.feed = function (samples) {
     } else {
       this.silenceMs += 20;
       if (this.silenceMs > 200 && !this.heard) this.speechMs = 0;
-      // The room's noise floor follows the quiet frames.
-      this.floor = this.floor * 0.95 + rms * 0.05;
+      // The floor follows the quiet frames: down quickly; up slowly, and only from frames near it,
+      // so soft speech between words is not taken for the room.
+      if (rms < this.floor) this.floor = this.floor * 0.8 + rms * 0.2;
+      else if (rms < this.floor * 1.5) this.floor = this.floor * 0.97 + rms * 0.03;
+      if (this.floor < this.minFloor) this.floor = this.minFloor;
     }
+    // Nobody talks for 4 s without a moment near the floor: past that, the room got louder, and the
+    // floor leaks towards it so the end of speech can still be found.
+    if (rms < this.floor * 1.2) this.sinceLowMs = 0;
+    else this.sinceLowMs += 20;
+    if (this.sinceLowMs > 4000) this.floor = this.floor * 0.98 + rms * 0.02;
   }
   this.rest = data.subarray(i);
 };
@@ -284,5 +500,8 @@ module.exports = {
   W: W, P: P, PF: PF, STATE: STATE, PAGE_BYTES: PAGE_BYTES, TEXT_BYTES: TEXT_BYTES,
   isFinal: isFinal, utf8Encode: utf8Encode, utf8Decode: utf8Decode, clipBytes: clipBytes,
   crc32: crc32, base64Encode: base64Encode, base64Decode: base64Decode, pageAt: pageAt,
-  memoToFloat16k: memoToFloat16k, Vad: Vad, splitForModel: splitForModel, megabytes: megabytes,
+  memoDecode8k: memoDecode8k, upsample2x: upsample2x, memoToFloat16k: memoToFloat16k,
+  Resampler: Resampler, cleanSpeech: cleanSpeech, memoForSpeech: memoForSpeech, memoWav: memoWav,
+  dbfs: dbfs, cleanTranscript: cleanTranscript,
+  Vad: Vad, splitForModel: splitForModel, megabytes: megabytes,
 };

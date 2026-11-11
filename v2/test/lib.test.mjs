@@ -255,3 +255,131 @@ test('megabytes and isFinal', () => {
   assert.equal(lib.isFinal(lib.STATE.APPROVAL), false);
   assert.equal(lib.isFinal(lib.STATE.UNKNOWN), false);
 });
+
+// ---- speech cleaning (after the v1 companion, tuned on real watches) ----------------------------
+
+function rms(samples, from = 0, to = samples.length) {
+  let e = 0;
+  for (let i = from; i < to; i++) e += samples[i] * samples[i];
+  return Math.sqrt(e / Math.max(1, to - from));
+}
+
+test('cleanSpeech: quiet speech is brought up, DC and the button clicks go', () => {
+  const rate = 16000;
+  // -50 dBFS "speech" on a DC offset, with loud clicks where the buttons were pressed.
+  const n = rate * 3;
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = 0.05 + 0.0045 * Math.sin(i * 2 * Math.PI * 300 / rate);
+  for (let i = 0; i < 800; i++) x[i] += i % 2 ? 0.8 : -0.8;            // start press
+  for (let i = n - 800; i < n; i++) x[i] += i % 2 ? 0.8 : -0.8;        // stop press
+  const out = lib.cleanSpeech(x, rate, { leadMs: 300, tailMs: 200 });
+  assert.equal(out.samples.length, n);
+  assert.ok(out.gain > 20 && out.gain <= 128, 'gain ' + out.gain);
+  assert.ok(lib.dbfs(out.speech) < -45, 'speech measured before gain: ' + lib.dbfs(out.speech));
+  const middle = rms(out.samples, rate, 2 * rate);
+  assert.ok(middle > 0.1 && middle < 0.3, 'speech level after: ' + middle);
+  let mean = 0;
+  for (let i = rate; i < 2 * rate; i++) mean += out.samples[i];
+  assert.ok(Math.abs(mean / rate) < 0.005, 'no DC left');
+  assert.equal(rms(out.samples, 0, 4800), 0, 'start press muted');
+  assert.equal(rms(out.samples, n - 3200, n), 0, 'stop press muted');
+  for (const v of out.samples) assert.ok(Math.abs(v) < 0.98, 'never clips');
+});
+
+test('cleanSpeech: a click in the middle does not set the gain, and is held down', () => {
+  const rate = 8000;
+  const x = new Float32Array(rate * 2);
+  for (let i = 0; i < x.length; i++) x[i] = 0.003 * Math.sin(i * 2 * Math.PI * 250 / rate);
+  for (let i = 8000; i < 8040; i++) x[i] = 0.9;
+  const out = lib.cleanSpeech(x, rate, {});
+  assert.ok(out.gain > 30, 'gain from the speech, not the click: ' + out.gain);
+  let peak = 0;
+  for (let i = 7900; i < 8200; i++) peak = Math.max(peak, Math.abs(out.samples[i]));
+  assert.ok(peak < 0.6, 'click held down: ' + peak);
+});
+
+test('cleanSpeech: silence and very short input are safe', () => {
+  const zero = lib.cleanSpeech(new Float32Array(16000), 16000, { leadMs: 300, tailMs: 200 });
+  assert.equal(zero.gain, 1);
+  assert.equal(rms(zero.samples), 0);
+  const tiny = lib.cleanSpeech(new Float32Array(10), 16000, { leadMs: 300, tailMs: 200 });
+  assert.equal(tiny.samples.length, 10);
+});
+
+test('memoForSpeech and memoWav: a memo becomes 16 kHz model input and a playable WAV', () => {
+  const pcm = [];
+  for (let i = 0; i < 8000; i++) pcm.push(Math.round(600 * Math.sin(i * 2 * Math.PI * 300 / 8000)));
+  const { bytes } = encodeAdpcm(pcm);
+  const speech = lib.memoForSpeech(bytes);
+  assert.equal(speech.samples.length, bytes.length * 4);
+  assert.ok(speech.gain > 5, 'quiet memo is brought up');
+  const wav = lib.memoWav(bytes);
+  const view = new DataView(wav.buffer);
+  assert.equal(String.fromCharCode(...wav.slice(0, 4)), 'RIFF');
+  assert.equal(String.fromCharCode(...wav.slice(8, 12)), 'WAVE');
+  assert.equal(view.getUint32(24, true), 8000, 'sample rate');
+  assert.equal(view.getUint16(34, true), 16, 'bits');
+  assert.equal(view.getUint32(40, true), bytes.length * 4, 'data bytes');
+  assert.equal(wav.length, 44 + bytes.length * 4);
+});
+
+test('VAD: speech from a quiet microphone is heard', () => {
+  // The watch delivers normal speech around -50 dBFS on a hiss near -66 dBFS.
+  const vad = new lib.Vad({ pauseMs: 1600 });
+  feed(vad, noise(0.5, 0.0009));
+  feed(vad, tone(1.0, 0.0045));
+  assert.equal(vad.heard, true);
+  feed(vad, noise(1.7, 0.0009));
+  assert.equal(vad.ended(), true);
+});
+
+test('VAD: a DC offset is neither speech nor in the way of it', () => {
+  const vad = new lib.Vad({ pauseMs: 1600 });
+  const offset = (samples) => samples.map((v) => v + 0.05);
+  feed(vad, offset(noise(2, 0.0009)));
+  assert.equal(vad.heard, false);
+  feed(vad, offset(tone(0.5, 0.01)));
+  assert.equal(vad.heard, true);
+});
+
+test('Resampler: 8 kHz in pieces to 16 kHz', () => {
+  const r = new lib.Resampler(8000, 16000);
+  const input = new Float32Array(800).map((_, i) => Math.sin(i * 2 * Math.PI * 200 / 8000));
+  const out = [];
+  for (let i = 0; i < input.length; i += 123) out.push(...r.feed(input.subarray(i, i + 123)));
+  assert.ok(Math.abs(out.length - 1600) <= 2, 'length ' + out.length);
+  for (let i = 10; i < out.length - 10; i++) {
+    const expected = Math.sin((i / 2) * 2 * Math.PI * 200 / 8000);
+    assert.ok(Math.abs(out[i] - expected) < 0.02, `sample ${i}: ${out[i]} vs ${expected}`);
+  }
+  assert.equal(new lib.Resampler(16000, 16000).feed(input), input);
+});
+
+test('cleanTranscript drops tags and empty text', () => {
+  assert.equal(lib.cleanTranscript(' [BLANK_AUDIO] '), '');
+  assert.equal(lib.cleanTranscript('(silence)'), '');
+  assert.equal(lib.cleanTranscript('...'), '');
+  assert.equal(lib.cleanTranscript('Buy milk [Music] tomorrow.'), 'Buy milk tomorrow.');
+  assert.equal(lib.cleanTranscript('Grüße'), 'Grüße');
+});
+
+test('VAD: soft speech between words does not lift the floor until it is lost', () => {
+  // Hiss at -60 dBFS, speech at -50 dBFS with soft gaps: it must last until the speaker stops.
+  const vad = new lib.Vad({ pauseMs: 1600 });
+  feed(vad, noise(1, 0.0017));
+  for (let i = 0; i < 16; i++) {
+    feed(vad, tone(0.15, 0.0045));
+    feed(vad, noise(0.1, 0.0030));
+  }
+  assert.equal(vad.heard, true);
+  assert.equal(vad.ended(), false, 'still talking after 4 s');
+  feed(vad, noise(1.8, 0.0017));
+  assert.equal(vad.ended(), true);
+});
+
+test('VAD: digital silence at the start does not make every hiss speech for good', () => {
+  const vad = new lib.Vad({ pauseMs: 1600 });
+  feed(vad, new Float32Array(16000));
+  feed(vad, noise(8, 0.004));
+  assert.equal(vad.ended(), true, 'a louder room is relearned and the listen can end');
+});

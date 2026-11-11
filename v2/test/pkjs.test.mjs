@@ -261,6 +261,53 @@ test('memo: an interrupted transfer resumes where it stopped', async () => {
   assert.equal(pk.of(P.MEMO_ACK).at(-1).a, 1);
 });
 
+function configMessage(pk, data) {
+  return new Promise((resolve) => pk.emit('configmessage', { data, respond: resolve }));
+}
+
+test('memo: its audio is kept and played on the settings page as a WAV', async () => {
+  const pk = await bridge();
+  const bytes = memoBytes(4000);
+  await sendMemo(pk, 510, bytes);
+  const memo = pk.storage.json('hp2.memos')[0];
+  assert.equal(memo.audio, true);
+  assert.ok(pk.pushed.some((m) => m.type === 'memos' && m.memos[0].id === 510), 'the page hears of it');
+  const reply = await configMessage(pk, { type: 'memoAudio', id: 510 });
+  const wav = Uint8Array.from(lib.base64Decode(reply.wav));
+  assert.equal(String.fromCharCode(...wav.slice(0, 4)), 'RIFF');
+  assert.equal(wav.length, 44 + bytes.length * 4);
+  const missing = await configMessage(pk, { type: 'memoAudio', id: 999 });
+  assert.match(missing.error, /no longer has the audio/);
+});
+
+test('memo: one with no speech found can be transcribed again; others cannot', async () => {
+  const pk = await bridge();
+  await sendMemo(pk, 520, memoBytes(4000));
+  let reply = await configMessage(pk, { type: 'memoRetry', id: 520 });
+  assert.match(reply.error, /cannot be transcribed again/, 'still waiting: nothing to retry');
+  const list = pk.storage.json('hp2.memos');
+  list[0].status = 'empty';
+  pk.storage.setItem('hp2.memos', JSON.stringify(list));
+  reply = await configMessage(pk, { type: 'memoRetry', id: 520 });
+  assert.equal(reply.ok, true);
+  assert.equal(pk.storage.json('hp2.memos')[0].status, 'stored');
+});
+
+test('memo: only the newest finished memos keep their audio; waiting ones always do', async () => {
+  const pk = await bridge();
+  for (let i = 0; i < 5; i++) await sendMemo(pk, 530 + i, memoBytes(300 + i));
+  let memos = pk.storage.json('hp2.memos');
+  assert.deepEqual(memos.map((m) => m.audio), [true, true, true, true, true], 'all still waiting for the model');
+  memos.forEach((m) => { m.status = 'sent'; });
+  pk.storage.setItem('hp2.memos', JSON.stringify(memos));
+  await sendMemo(pk, 540, memoBytes(400));
+  memos = pk.storage.json('hp2.memos');
+  // Under Node the audio lives in localStorage, where only the newest three finished are kept.
+  assert.deepEqual(memos.map((m) => m.audio), [false, false, true, true, true, true]);
+  assert.equal(pk.storage.getItem('hp2.memo.530'), null);
+  assert.notEqual(pk.storage.getItem('hp2.memo.540'), null);
+});
+
 test('note: strokes are stored base64 and acknowledged', async () => {
   const pk = await bridge();
   const note = [10, 10, 60, 100, 0xFD, 20, 50, 80, 50, 0xFF, 0xFE, 30, 20, 30, 110, 0xFF];
