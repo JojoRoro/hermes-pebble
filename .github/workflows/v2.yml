@@ -43,7 +43,9 @@ jobs:
       - name: Install Pebble SDK
         run: |
           python3 -m venv "$RUNNER_TEMP/pebble-tools"
-          "$RUNNER_TEMP/pebble-tools/bin/pip" install pebble-tool==5.1.2
+          # pebble-tool 5.1 prepares each SDK's Python environment with uv.
+          "$RUNNER_TEMP/pebble-tools/bin/pip" install pebble-tool==5.1.2 uv
+          export PATH="$RUNNER_TEMP/pebble-tools/bin:$PATH"
           echo "$RUNNER_TEMP/pebble-tools/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk install 4.44
           "$RUNNER_TEMP/pebble-tools/bin/pebble" sdk activate 4.44
