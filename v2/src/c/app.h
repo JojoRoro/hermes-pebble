@@ -196,7 +196,14 @@ bool memo_recording(void);
 uint16_t memo_record_seconds(void);
 uint16_t memo_record_level(void);        // 0..100
 uint32_t memo_free_seconds(void);
-bool memo_play(int32_t id);
+typedef enum {
+  MEMO_PLAY_OK,
+  MEMO_PLAY_UNAVAILABLE,       // gone, already only on the phone, or recording
+  MEMO_PLAY_QUIET_TIME,
+  MEMO_PLAY_MUTED,
+  MEMO_PLAY_BUSY,              // the speaker refused to open
+} MemoPlayResult;
+MemoPlayResult memo_play(int32_t id);
 void memo_play_stop(void);
 bool memo_playing(void);
 void memo_send(int32_t id);

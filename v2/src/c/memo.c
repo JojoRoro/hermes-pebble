@@ -309,6 +309,8 @@ static uint8_t s_play_stalled;              // feeds in a row the speaker took n
 static uint32_t s_play_samples;             // decoded so far
 static int32_t s_hp_in, s_hp_out;           // high-pass state
 static int32_t s_play_level;                // recent peak, for the gain
+static bool s_play_closing;                 // all audio handed over; the speaker is playing out
+static uint8_t s_play_stale;                // finish events still due for sounds we stopped
 
 #define PLAY_LEAD_MUTE 2400                 // 300 ms: the press that started the recording
 #define PLAY_TARGET 20000
@@ -317,22 +319,50 @@ static int32_t s_play_level;                // recent peak, for the gain
 
 #define PLAY_FEED_MS 40
 #define PLAY_STALL_FEEDS 75                 // three seconds without progress: give up
+#define PLAY_TAIL_MS 3000                   // after closing, end anyway if Done never arrives
+
+// Stops what this app has on the speaker (the firmware never lets it stop another's sound).
+// The finish event for it arrives later, possibly after a new stream is open: count it, so
+// that event is not taken for the end of the new stream.
+static void speaker_stop_ours(void) {
+  if (speaker_get_status() == SpeakerStatusIdle) return;
+  if (s_play_stale < 8) s_play_stale++;
+  speaker_stop();
+}
 
 static void play_ended(void) {
   if (s_play_timer) app_timer_cancel(s_play_timer);
   s_play_timer = NULL;
   s_play_id = 0;
+  s_play_closing = false;
   memos_refresh();
 }
 
 static void play_finished(SpeakerFinishReason reason, void *context) {
-  // Preempted, stopped by the system or failed: the list must not keep saying Playing.
-  if (s_play_id && reason != SpeakerFinishReasonDone) play_ended();
+  if (reason != SpeakerFinishReasonDone && s_play_stale) {
+    s_play_stale--;
+    return;
+  }
+  if (!s_play_id) return;
+  if (reason == SpeakerFinishReasonDone) {
+    // Only our own stream's end counts; an earlier sound's Done can arrive late.
+    if (s_play_closing) play_ended();
+    return;
+  }
+  // Preempted, stopped by the system or failed: the list must not keep saying Playing, and
+  // nothing of ours may stay open (speaker_stop only ever stops this app's sound).
+  speaker_stop_ours();
+  play_ended();
+}
+
+static void play_tail_done(void *data) {
+  s_play_timer = NULL;
+  play_ended();
 }
 
 static void play_feed(void *data) {
   s_play_timer = NULL;
-  if (!s_play_id) return;
+  if (!s_play_id || s_play_closing) return;
   for (;;) {
     if (s_pcm_pos < s_pcm_len) {
       const uint32_t wrote = speaker_stream_write((uint8_t *)s_pcm + s_pcm_pos, s_pcm_len - s_pcm_pos);
@@ -341,7 +371,7 @@ static void play_feed(void *data) {
         // The speaker's buffer is full for now. If it never drains, stop rather than hang.
         s_play_stalled = wrote ? 0 : s_play_stalled + 1;
         if (s_play_stalled >= PLAY_STALL_FEEDS) {
-          speaker_stop();
+          speaker_stop_ours();
           play_ended();
           return;
         }
@@ -350,14 +380,16 @@ static void play_feed(void *data) {
       s_play_stalled = 0;
     }
     if (s_play_block >= s_play_blocks) {
+      // Still playing until the speaker says Done: a replay meanwhile stops this one first.
       speaker_stream_close();
-      play_ended();
+      s_play_closing = true;
+      s_play_timer = app_timer_register(PLAY_TAIL_MS, play_tail_done, NULL);
       return;
     }
     const int got = persist_read_data(audio_key(s_play_slot, s_play_block++), s_block, BLOCK);
     if (got <= 0) {
       // The audio is gone from flash: end here.
-      speaker_stream_close();
+      speaker_stop_ours();
       play_ended();
       return;
     }
@@ -390,12 +422,23 @@ static void play_feed(void *data) {
   s_play_timer = app_timer_register(PLAY_FEED_MS, play_feed, NULL);
 }
 
-bool memo_play(int32_t id) {
+MemoPlayResult memo_play(int32_t id) {
   const Memo *m = find(id);
+  if (!m || m->status == MEMO_ON_PHONE || s_recording) return MEMO_PLAY_UNAVAILABLE;
   // Quiet Time means quiet, even if the speaker itself is not muted.
-  if (!m || m->status == MEMO_ON_PHONE || s_recording || quiet_time_is_active() || speaker_is_muted()) return false;
+  if (quiet_time_is_active()) return MEMO_PLAY_QUIET_TIME;
+  if (speaker_is_muted()) return MEMO_PLAY_MUTED;
   memo_play_stop();
-  if (!speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, 80)) return false;
+  // Before opening, so the stream's own finish is never missed.
+  speaker_set_finish_callback(play_finished, NULL);
+  // Anything of ours still on the speaker (a test tone's tail, a stream left open) would make
+  // the open fail. Its finish event must not end the new stream, or that stream would stay
+  // open unfed and every later open would be refused as busy.
+  speaker_stop_ours();
+  if (!speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, 80)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "memo play: open refused, status %d", (int)speaker_get_status());
+    return MEMO_PLAY_BUSY;
+  }
   s_play_id = id;
   s_play_slot = m->slot;
   s_play_block = 0;
@@ -403,12 +446,12 @@ bool memo_play(int32_t id) {
   s_pcm_len = s_pcm_pos = 0;
   s_play_stalled = 0;
   s_play_samples = 0;
+  s_play_closing = false;
   s_hp_in = s_hp_out = 0;
   s_play_level = 0;
   memset(&s_dec, 0, sizeof(s_dec));
-  speaker_set_finish_callback(play_finished, NULL);
   play_feed(NULL);
-  return true;
+  return MEMO_PLAY_OK;
 }
 
 void memo_play_stop(void) {
@@ -416,7 +459,8 @@ void memo_play_stop(void) {
   s_play_timer = NULL;
   const bool was = s_play_id != 0;
   s_play_id = 0;                   // first, so the finish callback has nothing left to end
-  if (was) speaker_stop();
+  s_play_closing = false;
+  if (was) speaker_stop_ours();
 }
 
 bool memo_playing(void) { return s_play_id != 0; }

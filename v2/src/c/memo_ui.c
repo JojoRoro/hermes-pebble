@@ -234,9 +234,28 @@ static void memos_row(int index, ListRow *row) {
 static void act_play(void) {
   if (memo_playing()) {
     memo_play_stop();
-  } else if (!memo_play(s_picked)) {
-    dialog_push(&(DialogSpec){ .label = "MEMO", .title = "Staying quiet", .progress = -1,
-                               .body = "The speaker is muted or Quiet Time is on." });
+  } else {
+    const char *title = NULL, *body = NULL;
+    switch (memo_play(s_picked)) {
+      case MEMO_PLAY_OK: break;
+      case MEMO_PLAY_QUIET_TIME:
+        title = "Staying quiet";
+        body = "Quiet Time is on. Playback works again when it ends.";
+        break;
+      case MEMO_PLAY_MUTED:
+        title = "Staying quiet";
+        body = "The watch speaker is muted. Turn it on in Sounds & Haptics.";
+        break;
+      case MEMO_PLAY_BUSY:
+        title = "Speaker busy";
+        body = "The speaker would not start. Wait a moment and try again.";
+        break;
+      case MEMO_PLAY_UNAVAILABLE:
+        title = "Can't play";
+        body = "This memo can't be played on the watch right now.";
+        break;
+    }
+    if (title) dialog_push(&(DialogSpec){ .label = "MEMO", .title = title, .progress = -1, .body = body });
   }
   list_reload(s_list);
 }

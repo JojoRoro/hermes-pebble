@@ -240,7 +240,7 @@ static void settings_row(int index, ListRow *row) {
       break;
     case SET_ABOUT:
       snprintf(row->title, sizeof(row->title), "Hermes 2");
-      snprintf(row->sub, sizeof(row->sub), "Version 2.0.1");
+      snprintf(row->sub, sizeof(row->sub), "Version 2.0.2");
       break;
   }
 }
@@ -303,7 +303,9 @@ static void settings_select(int index) {
           { .midi_note = 76, .waveform = SpeakerWaveformSine, .duration_ms = 140 },
           { .midi_note = 81, .waveform = SpeakerWaveformSine, .duration_ms = 220 },
         };
-        speaker_play_notes(notes, ARRAY_LENGTH(notes), 70);
+        if (!speaker_play_notes(notes, ARRAY_LENGTH(notes), 70)) {
+          need("Speaker busy", "Another sound is playing. Try again in a moment.");
+        }
       }
       break;
   }
